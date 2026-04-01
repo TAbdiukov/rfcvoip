@@ -295,7 +295,7 @@ class RTPClient:
         sendrecv: TransmitType,
         dtmf: Optional[Callable[[str], None]] = None,
     ):
-        self.NSD = True
+        self.NSD = False
         # Example: {0: PayloadType.PCMU, 101: PayloadType.EVENT}
         self.assoc = assoc
         debug("Selecting audio codec for transmission")
@@ -348,6 +348,7 @@ class RTPClient:
             + f"local={self.inIP}:{self.inPort} remote={self.outIP}:{self.outPort} "
             + f"mode={self.sendrecv} codec={self.preference}",
         )
+        self.NSD = True
 
         self.sin = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # Some systems just reply to the port they receive from instead of
@@ -371,8 +372,21 @@ class RTPClient:
         )
 
         self.NSD = False
-        self.sin.close()
-        self.sout.close()
+
+        sin = getattr(self, "sin", None)
+        sout = getattr(self, "sout", None)
+
+        if sin is not None:
+            try:
+                sin.close()
+            except OSError:
+                pass
+
+        if sout is not None and sout is not sin:
+            try:
+                sout.close()
+            except OSError:
+                pass
 
     def read(self, length: int = 160, blocking: bool = True) -> bytes:
         if not blocking:

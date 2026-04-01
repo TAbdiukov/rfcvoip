@@ -498,17 +498,21 @@ class VoIPCall:
         return self.read_audio(length, blocking)
 
     def read_audio(self, length=160, blocking=True) -> bytes:
+        if blocking:
+            while self.state not in (CallState.ANSWERED, CallState.ENDED):
+                time.sleep(0.01)
+
+        if self.state != CallState.ANSWERED or len(self.RTPClients) == 0:
+            return b"\x80" * length
+
         if len(self.RTPClients) == 1:
             return self.RTPClients[0].read(length, blocking)
-        data = []
-        for x in self.RTPClients:
-            data.append(x.read(length))
-        # Mix audio from different sources before returning
-        nd = audioop.add(data.pop(0), data.pop(0), 1)
-        for d in data:
-            nd = audioop.add(nd, d, 1)
-        return nd
 
+        data = [client.read(length, blocking) for client in self.RTPClients]
+        mixed = data[0]
+        for frame in data[1:]:
+            mixed = audioop.add(mixed, frame, 1)
+        return mixed
 
 class VoIPPhone:
     def __init__(
