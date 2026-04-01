@@ -1,6 +1,7 @@
 from enum import Enum
 from threading import Timer
-from typing import Callable, Dict, Optional, Union
+from typing import Callable, Deque, Dict, Optional, Union
+from collections import deque
 import audioop
 import io
 import pyVoIP
@@ -25,6 +26,11 @@ __all__ = [
 
 
 debug = pyVoIP.debug
+
+_DTMF_EVENT_TO_CHAR = [
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "#", "A", "B", "C", "D",
+]
+_DTMF_CHAR_TO_EVENT = {char: idx for idx, char in enumerate(_DTMF_EVENT_TO_CHAR)}
 
 
 def byte_to_bits(byte: bytes) -> str:
@@ -295,7 +301,7 @@ class RTPClient:
         sendrecv: TransmitType,
         dtmf: Optional[Callable[[str], None]] = None,
     ):
-        self.NSD = False
+        self.NSD = True
         # Example: {0: PayloadType.PCMU, 101: PayloadType.EVENT}
         self.assoc = assoc
         debug("Selecting audio codec for transmission")
@@ -323,7 +329,6 @@ class RTPClient:
         self.inPort = inPort
         self.outIP = outIP
         self.outPort = outPort
-        self.sendrecv = sendrecv
 
         self.dtmf = dtmf
 
@@ -334,22 +339,152 @@ class RTPClient:
         self.outSequence = random.randint(1, 100)
         self.outTimestamp = random.randint(1, 10000)
         self.outSSRC = random.randint(1000, 65530)
-        debug(
-            f"Prepared RTP client {inIP}:{inPort}->{outIP}:{outPort}",
-            "RTP prepared "
-            + f"local={inIP}:{inPort} remote={outIP}:{outPort} "
-            + f"mode={sendrecv} codec={self.preference}",
+        self._telephone_event_pt = self._find_telephone_event_payload_type()
+        self._pending_dtmf: Deque[str] = deque()
+        self._dtmf_lock = threading.Lock()
+
+    def _find_telephone_event_payload_type(self) -> Optional[int]:
+        for payload_type, codec in self.assoc.items():
+            if codec == PayloadType.EVENT:
+                try:
+                    return int(payload_type)
+                except Exception:
+                    continue
+        return None
+
+    def _build_rtp_packet(
+        self,
+        payload_type: int,
+        payload: bytes,
+        *,
+        marker: bool,
+        timestamp: int,
+    ) -> bytes:
+        packet = b"\x80"
+        packet += (((0x80 if marker else 0x00) | (payload_type & 0x7F))).to_bytes(1, 'big')
+        packet += (self.outSequence & 0xFFFF).to_bytes(2, 'big')
+        packet += (timestamp & 0xFFFFFFFF).to_bytes(4, 'big')
+        packet += (self.outSSRC & 0xFFFFFFFF).to_bytes(4, 'big')
+        packet += payload
+        return packet
+
+    def _send_rtp_packet(
+        self,
+        payload_type: int,
+        payload: bytes,
+        *,
+        marker: bool,
+        timestamp: int,
+    ) -> None:
+        packet = self._build_rtp_packet(payload_type, payload, marker=marker, timestamp=timestamp)
+        try:
+            self.sout.sendto(packet, (self.outIP, self.outPort))
+        except OSError:
+            warnings.warn(
+                "RTP Packet failed to send!",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        self.outSequence = (self.outSequence + 1) & 0xFFFF
+
+    def _build_telephone_event_payload(
+        self,
+        event_code: int,
+        duration: int,
+        *,
+        end: bool,
+        volume: int,
+    ) -> bytes:
+        return bytes([
+            event_code & 0xFF,
+            ((0x80 if end else 0x00) | (volume & 0x3F)),
+            (duration >> 8) & 0xFF,
+            duration & 0xFF,
+        ])
+
+    def sendDTMF(self, code: str) -> bool:
+        warnings.warn(
+            "sendDTMF is deprecated due to PEP8 compliance. Use send_dtmf instead.",
+            DeprecationWarning,
+            stacklevel=2,
         )
+        return self.send_dtmf(code)
+
+    def send_dtmf(self, code: str) -> bool:
+        code = str(code or '').strip().upper()
+        if code not in _DTMF_CHAR_TO_EVENT:
+            return False
+        if self._telephone_event_pt is None:
+            return False
+        with self._dtmf_lock:
+            self._pending_dtmf.append(code)
+        return True
+
+    def transmit_dtmf(
+        self,
+        code: str,
+        *,
+        duration_ms: int = 200,
+        packet_ms: int = 50,
+        volume: int = 10,
+    ) -> bool:
+        if self._telephone_event_pt is None:
+            return False
+
+        code = str(code or '').strip().upper()
+        if code not in _DTMF_CHAR_TO_EVENT:
+            return False
+
+        clock = 8000
+        event_code = _DTMF_CHAR_TO_EVENT[code]
+        start_timestamp = self.outTimestamp & 0xFFFFFFFF
+        total_duration = max(1, int((duration_ms * clock) / 1000))
+        step = max(1, int((packet_ms * clock) / 1000))
+        interval_s = max(0.01, packet_ms / 1000.0)
+
+        first_duration = min(step, total_duration)
+        first_payload = self._build_telephone_event_payload(
+            event_code, first_duration, end=False, volume=volume
+        )
+        self._send_rtp_packet(
+            self._telephone_event_pt,
+            first_payload,
+            marker=True,
+            timestamp=start_timestamp,
+        )
+
+        elapsed = first_duration
+        while elapsed + step < total_duration and self.NSD:
+            time.sleep(interval_s)
+            elapsed += step
+            payload = self._build_telephone_event_payload(
+                event_code, elapsed, end=False, volume=volume
+            )
+            self._send_rtp_packet(
+                self._telephone_event_pt,
+                payload,
+                marker=False,
+                timestamp=start_timestamp,
+            )
+
+        final_payload = self._build_telephone_event_payload(
+            event_code, total_duration, end=True, volume=volume
+        )
+        for repeat in range(3):
+            if not self.NSD:
+                break
+            time.sleep(interval_s)
+            self._send_rtp_packet(
+                self._telephone_event_pt,
+                final_payload,
+                marker=False,
+                timestamp=start_timestamp,
+            )
+
+        self.outTimestamp = (start_timestamp + total_duration) & 0xFFFFFFFF
+        return True
 
     def start(self) -> None:
-        debug(
-            f"Starting RTP client {self.inIP}:{self.inPort}",
-            "RTP start "
-            + f"local={self.inIP}:{self.inPort} remote={self.outIP}:{self.outPort} "
-            + f"mode={self.sendrecv} codec={self.preference}",
-        )
-        self.NSD = True
-
         self.sin = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # Some systems just reply to the port they receive from instead of
         # listening to the SDP.
@@ -365,28 +500,9 @@ class RTPClient:
         t.start()
 
     def stop(self) -> None:
-        debug(
-            f"Stopping RTP client {self.inIP}:{self.inPort}",
-            "RTP stop "
-            + f"local={self.inIP}:{self.inPort} remote={self.outIP}:{self.outPort}",
-        )
-
         self.NSD = False
-
-        sin = getattr(self, "sin", None)
-        sout = getattr(self, "sout", None)
-
-        if sin is not None:
-            try:
-                sin.close()
-            except OSError:
-                pass
-
-        if sout is not None and sout is not sin:
-            try:
-                sout.close()
-            except OSError:
-                pass
+        self.sin.close()
+        self.sout.close()
 
     def read(self, length: int = 160, blocking: bool = True) -> bytes:
         if not blocking:
@@ -415,40 +531,22 @@ class RTPClient:
 
     def trans(self) -> None:
         while self.NSD:
+            with self._dtmf_lock:
+                pending_dtmf = self._pending_dtmf.popleft() if self._pending_dtmf else None
+            if pending_dtmf is not None:
+                self.transmit_dtmf(pending_dtmf)
+                continue
+
             last_sent = time.monotonic_ns()
             raw_payload = self.pmout.read()
             payload = self.encode_packet(raw_payload)
-
-            # RTP header:
-            # V=2, P=0, X=0, CC=0 => 0x80
-            packet = b"\x80"
-
-            # Marker=0, PT=7 bits
-            pt = int(self.preference) & 0x7F
-            packet += pt.to_bytes(1, byteorder="big", signed=False)
-
-            # Wrap sequence/timestamp instead of letting to_bytes overflow.
-            seq = self.outSequence & 0xFFFF
-            ts = self.outTimestamp & 0xFFFFFFFF
-            ssrc = self.outSSRC & 0xFFFFFFFF
-
-            packet += seq.to_bytes(2, byteorder="big", signed=False)
-            packet += ts.to_bytes(4, byteorder="big", signed=False)
-            packet += ssrc.to_bytes(4, byteorder="big", signed=False)
-            packet += payload
-
-            # debug(payload)
-
-            try:
-                self.sout.sendto(packet, (self.outIP, self.outPort))
-            except OSError:
-                warnings.warn(
-                    "RTP Packet failed to send!",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-
-            self.outSequence = (self.outSequence + 1) & 0xFFFF
+            timestamp = self.outTimestamp & 0xFFFFFFFF
+            self._send_rtp_packet(
+                int(self.preference),
+                payload,
+                marker=False,
+                timestamp=timestamp,
+            )
             self.outTimestamp = (self.outTimestamp + len(payload)) & 0xFFFFFFFF
             # Calculate how long it took to generate this packet.
             # Then how long we should wait to send the next, then devide by 2.

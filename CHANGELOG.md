@@ -3,6 +3,7 @@
 
 ## 1.7.0+RFC
 
+- PyVOIP-RFC - Add DMTF support
 - SIP - call cancellations
 - PyVOIP-RFC - Fix workflows
 - PyVOIP-RFC - Begin using telemetry for workflows
