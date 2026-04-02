@@ -264,6 +264,47 @@ class VoIPCall:
             packet = self.dtmf.read(length)
             return packet
 
+    def sendDTMF(self, digits: str) -> bool:
+        warnings.warn(
+            "sendDTMF is deprecated due to PEP8 compliance. Use send_dtmf instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.send_dtmf(digits)
+
+    def send_dtmf(self, digits: str) -> bool:
+        digits = "".join(ch for ch in str(digits or "").upper() if not ch.isspace())
+        if not digits:
+            return False
+
+        sent = False
+        for digit in digits:
+            digit_sent = False
+            for client in self.RTPClients:
+                sender = getattr(client, "send_dtmf", None)
+                if not callable(sender):
+                    continue
+                try:
+                    result = sender(digit)
+                except Exception:
+                    continue
+                if result is not False:
+                    digit_sent = True
+                    sent = True
+
+            if not digit_sent:
+                return sent
+
+        if sent:
+            debug(
+                f"Queued outbound DTMF for {self.call_id}",
+                f"Call {self.call_id}: queued outbound DTMF digits={digits}",
+            )
+        return sent
+
+    def send_dtmf_sequence(self, digits: str) -> bool:
+        return self.send_dtmf(digits)
+
     def _finalize_ended_call(self) -> None:
         try:
             self.phone.release_ports(call=self)

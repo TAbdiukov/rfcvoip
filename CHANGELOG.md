@@ -3,7 +3,7 @@
 
 ## 1.7.2+RFC
 
-- PyVOIP-RFC - Add DMTF support
+- VoIP - Add DTMF support
 - VoIP - Backport authentication support from pyVoIP 2.x.x
 - VoIP - Hangup call support
 - SIP - call cancellations
