@@ -1,15 +1,16 @@
 # Changelog
 
 
-## 1.7.2+RFC
+## 1.7.3+RFC
 
-- SIP - More thorough subscription support
-- VoIP - Add DTMF support
-- VoIP - Backport authentication support from pyVoIP 2.x.x
-- VoIP - Hangup call support
-- SIP - call cancellations
-- PyVOIP-RFC - Fix workflows
-- PyVOIP-RFC - Begin using telemetry for workflows
+- Bump version, fix changelog
+- SIP: More thorough subscription support
+- VoIP: Add DTMF support
+- VoIP: Backport authentication support from pyVoIP 2.x.x
+- VoIP: Hangup call support
+- SIP: call cancellations
+- PyVOIP-RFC: Fix workflows
+- PyVOIP-RFC: Begin using telemetry for workflows
 - Debug: Add detailed outbound call telemetry (Call-ID, session ID, last SIP response, RTP ports, worker thread state)
 - Debug: Timestamp pyVoIP debug output and trace INVITE progress/auth/final responses in more detail
 - VoIP: Preserve fast final INVITE responses so they can still be inspected after the VoIPCall object is created
@@ -32,7 +33,7 @@
 - SIP: Fix: Body parsing was too strict and could cause crashes
 - SIP: More robust rtpmap / a=fmtp parsing
 - SIP: Fix: SIPParseError was never raised in SIPClient.recv()
-- setup.py - Update package name and bump version
+- setup.py: Update package name and bump version
 
 - SIP: Fix crash on unknown request type
 - SIP: Implement and wire basic OPTIONS support

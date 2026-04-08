@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as f:
 
 setup(
     name="pyVoIP",
-    version="1.7.2+RFC",
+    version="1.7.3+RFC",
     description="PyVoIP is a pure python VoIP/SIP/RTP library.",
     install_requires=['audioop-lts>=0.2.1; python_version>="3.13"'],
     long_description=long_description,
