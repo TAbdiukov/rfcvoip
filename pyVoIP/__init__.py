@@ -2,9 +2,9 @@ __all__ = ["SIP", "RTP", "VoIP"]
 
 from datetime import datetime, timezone
 
-version_info = (1, 6, "9")
+version_info = *(1,7,"3+RFC")
 
-__version__ = ".".join([str(x) for x in version_info])
+__version__ = "1.7.3+RFC"
 
 DEBUG = False
 
