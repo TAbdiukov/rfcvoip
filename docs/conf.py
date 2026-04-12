@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import sphinx_rtd_theme
 
 # Configuration file for the Sphinx documentation builder.
@@ -6,15 +8,14 @@ import sphinx_rtd_theme
 # list see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
-# -- Path setup --------------------------------------------------------------
+ROOT = Path(__file__).resolve().parents[1]
 
-# If extensions (or modules to document with autodoc) are in another directory,
-# add these directories to sys.path here. If the directory is relative to the
-# documentation root, use os.path.abspath to make it absolute, like shown here.
-#
-# import os
-# import sys
-# sys.path.insert(0, os.path.abspath('.'))
+
+def read_version() -> str:
+    about = {}
+    version_path = ROOT / "pyVoIP" / "_version.py"
+    exec(version_path.read_text(encoding="utf-8"), about)
+    return about["__version__"]
 
 
 # -- Project information -----------------------------------------------------
@@ -23,8 +24,9 @@ project = 'pyVoIP'
 copyright = '2025, Tayler Porter'
 author = 'Tayler J Porter'
 
-# The full version, including alpha/beta/rc tags
-release = '1.7.3+RFC'
+# The short X.Y version and the full version, including alpha/beta/rc tags.
+release = read_version()
+version = release.split("+", 1)[0]
 
 master_doc = 'index'
 
@@ -33,8 +35,8 @@ master_doc = 'index'
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
-extensions = [ 
-  "sphinx_rtd_theme"
+extensions = [
+    "sphinx_rtd_theme"
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -50,7 +52,6 @@ exclude_patterns = []
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
-#
 html_theme = 'sphinx_rtd_theme'
 
 #pygments_style = 'sphinx'

@@ -1,13 +1,25 @@
+from pathlib import Path
+
 from setuptools import find_packages
 from setuptools import setup
 
 
-with open("README.md", "r", encoding="utf-8") as f:
+ROOT = Path(__file__).resolve().parent
+
+
+def read_version() -> str:
+    about = {}
+    version_path = ROOT / "pyVoIP" / "_version.py"
+    exec(version_path.read_text(encoding="utf-8"), about)
+    return about["__version__"]
+
+
+with open(ROOT / "README.md", "r", encoding="utf-8") as f:
     long_description = f.read()
 
 setup(
     name="pyVoIP",
-    version="1.7.3+RFC",
+    version=read_version(),
     description="PyVoIP is a pure python VoIP/SIP/RTP library.",
     install_requires=['audioop-lts>=0.2.1; python_version>="3.13"'],
     long_description=long_description,

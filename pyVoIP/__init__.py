@@ -2,9 +2,7 @@ __all__ = ["SIP", "RTP", "VoIP"]
 
 from datetime import datetime, timezone
 
-version_info = (1,7,"3+RFC")
-
-__version__ = "1.7.3+RFC"
+from pyVoIP._version import __version__, version_info
 
 DEBUG = False
 
