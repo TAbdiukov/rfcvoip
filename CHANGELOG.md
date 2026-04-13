@@ -3,7 +3,9 @@
 
 ## 1.7.3+RFC
 
-- Bump version, fix changelog
+- PyVOIP-RFC: Bump version to 2.x.. (since PyVOIP v2 changes were backported)
+- PyVOIP-RFC: Consolidate version handling
+- Fix changelog
 - SIP: More thorough subscription support
 - VoIP: Add DTMF support
 - VoIP: Backport authentication support from pyVoIP 2.x.x
