@@ -1,7 +1,7 @@
 # Changelog
 
 
-## 1.7.3+RFC
+## 2.7.3+RFC
 
 - PyVOIP-RFC: Bump version to 2.x.. (since PyVOIP v2 changes were backported)
 - PyVOIP-RFC: Consolidate version handling
