@@ -240,8 +240,29 @@ class VoIPCall:
         return self.dtmf_callback(code)
 
     def __del__(self):
-        if hasattr(self, "phone"):
-            self.phone.release_ports(call=self)
+        try:
+            phone = getattr(self, "phone", None)
+            ports = list(getattr(self, "assignedPorts", {}).keys())
+            if phone is None or not ports:
+                return
+
+            lock = getattr(phone, "portsLock", None)
+            assigned_ports = getattr(phone, "assignedPorts", None)
+            if lock is None or assigned_ports is None:
+                return
+
+            # Interpreter shutdown is a poor place to do blocking cleanup.
+            # If another thread is already cleaning up, just let that win.
+            if not lock.acquire(blocking=False):
+                return
+            try:
+                for port in ports:
+                    if port in assigned_ports:
+                        assigned_ports.remove(port)
+            finally:
+                lock.release()
+        except Exception:
+            pass
 
     def dtmf_callback(self, code: str) -> None:
         with self.dtmfLock:
@@ -780,6 +801,7 @@ class VoIPPhone:
             try:
                 t = Timer(1, self.callCallback, [self.calls[call_id]])
                 t.name = f"Phone Call: {call_id}"
+                t.daemon = True
                 t.start()
                 self.threads.append(t)
                 self.threadLookup[t] = call_id

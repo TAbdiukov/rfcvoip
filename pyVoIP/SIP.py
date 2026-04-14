@@ -1742,6 +1742,11 @@ class SIPClient:
             except BlockingIOError:
                 time.sleep(0.01)
                 continue
+            except OSError:
+                if self.NSD:
+                    time.sleep(0.01)
+                    continue
+                break
 
     def recv(self) -> None:
         try:
@@ -1913,7 +1918,8 @@ class SIPClient:
         self.out = self.s
         self.register()
         t = Timer(1, self.recv_loop)
-        t.name = "SIP Recieve"
+        t.name = "SIP Receive"
+        t.daemon = True
         t.start()
 
     def stop(self) -> None:
@@ -2983,6 +2989,7 @@ class SIPClient:
             self.registerThread.name = (
                 "SIP Register CSeq: " + f"{self.registerCounter.x}"
             )
+            self.registerThread.daemon = True
             self.registerThread.start()
 
     def __register(self) -> bool:

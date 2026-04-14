@@ -494,9 +494,11 @@ class RTPClient:
 
         r = Timer(0, self.recv)
         r.name = "RTP Receiver"
+        r.daemon = True
         r.start()
         t = Timer(0, self.trans)
         t.name = "RTP Transmitter"
+        t.daemon = True
         t.start()
 
     def stop(self) -> None:
