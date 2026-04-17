@@ -3,6 +3,8 @@
 
 ## 2.7.4+RFC
 
+- SIP: Fix unsupported SIP request handling
+- SIP: Fix missing dialog / transaction” TODO around inbound BYE and CANCEL.
 - SIP: Add outbound proxy support across REGISTER, INVITE, ACK, CANCEL, BYE, and SUBSCRIBE flows.
 - SIP: Route inbound INVITE responses (180/200/486/etc.) back to the requester instead of always using the configured registrar target.
 - VoIP: Expose proxy configuration on `VoIPPhone` via `proxy` / `proxyPort`.

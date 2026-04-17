@@ -1876,6 +1876,13 @@ class SIPClient:
         )
         return self.parse_message(message)
 
+    def _has_matching_call(self, message: SIPMessage) -> bool:
+        call_id = message.headers.get("Call-ID")
+        phone_calls = getattr(self.phone, "calls", None)
+        if isinstance(phone_calls, dict):
+            return call_id in phone_calls
+        return self.callCallback is not None
+
     def parse_message(self, message: SIPMessage) -> None:
         # Responses (SIP/2.0 ...)
         if message.type != SIPMessageType.MESSAGE:
@@ -1943,16 +1950,28 @@ class SIPClient:
             else:
                 self.callCallback(message)
         elif message.method == "BYE":
-            # TODO: If callCallback is None, the call doesn't exist, 481
-            self.callCallback(message)  # type: ignore
+            if not self._has_matching_call(message):
+                response = self.gen_response(
+                    message, SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST
+                )
+                self._send_request_response(message, response)
+                return
+            if self.callCallback is not None:
+                self.callCallback(message)
             response = self.gen_ok(message)
             self._send_request_response(message, response)
             # BYE comes from client cause server only acts as mediator
         elif message.method == "ACK":
             return
         elif message.method == "CANCEL":
-            # TODO: If callCallback is None, the call doesn't exist, 481
-            self.callCallback(message)  # type: ignore
+            if not self._has_matching_call(message):
+                response = self.gen_response(
+                    message, SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST
+                )
+                self._send_request_response(message, response)
+                return
+            if self.callCallback is not None:
+                self.callCallback(message)
             response = self.gen_ok(message)
             self._send_request_response(message, response)
         elif message.method == "OPTIONS":
@@ -1962,7 +1981,17 @@ class SIPClient:
         elif message.method == "NOTIFY":
             self._handle_notify(message)
         else:
-            debug("TODO: Add 400 Error on non processable request")
+            response = self.gen_response(
+                message, SIPStatus.NOT_IMPLEMENTED
+            )
+            self._send_request_response(message, response)
+            debug(
+                message.summary(),
+                "Unsupported SIP method "
+                + f"{message.method}; replied with "
+                + f"{int(SIPStatus.NOT_IMPLEMENTED)} "
+                + f"{SIPStatus.NOT_IMPLEMENTED.phrase}",
+            )
 
     def start(self) -> None:
         if self.NSD:
