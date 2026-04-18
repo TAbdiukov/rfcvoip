@@ -193,30 +193,30 @@ class RTPPacketManager:
         self.rebuilding = False
 
     def write(self, offset: int, data: bytes) -> None:
-        # TODO: Can this safely be changed to use context manager syntax?
-        self.bufferLock.acquire()
-        self.log[offset] = data
-        bufferloc = self.buffer.tell()
-        if offset < self.offset:
-            """
-            If the new timestamp is over 100,000 bytes before the
-            earliest, erase the buffer.  This will stop memory errors.
-            """
-            reset = abs(offset - self.offset) >= 100000
-            self.offset = offset
-            self.bufferLock.release()
-            """
-            Rebuilds the buffer if something before the earliest
-            timestamp comes in, this will stop overwritting.
-            """
-            self.rebuild(reset, offset, data)
-            return
-        offset = offset - self.offset
-        self.buffer.seek(offset, 0)
-        self.buffer.write(data)
-        self.buffer.seek(bufferloc, 0)
-        self.bufferLock.release()
+        rebuild_args = None
+        with self.bufferLock:
+            self.log[offset] = data
+            bufferloc = self.buffer.tell()
+            if offset < self.offset:
+                """
+                If the new timestamp is over 100,000 bytes before the
+                earliest, erase the buffer.  This will stop memory errors.
+                """
+                reset = abs(offset - self.offset) >= 100000
+                self.offset = offset
+                """
+                Rebuilds the buffer if something before the earliest
+                timestamp comes in, this will stop overwritting.
+                """
+                rebuild_args = (reset, offset, data)
+            else:
+                adjusted_offset = offset - self.offset
+                self.buffer.seek(adjusted_offset, 0)
+                self.buffer.write(data)
+                self.buffer.seek(bufferloc, 0)
 
+        if rebuild_args is not None:
+            self.rebuild(*rebuild_args)
 
 class RTPMessage:
     def __init__(self, data: bytes, assoc: Dict[int, PayloadType]):

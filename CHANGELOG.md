@@ -3,6 +3,7 @@
 
 ## 2.7.4+RFC
 
+- RTP: safe lock handling in RTPPacketManager.write()
 - VoIP: Ignore unsupported RTP/SAVP offers and reject invalid RTP audio port layouts before ringing.
 - SIP: ACK unmatched final INVITE responses after local call state is gone.
 - SIP: Fix unbounded retry/recursion in SIP deregistration
