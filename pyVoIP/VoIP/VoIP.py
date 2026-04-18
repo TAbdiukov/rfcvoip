@@ -240,18 +240,32 @@ class VoIPCall:
             + ",".join(f"{pt}:{codec}" for pt, codec in codecs.items()),
         )
 
-        for ii in range(len(request.body["c"])):
-            remote_ip = request.body["c"][ii]["address"]
-            c = RTP.RTPClient(
-                codecs,
-                ip,
-                port,
-                remote_ip,
-                baseport + ii,
-                self.sendmode,
-                dtmf=self.dtmf_callback,
+        # RTPClient owns one local UDP socket; do not bind it twice.
+        if any(
+            client.inIP == ip and client.inPort == port
+            for client in self.RTPClients
+        ):
+            debug(
+                f"Skipping duplicate RTP client for {self.call_id}",
+                "Skipping duplicate RTP client setup "
+                + f"call_id={self.call_id} local={ip}:{port}",
             )
-            self.RTPClients.append(c)
+            return
+
+        if not request.body.get("c"):
+            return
+
+        remote_ip = request.body["c"][0]["address"]
+        c = RTP.RTPClient(
+            codecs,
+            ip,
+            port,
+            remote_ip,
+            baseport,
+            self.sendmode,
+            dtmf=self.dtmf_callback,
+        )
+        self.RTPClients.append(c)
 
     def dtmfCallback(self, code: str) -> None:
         warnings.warn(
@@ -372,8 +386,6 @@ class VoIPCall:
         Generate m SDP attribute for answering originally and
         for re-negotiations.
         """
-        # TODO: this seems "dangerous" if for some reason sip server handles 2
-        # and more bindings it will cause duplicate RTP-Clients to spawn.
         m = {}
         for x in self.RTPClients:
             x.start()
@@ -620,7 +632,6 @@ class VoIPCall:
         for frame in data[1:]:
             mixed = audioop.add(mixed, frame, 1)
         return mixed
-
 
 class VoIPPhone:
     def __init__(
@@ -872,12 +883,6 @@ class VoIPPhone:
 
         if call_id in self.calls:
             debug("Re-negotiation detected!")
-            # TODO: this seems "dangerous" if for some reason sip server
-            # handles 2 and more bindings it will cause duplicate RTP-Clients
-            # to spawn.
-            # CallState.Ringing seems important here to prevent multiple
-            # answering and RTP-Client spawning. Find out when renegotiation
-            # is relevant.
             if self.calls[call_id].state != CallState.RINGING:
                 self.calls[call_id].renegotiate(request)
             return
