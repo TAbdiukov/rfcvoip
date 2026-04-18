@@ -164,4 +164,5 @@ listdump*
 *.db
 _meta_*.py
 _tmp_*.py
-
+*.patch
+*.diff

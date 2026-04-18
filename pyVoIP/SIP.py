@@ -6,6 +6,7 @@ from pyVoIP.util import acquired_lock_and_unblocked_socket
 from pyVoIP.VoIP.status import PhoneStatus
 import pyVoIP
 import hashlib
+import ipaddress
 import socket
 import random
 import re
@@ -1072,6 +1073,15 @@ class SIPClient:
         if transport:
             uri += f";transport={transport}"
         return uri
+
+
+    @staticmethod
+    def _sdp_address_type(address: str) -> str:
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            return "IP4"
+        return "IP6" if parsed.version == 6 else "IP4"
 
     def _registrar_uri(
         self,
@@ -2431,12 +2441,15 @@ class SIPClient:
         sendtype: "RTP.TransmitType",
     ) -> str:
         # Generate body first for content length
+        addr_type = self._sdp_address_type(self.myIP)
         body = "v=0\r\n"
-        # TODO: Check IPv4/IPv6
-        body += f"o=pyVoIP {sess_id} {int(sess_id)+2} IN IP4 {self.myIP}\r\n"
+        body += (
+            f"o=pyVoIP {sess_id} {int(sess_id)+2} "
+            + f"IN {addr_type} {self.myIP}\r\n"
+        )
+
         body += f"s=pyVoIP {pyVoIP.__version__}\r\n"
-        # TODO: Check IPv4/IPv6
-        body += f"c=IN IP4 {self.myIP}\r\n"
+        body += f"c=IN {addr_type} {self.myIP}\r\n"
         body += "t=0 0\r\n"
         for x in ms:
             # TODO: Check AVP mode from request
@@ -2507,11 +2520,15 @@ class SIPClient:
         call_id: str,
     ) -> str:
         # Generate body first for content length
+        addr_type = self._sdp_address_type(self.myIP)
         body = "v=0\r\n"
-        # TODO: Check IPv4/IPv6
-        body += f"o=pyVoIP {sess_id} {int(sess_id)+2} IN IP4 {self.myIP}\r\n"
+        body += (
+            f"o=pyVoIP {sess_id} {int(sess_id)+2} "
+            + f"IN {addr_type} {self.myIP}\r\n"
+        )
+
         body += f"s=pyVoIP {pyVoIP.__version__}\r\n"
-        body += f"c=IN IP4 {self.myIP}\r\n"
+        body += f"c=IN {addr_type} {self.myIP}\r\n"
         body += "t=0 0\r\n"
         for x in ms:
             # TODO: Check AVP mode from request

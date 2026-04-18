@@ -3,6 +3,8 @@
 
 ## 2.7.4+RFC
 
+- SIP: Do Check IPv4/IPv6
+- SIP&VoIP: If no codecs are compatible then send error to PBX
 - SIP: Fix unsupported SIP request handling
 - SIP: Fix missing dialog / transaction” TODO around inbound BYE and CANCEL.
 - SIP: Add outbound proxy support across REGISTER, INVITE, ACK, CANCEL, BYE, and SUBSCRIBE flows.

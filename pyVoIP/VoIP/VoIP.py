@@ -763,6 +763,34 @@ class VoIPPhone:
     def get_status(self) -> PhoneStatus:
         return self._status
 
+    def _has_compatible_audio_offer(self, request: SIP.SIPMessage) -> bool:
+        for media in request.body.get("m", []):
+            if media.get("type") != "audio":
+                continue
+
+            for method in media.get("methods", []):
+                try:
+                    codec = RTP.PayloadType(int(method))
+                except ValueError:
+                    try:
+                        codec_name = media["attributes"][method]["rtpmap"]["name"]
+                    except KeyError:
+                        continue
+                    try:
+                        codec = RTP.PayloadType(codec_name)
+                    except ValueError:
+                        continue
+
+                if codec not in pyVoIP.RTPCompatibleCodecs:
+                    continue
+                try:
+                    int(codec)
+                except Exception:
+                    continue
+                return True
+
+        return False
+
     def _callback_MSG_Invite(self, request: SIP.SIPMessage) -> None:
         call_id = request.headers["Call-ID"]
         debug(
@@ -787,6 +815,18 @@ class VoIPPhone:
             message = self.sip.gen_busy(request)
             self.sip.send_response(request, message)
         else:
+            if not self._has_compatible_audio_offer(request):
+                debug(
+                    request.summary(),
+                    "Rejecting INVITE with no compatible audio codec "
+                    + f"call_id={call_id}",
+                )
+                message = self.sip.gen_response(
+                    request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
+                )
+                self.sip.send_response(request, message)
+                return
+
             debug("New call!")
             sess_id = None
             while sess_id is None:
