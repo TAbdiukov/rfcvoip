@@ -2452,7 +2452,6 @@ class SIPClient:
         body += f"c=IN {addr_type} {self.myIP}\r\n"
         body += "t=0 0\r\n"
         for x in ms:
-            # TODO: Check AVP mode from request
             body += f"m=audio {x} RTP/AVP"
             for m in ms[x]:
                 body += f" {m}"
@@ -2531,7 +2530,6 @@ class SIPClient:
         body += f"c=IN {addr_type} {self.myIP}\r\n"
         body += "t=0 0\r\n"
         for x in ms:
-            # TODO: Check AVP mode from request
             body += f"m=audio {x} RTP/AVP"
             for m in ms[x]:
                 body += f" {m}"

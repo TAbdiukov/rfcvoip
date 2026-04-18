@@ -86,6 +86,9 @@ class VoIPCall:
                 self.connections += x["address_count"]
             for x in self.request.body["m"]:
                 if x["type"] == "audio":
+                    pr = x.get("protocol")
+                    if pr and pr != RTP.RTPProtocol.AVP:
+                        continue
                     self.audioPorts += x["port_count"]
                     audio.append(x)
                 elif x["type"] == "video":
@@ -116,6 +119,9 @@ class VoIPCall:
 
             for i in request.body["m"]:
                 if i["type"] == "video":
+                    continue
+                pr = i.get("protocol")
+                if pr and pr != RTP.RTPProtocol.AVP:
                     continue
                 assoc = {}
                 e = False
@@ -780,9 +786,37 @@ class VoIPPhone:
     def get_status(self) -> PhoneStatus:
         return self._status
 
+ 
+    def _has_assignable_audio_ports(self, request: SIP.SIPMessage) -> bool:
+        connections = 0
+        for connection in request.body.get("c", []):
+            connections += connection.get("address_count", 1)
+
+        audio_media = []
+        audio_ports = 0
+        for media in request.body.get("m", []):
+            if media.get("protocol") != RTP.RTPProtocol.AVP:
+                continue
+            if media.get("type") != "audio":
+                continue
+            audio_media.append(media)
+            audio_ports += media.get("port_count", 1)
+
+        if not audio_media:
+            return True
+
+        if connections == 0:
+            return False
+
+        audio_ports_adj = audio_ports / len(audio_media)
+        return audio_ports_adj == connections
+
+
     def _has_compatible_audio_offer(self, request: SIP.SIPMessage) -> bool:
         for media in request.body.get("m", []):
             if media.get("type") != "audio":
+                continue
+            if media.get("protocol") != RTP.RTPProtocol.AVP:
                 continue
 
             for method in media.get("methods", []):
@@ -855,6 +889,20 @@ class VoIPPhone:
                 )
                 self.sip.send_response(request, message)
                 return
+
+            if not self._has_assignable_audio_ports(request):
+                debug(
+                    request.summary(),
+                    "Rejecting INVITE with unassignable RTP audio ports "
+                    + f"call_id={call_id}",
+                )
+                message = self.sip.gen_response(
+                    request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
+                )
+                self.sip.send_response(request, message)
+                return
+
+
 
             if not self._has_compatible_audio_offer(request):
                 debug(
