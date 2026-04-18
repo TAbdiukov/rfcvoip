@@ -4,6 +4,7 @@ from typing import Callable, Deque, Dict, Optional, Union
 from collections import deque
 import audioop
 import io
+import ipaddress
 import pyVoIP
 import random
 import socket
@@ -330,6 +331,7 @@ class RTPClient:
         self.inPort = inPort
         self.outIP = outIP
         self.outPort = outPort
+        self._socket_family = self._select_socket_family(inIP, outIP)
 
         self.dtmf = dtmf
 
@@ -379,7 +381,10 @@ class RTPClient:
     ) -> None:
         packet = self._build_rtp_packet(payload_type, payload, marker=marker, timestamp=timestamp)
         try:
-            self.sout.sendto(packet, (self.outIP, self.outPort))
+            self.sout.sendto(
+                packet,
+                self._socket_address(self.outIP, self.outPort),
+            )
         except OSError:
             warnings.warn(
                 "RTP Packet failed to send!",
@@ -402,6 +407,36 @@ class RTPClient:
             (duration >> 8) & 0xFF,
             duration & 0xFF,
         ])
+
+    @staticmethod
+    def _ip_version(address: str) -> Optional[int]:
+        try:
+            return ipaddress.ip_address(address).version
+        except ValueError:
+            return None
+
+    @classmethod
+    def _select_socket_family(cls, inIP: str, outIP: str):
+        in_version = cls._ip_version(inIP)
+        out_version = cls._ip_version(outIP)
+
+        if (
+            in_version is not None
+            and out_version is not None
+            and in_version != out_version
+        ):
+            raise RTPParseError(
+                f"RTP local address {inIP!r} and remote address {outIP!r} "
+                + "use different IP versions."
+            )
+
+        version = in_version or out_version or 4
+        return socket.AF_INET6 if version == 6 else socket.AF_INET
+
+    def _socket_address(self, host: str, port: int):
+        if self._socket_family == socket.AF_INET6:
+            return (host, port, 0, 0)
+        return (host, port)
 
     def sendDTMF(self, code: str) -> bool:
         warnings.warn(
@@ -486,11 +521,11 @@ class RTPClient:
         return True
 
     def start(self) -> None:
-        self.sin = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sin = socket.socket(self._socket_family, socket.SOCK_DGRAM)
         # Some systems just reply to the port they receive from instead of
         # listening to the SDP.
         self.sout = self.sin
-        self.sin.bind((self.inIP, self.inPort))
+        self.sin.bind(self._socket_address(self.inIP, self.inPort))
         self.sin.setblocking(False)
 
         r = Timer(0, self.recv)

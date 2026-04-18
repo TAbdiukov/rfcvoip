@@ -3,6 +3,7 @@
 
 ## 2.7.4+RFC
 
+- pyVOIP: Overall improve IPv4/IPv6 RTP address-family handling
 - SIP: Do Check IPv4/IPv6
 - SIP&VoIP: If no codecs are compatible then send error to PBX
 - SIP: Fix unsupported SIP request handling

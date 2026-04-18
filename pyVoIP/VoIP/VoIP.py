@@ -219,12 +219,12 @@ class VoIPCall:
         )
 
         for ii in range(len(request.body["c"])):
-            # TODO: Check IPv4/IPv6
+            remote_ip = request.body["c"][ii]["address"]
             c = RTP.RTPClient(
                 codecs,
                 ip,
                 port,
-                request.body["c"][ii]["address"],
+                remote_ip,
                 baseport + ii,
                 self.sendmode,
                 dtmf=self.dtmf_callback,
@@ -791,6 +791,18 @@ class VoIPPhone:
 
         return False
 
+    def _has_compatible_rtp_address_family(
+        self, request: SIP.SIPMessage
+    ) -> bool:
+        local_address_type = SIP.SIPClient._sdp_address_type(self.myIP)
+        for connection in request.body.get("c", []):
+            remote_address_type = str(
+                connection.get("address_type", "")
+            ).upper()
+            if remote_address_type != local_address_type:
+                return False
+        return True
+
     def _callback_MSG_Invite(self, request: SIP.SIPMessage) -> None:
         call_id = request.headers["Call-ID"]
         debug(
@@ -815,6 +827,18 @@ class VoIPPhone:
             message = self.sip.gen_busy(request)
             self.sip.send_response(request, message)
         else:
+            if not self._has_compatible_rtp_address_family(request):
+                debug(
+                    request.summary(),
+                    "Rejecting INVITE with incompatible RTP address family "
+                    + f"call_id={call_id}",
+                )
+                message = self.sip.gen_response(
+                    request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
+                )
+                self.sip.send_response(request, message)
+                return
+
             if not self._has_compatible_audio_offer(request):
                 debug(
                     request.summary(),
@@ -876,6 +900,37 @@ class VoIPPhone:
             return
         # TODO: Somehow never is reached. Find out if you have a network
         # issue here or your invite is wrong.
+        if not self._has_compatible_rtp_address_family(request):
+            debug(
+                request.summary(),
+                "Ending call after OK with incompatible RTP address family "
+                + f"call_id={call_id}",
+            )
+            self._send_ack(request)
+            try:
+                self.sip.bye(request)
+            except Exception as ex:
+                debug(
+                    f"Failed to send BYE after RTP address mismatch: {ex}",
+                    f"Failed to send BYE for Call-ID={call_id}: {ex}",
+                )
+            call = self.calls[call_id]
+            for rtp in call.RTPClients:
+                try:
+                    rtp.stop()
+                except Exception:
+                    pass
+            call.state = CallState.ENDED
+            call._finalize_ended_call()
+            warnings.warn(
+                "Remote SDP uses an RTP address family that does not match "
+                + "myIP. CallState set to CallState.ENDED. "
+                + f"Call-ID={call_id}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
+
         self.calls[call_id].answered(request)
         debug("Answered")
         self._send_ack(request)
