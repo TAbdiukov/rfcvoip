@@ -397,6 +397,7 @@ class VoIPCall:
                 range(len(request.body["c"])), self.RTPClients
             ):
                 client.outIP = request.body["c"][ii]["address"]
+                 # TODO: Check IPv4/IPv6
                 client.outPort = i["port"] + ii
 
     def answer(self) -> None:
