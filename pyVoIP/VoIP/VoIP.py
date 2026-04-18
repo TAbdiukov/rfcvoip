@@ -368,6 +368,10 @@ class VoIPCall:
         return self.gen_ms()
 
     def gen_ms(self) -> Dict[int, Dict[int, RTP.PayloadType]]:
+        """
+        Generate m SDP attribute for answering originally and
+        for re-negotiations.
+        """
         # TODO: this seems "dangerous" if for some reason sip server handles 2
         # and more bindings it will cause duplicate RTP-Clients to spawn.
         m = {}
@@ -378,7 +382,10 @@ class VoIPCall:
         return m
 
     def renegotiate(self, request: SIP.SIPMessage) -> None:
-        m = self.gen_ms()
+        m = {}
+        for x in self.RTPClients:
+            m[x.inPort] = x.assoc
+
         message = self.sip.gen_answer(
             request, self.session_id, m, self.sendmode
         )

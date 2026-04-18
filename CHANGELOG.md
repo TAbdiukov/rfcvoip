@@ -3,6 +3,7 @@
 
 ## 2.7.4+RFC
 
+- VoIP: Safer renegotiation for service recovery
 - VoIP: invalid RTP/media port layouts ought to fail cleanly
 - SIP: BYE dialog routing / connected-client handling
 - SIP: Implement REGISTER/DEREGISTER 400 Bad Request handling
