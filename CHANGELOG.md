@@ -3,6 +3,8 @@
 
 ## 2.7.5+RFC
 
+- VoIP: Handle final INVITE failure received while call is not dialing
+- RTP: IPv4/IPv6 address-family validation during VoIP renegotiation.
 - RTP: avoid duplicate RTP clients / duplicate local RTP socket binds during SDP RTP setup.
 - SIP: Improve SIP registration response reliability
 - VoIP: Safer renegotiation for service recovery

@@ -497,11 +497,10 @@ class VoIPCall:
         return self.not_found(request)
 
     def not_found(self, request: SIP.SIPMessage) -> None:
-        if self.state != CallState.DIALING:
+        if self.state not in (CallState.DIALING, CallState.RINGING):
             debug(
-                "TODO: 500 Error, received a not found response for a "
-                + f"call not in the dailing state.  Call: {self.call_id}, "
-                + f"Call State: {self.state}"
+                "Ignoring late not found response for call "
+                + f"{self.call_id} in state {self.state}"
             )
             return
 
@@ -522,11 +521,10 @@ class VoIPCall:
         warnings.simplefilter("default")
 
     def unavailable(self, request: SIP.SIPMessage) -> None:
-        if self.state != CallState.DIALING:
+        if self.state not in (CallState.DIALING, CallState.RINGING):
             debug(
-                "TODO: 500 Error, received an unavailable response for a "
-                + f"call not in the dailing state.  Call: {self.call_id}, "
-                + f"Call State: {self.state}"
+                "Ignoring late unavailable response for call "
+                + f"{self.call_id} in state {self.state}"
             )
             return
 
