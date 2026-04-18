@@ -1,8 +1,10 @@
 # Changelog
 
 
-## 2.7.4+RFC
+## 2.7.5+RFC
 
+- Unittests
+- Regression rollback: multiline def .. string descriptions
 - SIP: Improve SIP registration response reliability
 - VoIP: Safer renegotiation for service recovery
 - VoIP: invalid RTP/media port layouts ought to fail cleanly
@@ -19,7 +21,10 @@
 - SIP&VoIP: If no codecs are compatible then send error to PBX
 - SIP: Fix unsupported SIP request handling
 - SIP: Fix missing dialog / transaction around inbound BYE and CANCEL.
-- SIP: Add outbound proxy support across REGISTER, INVITE, ACK, CANCEL, BYE, and SUBSCRIBE flows.
+
+## 2.7.4+RFC
+
+- SIP: Add outbound PROXY support across REGISTER, INVITE, ACK, CANCEL, BYE, and SUBSCRIBE flows.
 - SIP: Route inbound INVITE responses (180/200/486/etc.) back to the requester instead of always using the configured registrar target.
 - VoIP: Expose proxy configuration on `VoIPPhone` via `proxy` / `proxyPort`.
 - Docs: Add README example for outbound proxy usage.
