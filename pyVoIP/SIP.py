@@ -2970,26 +2970,32 @@ class SIPClient:
         )
 
     def deregister(self) -> bool:
-        try:
-            with self.recvLock:
-                deregistered = self.__deregister()
-            if not deregistered:
-                debug("DEREGISTERATION FAILED")
-                return False
-            else:
-                self.phone._status = PhoneStatus.INACTIVE
+        attempts = 0
+        max_attempts = max(1, pyVoIP.REGISTER_FAILURE_THRESHOLD)
 
-            return deregistered
-        except BaseException as e:
-            debug(f"DEREGISTERATION ERROR: {e}")
-            # TODO: a maximum tries check should be implemented otherwise a
-            # RecursionError will throw
-            if isinstance(e, RetryRequiredError):
-                time.sleep(5)
-                return self.deregister()
-            if type(e) is OSError:
-                raise
-            return False
+        while attempts < max_attempts:
+            try:
+                with self.recvLock:
+                    deregistered = self.__deregister()
+                if not deregistered:
+                    debug("DEREGISTERATION FAILED")
+                    return False
+                else:
+                    self.phone._status = PhoneStatus.INACTIVE
+
+                return deregistered
+            except BaseException as e:
+                debug(f"DEREGISTERATION ERROR: {e}")
+                if isinstance(e, RetryRequiredError):
+                    attempts += 1
+                    if attempts < max_attempts:
+                        time.sleep(5)
+                        continue
+                if type(e) is OSError:
+                    raise
+                return False
+
+        return False
 
     def __deregister(self) -> bool:
         self.phone._status = PhoneStatus.DEREGISTERING

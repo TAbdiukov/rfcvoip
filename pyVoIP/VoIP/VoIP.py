@@ -165,15 +165,32 @@ class VoIPCall:
 
                 # Make sure codecs are compatible.
                 codecs = {}
+                has_transmittable_codec = False
                 for m in assoc:
                     if assoc[m] in pyVoIP.RTPCompatibleCodecs:
                         codecs[m] = assoc[m]
-                # TODO: If no codecs are compatible then send error to PBX.
+                        try:
+                            int(assoc[m])
+                        except Exception:
+                            pass
+                        else:
+                            has_transmittable_codec = True
+
+                if not has_transmittable_codec:
+                    continue
+
+                if not codecs:
+                    continue
 
                 port = self.phone.request_port()
                 self.assignedPorts[port] = codecs
                 self.create_rtp_clients(
                     codecs, self.myIP, port, request, i["port"]
+                )
+
+            if len(self.assignedPorts) == 0:
+                raise RTP.RTPParseError(
+                    "No transmittable audio codec negotiated."
                 )
         elif callstate == CallState.DIALING:
             if ms is None:
@@ -860,7 +877,23 @@ class VoIPPhone:
                     sess_id = proposed
             message = self.sip.gen_ringing(request)
             self.sip.send_response(request, message)
-            self._create_Call(request, sess_id)
+            try:
+                self._create_Call(request, sess_id)
+            except RTP.RTPParseError as ex:
+                if sess_id in self.session_ids:
+                    self.session_ids.remove(sess_id)
+                self.release_ports()
+                debug(
+                    request.summary(),
+                    "Rejecting INVITE after codec negotiation failed "
+                    + f"call_id={call_id}: {ex}",
+                )
+                message = self.sip.gen_response(
+                    request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
+                )
+                self.sip.send_response(request, message)
+                return
+
             try:
                 t = Timer(1, self.callCallback, [self.calls[call_id]])
                 t.name = f"Phone Call: {call_id}"
