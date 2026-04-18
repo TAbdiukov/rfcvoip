@@ -3,8 +3,7 @@
 
 ## 2.7.5+RFC
 
-- Unit tests
-- Regression rollback: multiline def .. string descriptions
+- RTP: avoid duplicate RTP clients / duplicate local RTP socket binds during SDP RTP setup.
 - SIP: Improve SIP registration response reliability
 - VoIP: Safer renegotiation for service recovery
 - VoIP: invalid RTP/media port layouts ought to fail cleanly
@@ -21,6 +20,8 @@
 - SIP&VoIP: If no codecs are compatible then send error to PBX
 - SIP: Fix unsupported SIP request handling
 - SIP: Fix missing dialog / transaction around inbound BYE and CANCEL.
+- Regression rollback: multiline def .. string descriptions
+- Unit tests
 
 ## 2.7.4+RFC
 
