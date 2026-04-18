@@ -3,6 +3,7 @@
 
 ## 2.7.4+RFC
 
+- SIP: Implement and wire "Supported" header support
 - RTP: safe lock handling in RTPPacketManager.write()
 - VoIP: Ignore unsupported RTP/SAVP offers and reject invalid RTP audio port layouts before ringing.
 - SIP: ACK unmatched final INVITE responses after local call state is gone.

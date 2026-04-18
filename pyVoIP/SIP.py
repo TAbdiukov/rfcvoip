@@ -521,8 +521,12 @@ class SIPMessage:
                 "check": data.split(" ")[0],
                 "method": data.split(" ")[1],
             }
-        elif header == "Allow" or header == "Supported":
+        elif header == "Allow":
             self.headers[header] = data.split(", ")
+        elif header == "Supported":
+            self.headers[header] = [
+                item.strip() for item in data.split(",") if item.strip()
+            ]
         elif header == "Content-Length":
             self.headers[header] = int(data)
         elif header in (
@@ -1267,6 +1271,10 @@ class SIPClient:
             self.response_target(request),
         )
 
+    @staticmethod
+    def _gen_supported_header() -> str:
+        return "Supported:\r\n"
+
     def gen_response(self, request: SIPMessage, status: SIPStatus) -> str:
         response = f"SIP/2.0 {int(status)} {status.phrase}\r\n"
         response += self._gen_response_via_header(request)
@@ -1819,6 +1827,7 @@ class SIPClient:
         if contact_line:
             response += contact_line + "\r\n"
         response += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        response += self._gen_supported_header()
         response += 'Warning: 399 GS "Unable to accept call"\r\n'
         response += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
         response += "Content-Length: 0\r\n\r\n"
@@ -2091,7 +2100,6 @@ class SIPClient:
         return self.gen_sip_version_not_supported(request)
 
     def gen_sip_version_not_supported(self, request: SIPMessage) -> str:
-        # TODO: Add Supported
         response = "SIP/2.0 505 SIP Version Not Supported\r\n"
         response += self._gen_response_via_header(request)
         response += (
@@ -2109,6 +2117,7 @@ class SIPClient:
         )
         response += f"Contact: {request.headers['Contact']}\r\n"
         response += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        response += self._gen_supported_header()
         response += 'Warning: 399 GS "Unable to accept call"\r\n'
         response += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
         response += "Content-Length: 0\r\n\r\n"
@@ -2344,8 +2353,8 @@ class SIPClient:
             + f"{request.headers['CSeq']['method']}\r\n"
         )
         response += f"Contact: {request.headers['Contact']}\r\n"
-        # TODO: Add Supported
         response += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        response += self._gen_supported_header()
         response += 'Warning: 399 GS "Unable to accept call"\r\n'
         response += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
         response += "Content-Length: 0\r\n\r\n"
@@ -2409,8 +2418,8 @@ class SIPClient:
             + f"{request.headers['CSeq']['method']}\r\n"
         )
         regRequest += f"Contact: {request.headers['Contact']}\r\n"
-        # TODO: Add Supported
         regRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        regRequest += self._gen_supported_header()
         regRequest += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
         regRequest += "Content-Length: 0\r\n\r\n"
 
@@ -2483,8 +2492,8 @@ class SIPClient:
             "Contact: "
             + f"<sip:{self.username}@{self.myIP}:{self.myPort}>\r\n"
         )
-        # TODO: Add Supported
         regRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        regRequest += self._gen_supported_header()
         regRequest += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
         regRequest += "Content-Type: application/sdp\r\n"
         regRequest += f"Content-Length: {len(body)}\r\n\r\n"
