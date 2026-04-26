@@ -162,7 +162,6 @@ class PayloadType(Enum):
     EVENT = "telephone-event", 8000, 0, "telephone-event"
     UNKNOWN = "UNKNOWN", 0, 0, "UNKNOWN CODEC"
 
-
 _AUDIO_PAYLOAD_TYPES = frozenset(
     (
         PayloadType.PCMU,
