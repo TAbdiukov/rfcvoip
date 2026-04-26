@@ -2,7 +2,9 @@
 
 ## 2.7.6+RFC
 
+- SDP: Implement structural SDP b= bandwidth handling
 - VoIP: Fix an outbound INVITE race where final SIP responses could arrive before the call object was registered (Real race encountered)
+- Misc: Fix typos and clearer language
 
 ## 2.7.5+RFC
 

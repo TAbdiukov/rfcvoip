@@ -174,8 +174,15 @@ class VoIPCall:
                 # Make sure codecs are compatible.
                 codecs = {}
                 has_transmittable_codec = False
+                session_bandwidth = request.body.get("b", [])
+                media_bandwidth = i.get("bandwidth", [])
+
                 for m in assoc:
-                    if assoc[m] in pyVoIP.RTPCompatibleCodecs:
+                    if assoc[m] in pyVoIP.RTPCompatibleCodecs and SIP.codec_bandwidth_supported(
+                        assoc[m],
+                        session_bandwidth=session_bandwidth,
+                        media_bandwidth=media_bandwidth,
+                    ):
                         codecs[m] = assoc[m]
                         try:
                             int(assoc[m])
@@ -498,8 +505,32 @@ class VoIPCall:
                             "RTP Payload type could not be derived from SDP."
                         )
 
+            codecs = {}
+            has_transmittable_codec = False
+            session_bandwidth = request.body.get("b", [])
+            media_bandwidth = i.get("bandwidth", [])
+            for payload_type, codec in assoc.items():
+                if codec not in pyVoIP.RTPCompatibleCodecs:
+                    continue
+                if not SIP.codec_bandwidth_supported(
+                    codec,
+                    session_bandwidth=session_bandwidth,
+                    media_bandwidth=media_bandwidth,
+                ):
+                    continue
+                codecs[payload_type] = codec
+                try:
+                    int(codec)
+                except Exception:
+                    pass
+                else:
+                    has_transmittable_codec = True
+
+            if not has_transmittable_codec:
+                continue
+
             self.create_rtp_clients(
-                assoc, self.myIP, self.port, request, i["port"]
+                codecs, self.myIP, self.port, request, i["port"]
             )
 
         for x in self.RTPClients:
@@ -948,6 +979,12 @@ class VoIPPhone:
 
                 if codec not in pyVoIP.RTPCompatibleCodecs:
                     continue
+                if not SIP.codec_bandwidth_supported(
+                    codec,
+                    session_bandwidth=request.body.get("b", []),
+                    media_bandwidth=media.get("bandwidth", []),
+                ):
+                    continue
                 try:
                     int(codec)
                 except Exception:
@@ -1116,6 +1153,39 @@ class VoIPPhone:
                 "Remote SDP uses an RTP address family that does not match "
                 + "myIP. CallState set to CallState.ENDED. "
                 + f"Call-ID={call_id}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
+
+        if not self._has_compatible_audio_offer(request):
+            debug(
+                request.summary(),
+                "Ending call after OK with no compatible audio codec "
+                + "within SDP bandwidth limits "
+                + f"call_id={call_id}",
+            )
+            self._send_ack(request)
+            try:
+                self.sip.bye(request)
+            except Exception as ex:
+                debug(
+                    f"Failed to send BYE after SDP bandwidth mismatch: {ex}",
+                    f"Failed to send BYE for Call-ID={call_id}: {ex}",
+                )
+
+            call = self.calls[call_id]
+            for rtp in call.RTPClients:
+                try:
+                    rtp.stop()
+                except Exception:
+                    pass
+            call.state = CallState.ENDED
+            call._finalize_ended_call()
+            warnings.warn(
+                "Remote SDP does not offer a compatible audio codec that "
+                + "fits its SDP bandwidth limits. CallState set to "
+                + f"CallState.ENDED. Call-ID={call_id}.",
                 RuntimeWarning,
                 stacklevel=2,
             )

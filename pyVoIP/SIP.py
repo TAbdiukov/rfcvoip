@@ -26,6 +26,7 @@ __all__ = [
     "InvalidAccountInfoError",
     "SIPClient",
     "codec_support_report",
+    "codec_bandwidth_supported",
     "SIPMessage",
     "SIPMessageType",
     "SIPParseError",
@@ -53,6 +54,62 @@ class SIPRequestError(Exception):
 
 class RetryRequiredError(Exception):
     pass
+
+_SDP_BANDWIDTH_UNITS = {
+    # RFC 4566 defines CT/AS values in kilobits per second.
+    "CT": "kbps",
+    "AS": "kbps",
+    # RFC 3890 commonly appears in SIP SDP for transport independent bitrate.
+    "TIAS": "bps",
+    # RTCP sender/receiver bandwidth modifiers; tracked but not codec limits.
+    "RS": "bps",
+    "RR": "bps",
+}
+
+_SDP_MEDIA_BANDWIDTH_LIMIT_TYPES = {"AS", "TIAS"}
+
+
+def _parse_sdp_bandwidth(data: str) -> Dict[str, Any]:
+    """Parse an SDP b= line value into a normalized dictionary.
+
+    SDP allows multiple b= lines, and their scope depends on where the line
+    appears. The caller adds the ``scope`` field once it knows whether this
+    line belongs to the session or the current media block.
+    """
+    if ":" not in data:
+        raise SIPParseError(f"Malformed SDP bandwidth line: b={data!r}")
+
+    bw_type, raw_bandwidth = data.split(":", 1)
+    bw_type = bw_type.strip().upper()
+    raw_bandwidth = raw_bandwidth.strip()
+    if not bw_type or not raw_bandwidth:
+        raise SIPParseError(f"Malformed SDP bandwidth line: b={data!r}")
+
+    try:
+        bandwidth = int(raw_bandwidth)
+    except ValueError as ex:
+        raise SIPParseError(
+            f"SDP bandwidth value must be an integer: b={data!r}"
+        ) from ex
+
+    if bandwidth < 0:
+        raise SIPParseError(
+            f"SDP bandwidth value cannot be negative: b={data!r}"
+        )
+
+    unit = _SDP_BANDWIDTH_UNITS.get(bw_type, "unknown")
+    bits_per_second = None
+    if unit == "kbps":
+        bits_per_second = bandwidth * 1000
+    elif unit == "bps":
+        bits_per_second = bandwidth
+
+    return {
+        "type": bw_type,
+        "bandwidth": bandwidth,
+        "unit": unit,
+        "bits_per_second": bits_per_second,
+    }
 
 
 @dataclass
@@ -675,15 +732,20 @@ class SIPMessage:
             elif header == "b":
                 # SDP 5.8 Bandwidth
                 # b=<bwtype>:<bandwidth>
-                # A bwtype of CT means Conference Total between all medias
-                # and all devices in the conference.
-                # A bwtype of AS means Applicaton Specific total for this
-                # media and this device.
-                # The bandwidth is given in kilobits per second.
-                # As this was written in 2006, this could be Kibibits.
-                # TODO: Implement Bandwidth restrictions
-                d = data.split(":")
-                self.body[header] = {"type": d[0], "bandwidth": d[1]}
+                #
+                # b= is scoped by position: before the first m= line it is a
+                # session-level limit; after an m= line it belongs to that
+                # media description. Preserve multiple lines instead of
+                # overwriting earlier restrictions.
+                bandwidth = _parse_sdp_bandwidth(data)
+                if self.body.get("m"):
+                    bandwidth["scope"] = "media"
+                    self.body["m"][-1].setdefault("bandwidth", []).append(
+                        bandwidth
+                    )
+                else:
+                    bandwidth["scope"] = "session"
+                    self.body.setdefault("b", []).append(bandwidth)
             elif header == "t":
                 # SDP 5.9 Timing
                 # t=<start-time> <stop-time>
@@ -744,6 +806,7 @@ class SIPMessage:
                         "port_count": count,
                         "protocol": pyVoIP.RTP.RTPProtocol(d[2]),
                         "methods": methods,
+                        "bandwidth": [],
                         "attributes": {},
                     }
                 )
@@ -947,11 +1010,95 @@ def _safe_int(value: Any) -> Optional[int]:
 def _protocol_value(protocol: Any) -> str:
     return str(getattr(protocol, "value", protocol))
 
+def _bandwidths_to_list(value: Any) -> List[Dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        return [dict(value)]
+    if isinstance(value, list):
+        return [dict(item) for item in value if isinstance(item, dict)]
+    return []
+
+
+def _enforceable_bandwidth_limit_bps(
+    session_bandwidth: Any = None,
+    media_bandwidth: Any = None,
+) -> Optional[int]:
+    """Return the strictest SDP media bitrate limit we can safely enforce.
+
+    CT is intentionally not enforced here because it describes conference total
+    bandwidth, not a specific codec payload cap. RS/RR describe RTCP sender and
+    receiver bandwidth, so they are also not codec payload caps.
+    """
+    limits: List[int] = []
+    for bandwidth in _bandwidths_to_list(session_bandwidth) + _bandwidths_to_list(
+        media_bandwidth
+    ):
+        bw_type = str(bandwidth.get("type", "")).upper()
+        if bw_type not in _SDP_MEDIA_BANDWIDTH_LIMIT_TYPES:
+            continue
+
+        limit = _safe_int(bandwidth.get("bits_per_second"))
+        if limit is not None:
+            limits.append(limit)
+
+    return min(limits) if limits else None
+
+
+def _codec_required_bandwidth_bps(codec: Any) -> Optional[int]:
+    """Return PyVoIP's payload bitrate requirement for known codecs.
+
+    PyVoIP currently transmits G.711 PCMU/PCMA as 8-bit samples at 8 kHz,
+    which needs 64 kbit/s of payload bandwidth. telephone-event is not a
+    continuous audio codec, so it has no fixed stream bandwidth requirement.
+    """
+    try:
+        if codec in (pyVoIP.RTP.PayloadType.PCMU, pyVoIP.RTP.PayloadType.PCMA):
+            channels = max(1, int(codec.channel or 1))
+            return int(codec.rate) * channels * 8
+    except Exception:
+        return None
+    return None
+
+
+def codec_bandwidth_supported(
+    codec: Any,
+    *,
+    session_bandwidth: Any = None,
+    media_bandwidth: Any = None,
+) -> bool:
+    """Return whether an SDP bandwidth limit can carry ``codec``.
+
+    Unknown or non-enforceable bandwidth modifiers are treated as compatible;
+    only clear AS/TIAS caps below a known codec's payload bitrate reject it.
+    """
+    required = _codec_required_bandwidth_bps(codec)
+    limit = _enforceable_bandwidth_limit_bps(
+        session_bandwidth=session_bandwidth,
+        media_bandwidth=media_bandwidth,
+    )
+    return required is None or limit is None or limit >= required
+
+
+def _bandwidth_context(
+    session_bandwidth: Any = None,
+    media_bandwidth: Any = None,
+    codec: Any = None,
+) -> Dict[str, Any]:
+    return {
+        "session": _bandwidths_to_list(session_bandwidth),
+        "media": _bandwidths_to_list(media_bandwidth),
+        "limit_bps": _enforceable_bandwidth_limit_bps(
+            session_bandwidth=session_bandwidth,
+            media_bandwidth=media_bandwidth,
+        ),
+        "required_bps": _codec_required_bandwidth_bps(codec),
+    }
+
 
 def _media_protocol_supported(media: Dict[str, Any]) -> bool:
     protocol = media.get("protocol")
     return protocol in (pyVoIP.RTP.RTPProtocol.AVP, "RTP/AVP")
-
 
 def _fmtp_settings(attributes: Dict[str, Any]) -> List[str]:
     fmtp = attributes.get("fmtp", {})
@@ -959,7 +1106,6 @@ def _fmtp_settings(attributes: Dict[str, Any]) -> List[str]:
         settings = fmtp.get("settings", [])
         return [str(setting) for setting in settings]
     return []
-
 
 def _unknown_codec_info(
     *,
@@ -970,6 +1116,8 @@ def _unknown_codec_info(
     channels: Optional[int],
     fmtp: List[str],
     source: str,
+    session_bandwidth: Any = None,
+    media_bandwidth: Any = None,
 ) -> Dict[str, Any]:
     return {
         "media_type": media.get("type"),
@@ -983,14 +1131,21 @@ def _unknown_codec_info(
         "codec_supported": False,
         "protocol_supported": _media_protocol_supported(media),
         "supported": False,
+        "bandwidth_supported": True,
+        "bandwidth": _bandwidth_context(
+            session_bandwidth=session_bandwidth,
+            media_bandwidth=media_bandwidth,
+        ),
         "source": source,
         "protocol": _protocol_value(media.get("protocol")),
     }
 
 
 def _codec_info_from_media(
-    media: Dict[str, Any], method: str
+    media: Dict[str, Any], method: str, *, session_bandwidth: Any = None
 ) -> Dict[str, Any]:
+    media_bandwidth = _bandwidths_to_list(media.get("bandwidth", []))
+    session_bandwidth = _bandwidths_to_list(session_bandwidth)
     attributes = media.get("attributes", {}).get(str(method), {})
     if not isinstance(attributes, dict):
         attributes = {}
@@ -1033,17 +1188,24 @@ def _codec_info_from_media(
             channels=channels,
             fmtp=fmtp,
             source=source,
+            session_bandwidth=session_bandwidth,
+            media_bandwidth=media_bandwidth,
         )
 
     codec_supported = codec in getattr(pyVoIP, "RTPCompatibleCodecs", [])
     protocol_supported = _media_protocol_supported(media)
+    bandwidth_supported = codec_bandwidth_supported(
+        codec,
+        session_bandwidth=session_bandwidth,
+        media_bandwidth=media_bandwidth,
+    )
     info = pyVoIP.RTP.codec_info(
         codec,
         payload_type=payload_type,
         media_type=media.get("type"),
         fmtp=fmtp,
         source=source,
-        supported=codec_supported and protocol_supported,
+        supported=codec_supported and protocol_supported and bandwidth_supported,
     )
     info["codec_supported"] = codec_supported
     info["protocol_supported"] = protocol_supported
@@ -1051,6 +1213,13 @@ def _codec_info_from_media(
         info["rate"] = rate
     if channels is not None:
         info["channels"] = channels
+    info["bandwidth_supported"] = bandwidth_supported
+    info["required_bandwidth_bps"] = _codec_required_bandwidth_bps(codec)
+    info["bandwidth"] = _bandwidth_context(
+        session_bandwidth=session_bandwidth,
+        media_bandwidth=media_bandwidth,
+        codec=codec,
+    )
     info["protocol"] = _protocol_value(media.get("protocol"))
     return info
 
@@ -1064,18 +1233,21 @@ def sip_supported_codecs(
     ``media_type`` defaults to ``"audio"``.  Pass ``None`` to return codecs
     from every media section in the SDP body.
     """
+    session_bandwidth = _bandwidths_to_list(message.body.get("b", []))
     codecs = []
     for media in message.body.get("m", []):
         if media_type is not None and media.get("type") != media_type:
             continue
         for method in media.get("methods", []):
-            codecs.append(_codec_info_from_media(media, str(method)))
+            codecs.append(
+                _codec_info_from_media(
+                    media, str(method), session_bandwidth=session_bandwidth
+                )
+            )
     return codecs
-
 
 def _codec_name_key(codec: Dict[str, Any]) -> str:
     return str(codec.get("name") or "").lower()
-
 
 def codec_support_report(
     message: SIPMessage,
