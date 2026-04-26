@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.7.6+RFC
+
+- VoIP: Fix an outbound INVITE race where final SIP responses could arrive before the call object was registered (Real race encountered)
 
 ## 2.7.5+RFC
 

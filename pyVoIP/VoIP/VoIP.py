@@ -714,6 +714,10 @@ class VoIPPhone:
         self.threads: List[Timer] = []
         # Allows you to find call ID based off thread.
         self.threadLookup: Dict[Timer, str] = {}
+        # Protects the short window between SIPClient.invite() returning and
+        # the corresponding VoIPCall being inserted into self.calls.  A final
+        # INVITE response can arrive in that window via the receive loop.
+        self._outbound_call_creation_depth = 0
         self.sip = SIP.SIPClient(
             server,
             port,
@@ -729,10 +733,67 @@ class VoIPPhone:
             proxy_port=self.proxyPort,
         )
 
+    def _queue_unmatched_final_invite_response(
+        self,
+        request: SIP.SIPMessage,
+    ) -> bool:
+        """Queue a final outbound INVITE response received during call setup.
+
+        Outbound calls are created in two phases:
+
+        1. SIPClient.invite() sends the INVITE and returns the request/call-id.
+        2. VoIPPhone.call() creates VoIPCall and stores it in self.calls.
+
+        If the receive loop sees a final response during that small gap, the
+        response would otherwise be treated as an unknown call.  Queue it so
+        VoIPPhone.call() can apply it immediately after the call object exists.
+        """
+        if self._outbound_call_creation_depth <= 0:
+            return False
+
+        call_id = str(request.headers.get("Call-ID", "") or "")
+        if not call_id:
+            return False
+
+        # Avoid queueing stale/unrelated responses where possible.  SIPClient
+        # records the active outbound INVITE Call-ID in last_invite_debug.
+        invite_debug_snapshot = getattr(
+            self.sip,
+            "invite_debug_snapshot",
+            lambda: {},
+        )()
+        active_invite_call_id = invite_debug_snapshot.get("call_id")
+        if active_invite_call_id and active_invite_call_id != call_id:
+            return False
+
+        self.sip.pending_invite_responses[call_id] = request
+        debug(
+            request.summary(),
+            "Queued final INVITE response received before call object "
+            + f"was registered call_id={call_id} "
+            + f"status={int(request.status)} {request.status.phrase}",
+        )
+
+        # ACK final INVITE responses promptly to stop retransmissions.  The
+        # same SIPMessage object is later replayed through callback(), and
+        # _send_ack() is idempotent for that object.
+        try:
+            self._send_ack(request)
+        except Exception as ex:
+            debug(
+                f"Failed to ACK queued final INVITE response: {ex}",
+                f"Failed to ACK queued final INVITE response "
+                + f"Call-ID={call_id}: {ex}",
+            )
+        return True
+
     def _send_ack(self, request: SIP.SIPMessage) -> None:
+        if getattr(request, "_pyvoip_ack_sent", False):
+            return
         ack = self.sip.gen_ack(request)
         host, port = self.sip.ack_target(request)
         self.sip.out.sendto(ack.encode("utf8"), (host, port))
+        setattr(request, "_pyvoip_ack_sent", True)
 
     def callback(self, request: SIP.SIPMessage) -> None:
         if request.type == pyVoIP.SIP.SIPMessageType.MESSAGE:
@@ -791,8 +852,11 @@ class VoIPPhone:
         phrase = getattr(request.status, "phrase", "")
         debug(
             request.summary(),
-            f"Call failed call_id={call_id} status={code} {phrase}",
+            f"Call did not work out call_id={call_id} status={code} {phrase}",
         )
+        if call_id not in self.calls:
+            if self._queue_unmatched_final_invite_response(request):
+                return
 
         # ACK final INVITE responses to stop retransmits.
         try:
@@ -836,7 +900,7 @@ class VoIPPhone:
     def supported_codecs(self) -> List[Dict[str, Any]]:
         return RTP.supported_codecs()
 
- 
+
     def _has_assignable_audio_ports(self, request: SIP.SIPMessage) -> bool:
         connections = 0
         for connection in request.body.get("c", []):
@@ -1019,12 +1083,13 @@ class VoIPPhone:
         )
 
         if call_id not in self.calls:
+            if self._queue_unmatched_final_invite_response(request):
+                return
             debug("Unknown/No call")
             # Still ACK 200 OK to stop retransmits.
             self._send_ack(request)
             return
-        # TODO: Somehow never is reached. Find out if you have a network
-        # issue here or your invite is wrong.
+
         if not self._has_compatible_rtp_address_family(request):
             debug(
                 request.summary(),
@@ -1069,6 +1134,9 @@ class VoIPPhone:
         )
 
         if call_id not in self.calls:
+            if self._queue_unmatched_final_invite_response(request):
+                return
+
             debug("Unknown/No call")
             debug("ACKing unmatched final INVITE response")
             self._send_ack(request)
@@ -1087,7 +1155,10 @@ class VoIPPhone:
         )
 
         if call_id not in self.calls:
-            debug("Unkown call")
+            if self._queue_unmatched_final_invite_response(request):
+                return
+
+            debug("Unknown call")
             debug("ACKing unmatched final INVITE response")
             self._send_ack(request)
             return
@@ -1136,20 +1207,33 @@ class VoIPPhone:
         port = self.request_port()
         medias = {}
         medias[port] = {0: RTP.PayloadType.PCMU, 101: RTP.PayloadType.EVENT}
-        request, call_id, sess_id = self.sip.invite(
-            number, medias, RTP.TransmitType.SENDRECV
-        )
+        call_id: Optional[str] = None
+        self._outbound_call_creation_depth += 1
+        try:
+            request, call_id, sess_id = self.sip.invite(
+                number, medias, RTP.TransmitType.SENDRECV
+            )
 
-        call = VoIPCall(
-            self,
-            CallState.DIALING,
-            request,
-            sess_id,
-            self.myIP,
-            ms=medias,
-            sendmode=self.sendmode,
-        )
-        self.calls[call_id] = call
+            call = VoIPCall(
+                self,
+                CallState.DIALING,
+                request,
+                sess_id,
+                self.myIP,
+                ms=medias,
+                sendmode=self.sendmode,
+            )
+            assert call_id is not None
+            self.calls[call_id] = call
+        except Exception:
+            if call_id is not None:
+                self.sip.pop_pending_invite_response(call_id)
+            self.release_ports()
+            raise
+        finally:
+            self._outbound_call_creation_depth -= 1
+
+
         debug(
             request.summary(),
             "Outbound call created "
