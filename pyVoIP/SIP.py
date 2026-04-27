@@ -565,7 +565,7 @@ class SIPMessage:
                     x = x.strip()
                     if not x:
                         continue
-                     if "=" in x:
+                    if "=" in x:
                         key, val = x.split("=", 1)
                         _via[key] = val
                     else:
