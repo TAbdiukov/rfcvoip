@@ -3205,10 +3205,7 @@ class SIPClient:
 
         if is_2xx and request.headers.get("Contact"):
             ack_uri = self._extract_uri(str(request.headers["Contact"]))
-            via = (
-                via = self._via_header(rport=True)
-                + f"branch={self.gen_branch()};rport\r\n"
-            )
+            via = self._via_header(rport=True)
         else:
             ack_uri = request.headers["To"]["raw"].lstrip("<").rstrip(">")
             via = self._gen_response_via_header(request)
