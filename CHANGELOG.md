@@ -3,6 +3,7 @@
 
 ## 2.7.5+RFC
 
+- RTP: Fix call deny flow crashing (methodically fixes [#243](https://github.com/tayler6000/pyVoIP/issues/243))
 - API: Add codec introspection helpers for remote SIP SDP offers and PyVoIP RTP compatibility.
 - VoIP: Handle final INVITE failure received while call is not dialing
 - RTP: IPv4/IPv6 address-family validation during VoIP renegotiation.

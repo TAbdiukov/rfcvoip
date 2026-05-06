@@ -608,8 +608,13 @@ class RTPClient:
 
     def stop(self) -> None:
         self.NSD = False
-        self.sin.close()
-        self.sout.close()
+        sin = getattr(self, "sin", None)
+        sout = getattr(self, "sout", None)
+
+        if sin is not None:
+            sin.close()
+        if sout is not None and sout is not sin:
+            sout.close()
 
     def read(self, length: int = 160, blocking: bool = True) -> bytes:
         if not blocking:
