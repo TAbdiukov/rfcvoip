@@ -1,4 +1,6 @@
 from dataclasses import dataclass, field
+from email import policy
+from email.parser import BytesParser
 from enum import Enum, IntEnum
 from threading import Timer, Lock
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -41,6 +43,8 @@ __all__ = [
     "SIPParseError",
     "SIPRequestError",
     "SIPSubscription",
+    "extract_sdp_bodies",
+    "extract_sdp_body",
     "SIPStatus",
     "SIPTransport",
     "sip_supported_codecs",
@@ -64,6 +68,72 @@ class SIPRequestError(Exception):
 
 class RetryRequiredError(Exception):
     pass
+
+def _content_type_base(value: Any) -> str:
+    """Return the normalized media type without parameters."""
+    return str(value or "").split(";", 1)[0].strip().lower()
+
+
+def _mime_payload_bytes(part: Any) -> bytes:
+    payload = part.get_payload(decode=True)
+    if payload is not None:
+        return payload
+
+    payload = part.get_payload()
+    if payload is None:
+        return b""
+    if isinstance(payload, bytes):
+        return payload
+
+    charset = part.get_content_charset() or "utf-8"
+    return str(payload).encode(charset, errors="replace")
+
+
+def _mime_message_from_sip_body(content_type: str, body: bytes):
+    # email.parser needs a complete MIME entity. SIP already supplied the
+    # entity headers outside the body, so synthesize only the MIME headers
+    # needed to parse multipart boundaries and part headers.
+    safe_content_type = " ".join(str(content_type or "").splitlines()).strip()
+    raw = (
+        f"Content-Type: {safe_content_type}\r\n"
+        "MIME-Version: 1.0\r\n"
+        "\r\n"
+    ).encode("utf-8") + body
+    return BytesParser(policy=policy.default).parsebytes(raw)
+
+
+def extract_sdp_bodies(content_type: Any, body: bytes) -> List[bytes]:
+    """Extract application/sdp payloads from a SIP MIME body.
+
+    Direct ``application/sdp`` bodies are returned as-is. Multipart bodies are
+    parsed as MIME and walked recursively, so nested multipart containers are
+    supported. Non-SDP bodies return an empty list.
+    """
+    if not body:
+        return []
+
+    media_type = _content_type_base(content_type)
+    if media_type == "application/sdp":
+        return [body]
+
+    if not media_type.startswith("multipart/"):
+        return []
+
+    message = _mime_message_from_sip_body(str(content_type or ""), body)
+    sdp_bodies: List[bytes] = []
+    for part in message.walk():
+        if part.is_multipart():
+            continue
+        if _content_type_base(part.get_content_type()) == "application/sdp":
+            sdp_bodies.append(_mime_payload_bytes(part))
+    return sdp_bodies
+
+
+def extract_sdp_body(content_type: Any, body: bytes) -> Optional[bytes]:
+    """Return the first SDP body found in a SIP body, if any."""
+    sdp_bodies = extract_sdp_bodies(content_type, body)
+    return sdp_bodies[0] if sdp_bodies else None
+
 
 _SDP_BANDWIDTH_UNITS = {
     # RFC 4566 defines CT/AS values in kilobits per second.
@@ -462,40 +532,40 @@ class SIPMessageType(IntEnum):
 
 class SIPMessage:
 
-	_COMPACT_HEADER_NAMES = {
-		"c": "Content-Type",
-		"e": "Content-Encoding",
-		"f": "From",
-		"i": "Call-ID",
-		"k": "Supported",
-		"l": "Content-Length",
-		"m": "Contact",
-		"s": "Subject",
-		"t": "To",
-		"v": "Via",
-		"o": "Event",
-		"u": "Allow-Events",
-	}
+    _COMPACT_HEADER_NAMES = {
+        "c": "Content-Type",
+        "e": "Content-Encoding",
+        "f": "From",
+        "i": "Call-ID",
+        "k": "Supported",
+        "l": "Content-Length",
+        "m": "Contact",
+        "s": "Subject",
+        "t": "To",
+        "v": "Via",
+        "o": "Event",
+        "u": "Allow-Events",
+    }
 
-	_CANONICAL_HEADER_NAMES = {
-		"via": "Via",
-		"from": "From",
-		"to": "To",
-		"call-id": "Call-ID",
-		"cseq": "CSeq",
-		"allow": "Allow",
-		"supported": "Supported",
-		"content-length": "Content-Length",
-		"content-type": "Content-Type",
-		"contact": "Contact",
-		"www-authenticate": "WWW-Authenticate",
-		"authorization": "Authorization",
-		"proxy-authenticate": "Proxy-Authenticate",
-		"proxy-authorization": "Proxy-Authorization",
-		"event": "Event",
-		"subscription-state": "Subscription-State",
-		"expires": "Expires",
-	}
+    _CANONICAL_HEADER_NAMES = {
+        "via": "Via",
+        "from": "From",
+        "to": "To",
+        "call-id": "Call-ID",
+        "cseq": "CSeq",
+        "allow": "Allow",
+        "supported": "Supported",
+        "content-length": "Content-Length",
+        "content-type": "Content-Type",
+        "contact": "Contact",
+        "www-authenticate": "WWW-Authenticate",
+        "authorization": "Authorization",
+        "proxy-authenticate": "Proxy-Authenticate",
+        "proxy-authorization": "Proxy-Authorization",
+        "event": "Event",
+        "subscription-state": "Subscription-State",
+        "expires": "Expires",
+    }
 
     def __init__(self, data: bytes):
         self.SIPCompatibleVersions = pyVoIP.SIPCompatibleVersions
@@ -511,6 +581,7 @@ class SIPMessage:
         self.authentication_header: Optional[str] = None
         self.body_raw = b""
         self.body_text = ""
+        self._body_content_type = ""
         self.raw = data
         self.auth_match = re.compile(r'(\w+)=("[^",]+"|[^ \t,]+)')
         self.parse(data)
@@ -684,9 +755,10 @@ class SIPMessage:
         return self.parse_body(header, data)
 
     def parse_body(self, header: str, data: str) -> None:
-        if "Content-Encoding" in self.headers:
+        body_content_type = self._body_content_type or _content_type_base(self.headers.get("Content-Type"))
+        if body_content_type == "application/sdp" and "Content-Encoding" in self.headers:
             raise SIPParseError("Unable to parse encoded content.")
-        if self.headers["Content-Type"] == "application/sdp":
+        if body_content_type == "application/sdp":
             # Referenced RFC 4566 July 2006
             if header == "v":
                 # SDP 5.1 Version
@@ -939,44 +1011,44 @@ class SIPMessage:
         else:
             self.body[header] = data
 
-	@staticmethod
-	def parse_raw_header(
-		headers_raw: List[bytes], handle: Callable[[str, str], None]
-	) -> None:
-		headers: Dict[str, Any] = {"Via": []}
+    @classmethod
+    def parse_raw_header(
+        cls, headers_raw: List[bytes], handle: Callable[[str, str], None]
+    ) -> None:
+        headers: Dict[str, Any] = {"Via": []}
 
-		for raw_line in headers_raw:
-			line = str(raw_line, "utf8", errors="replace")
-			if ":" not in line:
-				continue
+        for raw_line in headers_raw:
+            line = str(raw_line, "utf8", errors="replace")
+            if ":" not in line:
+                continue
 
-			name, value = line.split(":", 1)
-			name = name.strip()
-			value = value.lstrip()
+            name, value = line.split(":", 1)
+            name = name.strip()
+            value = value.lstrip()
 
-			lookup = name.lower()
-			name = _COMPACT_HEADER_NAMES.get(
-				lookup,
-				_CANONICAL_HEADER_NAMES.get(lookup, name),
-			)
+            lookup = name.lower()
+            name = cls._COMPACT_HEADER_NAMES.get(
+                lookup,
+                cls._CANONICAL_HEADER_NAMES.get(lookup, name),
+            )
 
-			if name == "Via":
-				headers["Via"].append(value)
-				continue
+            if name == "Via":
+                headers["Via"].append(value)
+                continue
 
-			# Preserve current behavior for most duplicate non-Via headers.
-			if name not in headers:
-				headers[name] = value
+            # Preserve current behavior for most duplicate non-Via headers.
+            if name not in headers:
+                headers[name] = value
 
-		for key, val in headers.items():
-			handle(key, val)
+        for key, val in headers.items():
+            handle(key, val)
 
     @staticmethod
     def parse_raw_body(
         body: bytes, handle: Callable[[str, str], None]
     ) -> None:
         if len(body) > 0:
-            body_raw = body.split(b"\r\n")
+            body_raw = body.splitlines()
             for raw_line in body_raw:
                 if not raw_line:
                     continue
@@ -986,6 +1058,38 @@ class SIPMessage:
                 key, value = line.split("=", 1)
                 if key:
                     handle(key, value)
+
+    def _body_by_content_length(self, body: bytes) -> bytes:
+        content_length = self.headers.get("Content-Length")
+        if isinstance(content_length, int):
+            return body[: max(0, content_length)]
+        return body
+
+    def _parse_message_body(self, body: bytes) -> None:
+        self.body_raw = self._body_by_content_length(body)
+        self.body_text = str(self.body_raw, "utf8", errors="replace")
+
+        if not self.body_raw:
+            return
+
+        content_type = self.headers.get("Content-Type", "")
+        sdp_body = extract_sdp_body(content_type, self.body_raw)
+        if sdp_body is not None:
+            # SIP offer/answer uses one application/sdp body. Keep the raw
+            # multipart body in body_raw, but parse the first SDP part into
+            # the existing structured SDP fields.
+            self._body_content_type = "application/sdp"
+            self.parse_raw_body(sdp_body, self.parse_body)
+            return
+
+        # Do not accidentally parse text/plain or other multipart parts that
+        # happen to contain SDP-looking lines. Multipart without an SDP part
+        # has no structured SDP fields.
+        if _content_type_base(content_type).startswith("multipart/"):
+            return
+
+        self._body_content_type = _content_type_base(content_type)
+        self.parse_raw_body(self.body_raw, self.parse_body)
 
     def parseSIPResponse(self, data: bytes) -> None:
         warnings.warn(
@@ -1002,8 +1106,6 @@ class SIPMessage:
             headers, body = data.split(b"\r\n\r\n", 1)
         except ValueError:
             headers, body = data, b""
-        self.body_raw = body
-        self.body_text = str(body, "utf8", errors="replace")
 
         headers_raw = headers.split(b"\r\n")
         self.heading = headers_raw.pop(0)
@@ -1014,8 +1116,7 @@ class SIPMessage:
         self.status = SIPStatus(int(self.heading.split(b" ")[1]))
 
         self.parse_raw_header(headers_raw, self.parse_header)
-
-        self.parse_raw_body(body, self.parse_body)
+        self._parse_message_body(body)
 
     def parseSIPMessage(self, data: bytes) -> None:
         warnings.warn(
@@ -1031,9 +1132,6 @@ class SIPMessage:
             headers, body = data.split(b"\r\n\r\n", 1)
         except ValueError:
             headers, body = data, b""
-
-        self.body_raw = body
-        self.body_text = str(body, "utf8", errors="replace")
 
         headers_raw = headers.split(b"\r\n")
         self.heading = headers_raw.pop(0)
@@ -1052,8 +1150,7 @@ class SIPMessage:
         self.method = str(self.heading.split(b" ")[0], "utf8")
 
         self.parse_raw_header(headers_raw, self.parse_header)
-
-        self.parse_raw_body(body, self.parse_body)
+        self._parse_message_body(body)
 
 
 def _safe_int(value: Any) -> Optional[int]:
