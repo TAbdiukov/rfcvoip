@@ -461,6 +461,42 @@ class SIPMessageType(IntEnum):
 
 
 class SIPMessage:
+
+	_COMPACT_HEADER_NAMES = {
+		"c": "Content-Type",
+		"e": "Content-Encoding",
+		"f": "From",
+		"i": "Call-ID",
+		"k": "Supported",
+		"l": "Content-Length",
+		"m": "Contact",
+		"s": "Subject",
+		"t": "To",
+		"v": "Via",
+		"o": "Event",
+		"u": "Allow-Events",
+	}
+
+	_CANONICAL_HEADER_NAMES = {
+		"via": "Via",
+		"from": "From",
+		"to": "To",
+		"call-id": "Call-ID",
+		"cseq": "CSeq",
+		"allow": "Allow",
+		"supported": "Supported",
+		"content-length": "Content-Length",
+		"content-type": "Content-Type",
+		"contact": "Contact",
+		"www-authenticate": "WWW-Authenticate",
+		"authorization": "Authorization",
+		"proxy-authenticate": "Proxy-Authenticate",
+		"proxy-authorization": "Proxy-Authorization",
+		"event": "Event",
+		"subscription-state": "Subscription-State",
+		"expires": "Expires",
+	}
+
     def __init__(self, data: bytes):
         self.SIPCompatibleVersions = pyVoIP.SIPCompatibleVersions
         self.SIPCompatibleMethods = pyVoIP.SIPCompatibleMethods
@@ -903,31 +939,37 @@ class SIPMessage:
         else:
             self.body[header] = data
 
-    @staticmethod
-    def parse_raw_header(
-        headers_raw: List[bytes], handle: Callable[[str, str], None]
-    ) -> None:
-        headers: Dict[str, Any] = {"Via": []}
-        # SIP headers are typically "Name: value" but some stacks omit the space
-        # or use multiple spaces. Split on the first ":" and normalize.
-        for raw_line in headers_raw:
-            line = str(raw_line, "utf8", errors="replace")
-            if ":" not in line:
-                continue
-            name, value = line.split(":", 1)
-            name = name.strip()
-            value = value.lstrip()
+	@staticmethod
+	def parse_raw_header(
+		headers_raw: List[bytes], handle: Callable[[str, str], None]
+	) -> None:
+		headers: Dict[str, Any] = {"Via": []}
 
-            if name == "Via":
-                headers["Via"].append(value)
-                continue
+		for raw_line in headers_raw:
+			line = str(raw_line, "utf8", errors="replace")
+			if ":" not in line:
+				continue
 
-            # Keep the first occurrence for most headers.
-            if name not in headers:
-                headers[name] = value
+			name, value = line.split(":", 1)
+			name = name.strip()
+			value = value.lstrip()
 
-        for key, val in headers.items():
-            handle(key, val)
+			lookup = name.lower()
+			name = _COMPACT_HEADER_NAMES.get(
+				lookup,
+				_CANONICAL_HEADER_NAMES.get(lookup, name),
+			)
+
+			if name == "Via":
+				headers["Via"].append(value)
+				continue
+
+			# Preserve current behavior for most duplicate non-Via headers.
+			if name not in headers:
+				headers[name] = value
+
+		for key, val in headers.items():
+			handle(key, val)
 
     @staticmethod
     def parse_raw_body(

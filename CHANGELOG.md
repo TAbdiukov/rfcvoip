@@ -2,11 +2,11 @@
 
 ## 2.7.7+RFC
 
-- Docs: Fix 'ANSWERED' typo (fixes: [#310](https://github.com/tayler6000/pyVoIP/issues/310))
+- SIP Experimental: Add TCP/TLS SIP transport with RFC 3263-compliant resolution (NAPTR/SRV, `;transport=` support, and TLS via SIPS)
+- SIP: RFC 3261-compliant compant headers support (supersedes [PyVOIP#309](https://github.com/tayler6000/pyVoIP/pull/309))
 - PyVOIP: Fix phantom calls due to ambiguous INVITE handling.
-- RTP: Fix call deny flow crashing (methodically fixes [#243](https://github.com/tayler6000/pyVoIP/issues/243))
-- SIP Experimental: Add TCP/TLS SIP transport with RFC 3263-compliant resolution
-(NAPTR/SRV, `;transport=` support, and TLS via SIPS)
+- RTP: Fix call deny flow crashing (methodically fixes [PyVOIP#243](https://github.com/tayler6000/pyVoIP/issues/243))
+- Docs: Fix 'ANSWERED' typo (fixes: [PyVOIP#310](https://github.com/tayler6000/pyVoIP/issues/310))
 
 ## 2.7.6+RFC
 
