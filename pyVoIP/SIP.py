@@ -3,6 +3,14 @@ from enum import Enum, IntEnum
 from threading import Timer, Lock
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 from pyVoIP.util import acquired_lock_and_unblocked_socket
+from pyVoIP.SIPTransport import (
+    ResolvedSIPTarget,
+    SIPConnection,
+    SIPResolver,
+    SIPTransport,
+    format_hostport,
+    split_hostport,
+)
 from pyVoIP.VoIP.status import PhoneStatus
 import pyVoIP
 import hashlib
@@ -13,6 +21,7 @@ import re
 import time
 import uuid
 import select
+import ssl
 import warnings
 
 
@@ -26,12 +35,14 @@ __all__ = [
     "InvalidAccountInfoError",
     "SIPClient",
     "codec_support_report",
+    "codec_bandwidth_supported",
     "SIPMessage",
     "SIPMessageType",
     "SIPParseError",
     "SIPRequestError",
     "SIPSubscription",
     "SIPStatus",
+    "SIPTransport",
     "sip_supported_codecs",
 ]
 
@@ -53,6 +64,62 @@ class SIPRequestError(Exception):
 
 class RetryRequiredError(Exception):
     pass
+
+_SDP_BANDWIDTH_UNITS = {
+    # RFC 4566 defines CT/AS values in kilobits per second.
+    "CT": "kbps",
+    "AS": "kbps",
+    # RFC 3890 commonly appears in SIP SDP for transport independent bitrate.
+    "TIAS": "bps",
+    # RTCP sender/receiver bandwidth modifiers; tracked but not codec limits.
+    "RS": "bps",
+    "RR": "bps",
+}
+
+_SDP_MEDIA_BANDWIDTH_LIMIT_TYPES = {"AS", "TIAS"}
+
+
+def _parse_sdp_bandwidth(data: str) -> Dict[str, Any]:
+    """Parse an SDP b= line value into a normalized dictionary.
+
+    SDP allows multiple b= lines, and their scope depends on where the line
+    appears. The caller adds the ``scope`` field once it knows whether this
+    line belongs to the session or the current media block.
+    """
+    if ":" not in data:
+        raise SIPParseError(f"Malformed SDP bandwidth line: b={data!r}")
+
+    bw_type, raw_bandwidth = data.split(":", 1)
+    bw_type = bw_type.strip().upper()
+    raw_bandwidth = raw_bandwidth.strip()
+    if not bw_type or not raw_bandwidth:
+        raise SIPParseError(f"Malformed SDP bandwidth line: b={data!r}")
+
+    try:
+        bandwidth = int(raw_bandwidth)
+    except ValueError as ex:
+        raise SIPParseError(
+            f"SDP bandwidth value must be an integer: b={data!r}"
+        ) from ex
+
+    if bandwidth < 0:
+        raise SIPParseError(
+            f"SDP bandwidth value cannot be negative: b={data!r}"
+        )
+
+    unit = _SDP_BANDWIDTH_UNITS.get(bw_type, "unknown")
+    bits_per_second = None
+    if unit == "kbps":
+        bits_per_second = bandwidth * 1000
+    elif unit == "bps":
+        bits_per_second = bandwidth
+
+    return {
+        "type": bw_type,
+        "bandwidth": bandwidth,
+        "unit": unit,
+        "bits_per_second": bits_per_second,
+    }
 
 
 @dataclass
@@ -486,25 +553,29 @@ class SIPMessage:
     def parse_header(self, header: str, data: str) -> None:
         if header == "Via":
             for d in data:
-                info = re.split(" |;", d)
-                _type = info[0]  # SIP Method
-                _address = info[1].split(":")  # Tuple: address, port
-                _ip = _address[0]
-
-                """
-                If no port is provided in via header assume default port.
-                Needs to be str. Check response build for better str creation
-                """
-                _port = info[1].split(":")[1] if len(_address) > 1 else "5060"
-                _via = {"type": _type, "address": (_ip, _port)}
+                pieces = d.split(";")
+                sent_by = pieces[0].strip().split()
+                if len(sent_by) < 2:
+                    continue
+                _type = sent_by[0]
+                _ip, _port, _explicit = split_hostport(sent_by[1], 5060)
+                _via = {
+                    "type": _type,
+                    "transport": _type.rsplit("/", 1)[-1].upper(),
+                    "address": (_ip, str(_port or 5060)),
+                }
 
                 """
                 Sets branch, maddr, ttl, received, and rport if defined
                 as per RFC 3261 20.7
                 """
-                for x in info[2:]:
+                for x in pieces[1:]:
+                    x = x.strip()
+                    if not x:
+                        continue
                     if "=" in x:
-                        _via[x.split("=")[0]] = x.split("=")[1]
+                        key, val = x.split("=", 1)
+                        _via[key] = val
                     else:
                         _via[x] = None
                 self.headers["Via"].append(_via)
@@ -675,15 +746,20 @@ class SIPMessage:
             elif header == "b":
                 # SDP 5.8 Bandwidth
                 # b=<bwtype>:<bandwidth>
-                # A bwtype of CT means Conference Total between all medias
-                # and all devices in the conference.
-                # A bwtype of AS means Applicaton Specific total for this
-                # media and this device.
-                # The bandwidth is given in kilobits per second.
-                # As this was written in 2006, this could be Kibibits.
-                # TODO: Implement Bandwidth restrictions
-                d = data.split(":")
-                self.body[header] = {"type": d[0], "bandwidth": d[1]}
+                #
+                # b= is scoped by position: before the first m= line it is a
+                # session-level limit; after an m= line it belongs to that
+                # media description. Preserve multiple lines instead of
+                # overwriting earlier restrictions.
+                bandwidth = _parse_sdp_bandwidth(data)
+                if self.body.get("m"):
+                    bandwidth["scope"] = "media"
+                    self.body["m"][-1].setdefault("bandwidth", []).append(
+                        bandwidth
+                    )
+                else:
+                    bandwidth["scope"] = "session"
+                    self.body.setdefault("b", []).append(bandwidth)
             elif header == "t":
                 # SDP 5.9 Timing
                 # t=<start-time> <stop-time>
@@ -744,6 +820,7 @@ class SIPMessage:
                         "port_count": count,
                         "protocol": pyVoIP.RTP.RTPProtocol(d[2]),
                         "methods": methods,
+                        "bandwidth": [],
                         "attributes": {},
                     }
                 )
@@ -947,11 +1024,95 @@ def _safe_int(value: Any) -> Optional[int]:
 def _protocol_value(protocol: Any) -> str:
     return str(getattr(protocol, "value", protocol))
 
+def _bandwidths_to_list(value: Any) -> List[Dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        return [dict(value)]
+    if isinstance(value, list):
+        return [dict(item) for item in value if isinstance(item, dict)]
+    return []
+
+
+def _enforceable_bandwidth_limit_bps(
+    session_bandwidth: Any = None,
+    media_bandwidth: Any = None,
+) -> Optional[int]:
+    """Return the strictest SDP media bitrate limit we can safely enforce.
+
+    CT is intentionally not enforced here because it describes conference total
+    bandwidth, not a specific codec payload cap. RS/RR describe RTCP sender and
+    receiver bandwidth, so they are also not codec payload caps.
+    """
+    limits: List[int] = []
+    for bandwidth in _bandwidths_to_list(session_bandwidth) + _bandwidths_to_list(
+        media_bandwidth
+    ):
+        bw_type = str(bandwidth.get("type", "")).upper()
+        if bw_type not in _SDP_MEDIA_BANDWIDTH_LIMIT_TYPES:
+            continue
+
+        limit = _safe_int(bandwidth.get("bits_per_second"))
+        if limit is not None:
+            limits.append(limit)
+
+    return min(limits) if limits else None
+
+
+def _codec_required_bandwidth_bps(codec: Any) -> Optional[int]:
+    """Return PyVoIP's payload bitrate requirement for known codecs.
+
+    PyVoIP currently transmits G.711 PCMU/PCMA as 8-bit samples at 8 kHz,
+    which needs 64 kbit/s of payload bandwidth. telephone-event is not a
+    continuous audio codec, so it has no fixed stream bandwidth requirement.
+    """
+    try:
+        if codec in (pyVoIP.RTP.PayloadType.PCMU, pyVoIP.RTP.PayloadType.PCMA):
+            channels = max(1, int(codec.channel or 1))
+            return int(codec.rate) * channels * 8
+    except Exception:
+        return None
+    return None
+
+
+def codec_bandwidth_supported(
+    codec: Any,
+    *,
+    session_bandwidth: Any = None,
+    media_bandwidth: Any = None,
+) -> bool:
+    """Return whether an SDP bandwidth limit can carry ``codec``.
+
+    Unknown or non-enforceable bandwidth modifiers are treated as compatible;
+    only clear AS/TIAS caps below a known codec's payload bitrate reject it.
+    """
+    required = _codec_required_bandwidth_bps(codec)
+    limit = _enforceable_bandwidth_limit_bps(
+        session_bandwidth=session_bandwidth,
+        media_bandwidth=media_bandwidth,
+    )
+    return required is None or limit is None or limit >= required
+
+
+def _bandwidth_context(
+    session_bandwidth: Any = None,
+    media_bandwidth: Any = None,
+    codec: Any = None,
+) -> Dict[str, Any]:
+    return {
+        "session": _bandwidths_to_list(session_bandwidth),
+        "media": _bandwidths_to_list(media_bandwidth),
+        "limit_bps": _enforceable_bandwidth_limit_bps(
+            session_bandwidth=session_bandwidth,
+            media_bandwidth=media_bandwidth,
+        ),
+        "required_bps": _codec_required_bandwidth_bps(codec),
+    }
+
 
 def _media_protocol_supported(media: Dict[str, Any]) -> bool:
     protocol = media.get("protocol")
     return protocol in (pyVoIP.RTP.RTPProtocol.AVP, "RTP/AVP")
-
 
 def _fmtp_settings(attributes: Dict[str, Any]) -> List[str]:
     fmtp = attributes.get("fmtp", {})
@@ -959,7 +1120,6 @@ def _fmtp_settings(attributes: Dict[str, Any]) -> List[str]:
         settings = fmtp.get("settings", [])
         return [str(setting) for setting in settings]
     return []
-
 
 def _unknown_codec_info(
     *,
@@ -970,12 +1130,16 @@ def _unknown_codec_info(
     channels: Optional[int],
     fmtp: List[str],
     source: str,
+    session_bandwidth: Any = None,
+    media_bandwidth: Any = None,
 ) -> Dict[str, Any]:
     return {
         "media_type": media.get("type"),
         "payload_type": payload_type,
         "name": name,
         "description": None,
+        "payload_kind": "unknown",
+        "can_transmit_audio": False,
         "rate": rate,
         "channels": channels,
         "is_dynamic": payload_type is None or payload_type >= 96,
@@ -983,14 +1147,21 @@ def _unknown_codec_info(
         "codec_supported": False,
         "protocol_supported": _media_protocol_supported(media),
         "supported": False,
+        "bandwidth_supported": True,
+        "bandwidth": _bandwidth_context(
+            session_bandwidth=session_bandwidth,
+            media_bandwidth=media_bandwidth,
+        ),
         "source": source,
         "protocol": _protocol_value(media.get("protocol")),
     }
 
 
 def _codec_info_from_media(
-    media: Dict[str, Any], method: str
+    media: Dict[str, Any], method: str, *, session_bandwidth: Any = None
 ) -> Dict[str, Any]:
+    media_bandwidth = _bandwidths_to_list(media.get("bandwidth", []))
+    session_bandwidth = _bandwidths_to_list(session_bandwidth)
     attributes = media.get("attributes", {}).get(str(method), {})
     if not isinstance(attributes, dict):
         attributes = {}
@@ -1033,17 +1204,24 @@ def _codec_info_from_media(
             channels=channels,
             fmtp=fmtp,
             source=source,
+            session_bandwidth=session_bandwidth,
+            media_bandwidth=media_bandwidth,
         )
 
     codec_supported = codec in getattr(pyVoIP, "RTPCompatibleCodecs", [])
     protocol_supported = _media_protocol_supported(media)
+    bandwidth_supported = codec_bandwidth_supported(
+        codec,
+        session_bandwidth=session_bandwidth,
+        media_bandwidth=media_bandwidth,
+    )
     info = pyVoIP.RTP.codec_info(
         codec,
         payload_type=payload_type,
         media_type=media.get("type"),
         fmtp=fmtp,
         source=source,
-        supported=codec_supported and protocol_supported,
+        supported=codec_supported and protocol_supported and bandwidth_supported,
     )
     info["codec_supported"] = codec_supported
     info["protocol_supported"] = protocol_supported
@@ -1051,6 +1229,13 @@ def _codec_info_from_media(
         info["rate"] = rate
     if channels is not None:
         info["channels"] = channels
+    info["bandwidth_supported"] = bandwidth_supported
+    info["required_bandwidth_bps"] = _codec_required_bandwidth_bps(codec)
+    info["bandwidth"] = _bandwidth_context(
+        session_bandwidth=session_bandwidth,
+        media_bandwidth=media_bandwidth,
+        codec=codec,
+    )
     info["protocol"] = _protocol_value(media.get("protocol"))
     return info
 
@@ -1064,18 +1249,21 @@ def sip_supported_codecs(
     ``media_type`` defaults to ``"audio"``.  Pass ``None`` to return codecs
     from every media section in the SDP body.
     """
+    session_bandwidth = _bandwidths_to_list(message.body.get("b", []))
     codecs = []
     for media in message.body.get("m", []):
         if media_type is not None and media.get("type") != media_type:
             continue
         for method in media.get("methods", []):
-            codecs.append(_codec_info_from_media(media, str(method)))
+            codecs.append(
+                _codec_info_from_media(
+                    media, str(method), session_bandwidth=session_bandwidth
+                )
+            )
     return codecs
-
 
 def _codec_name_key(codec: Dict[str, Any]) -> str:
     return str(codec.get("name") or "").lower()
-
 
 def codec_support_report(
     message: SIPMessage,
@@ -1108,7 +1296,7 @@ class SIPClient:
     def __init__(
         self,
         server: str,
-        port: int,
+        port: Optional[int],
         username: str,
         password: str,
         phone: "VoIPPhone",
@@ -1120,13 +1308,38 @@ class SIPClient:
         proxy: Optional[str] = None,
         proxy_port: Optional[int] = None,
         proxyPort: Optional[int] = None,
+        transport: Optional[str] = None,
+        tls_context: Optional[ssl.SSLContext] = None,
+        tls_server_name: Optional[str] = None,
     ):
         self.NSD = False
         self.server = server
-        self.port = port
-        self.server_host, self.server_port = self._sip_target_from_uri(
-            str(server), port
+        self.requested_transport = (
+            None if transport is None else SIPTransport.from_uri(transport)
+         )
+        self.resolver = SIPResolver(
+            transport_preference=(
+                [self.requested_transport]
+                if self.requested_transport is not None
+                else None
+            )
         )
+        self.server_uri = self.resolver.parse_uri(str(server))
+        self.server_scheme = self.server_uri.scheme
+        self.server_host = self.server_uri.host
+        self.server_uri_port = (
+            self.server_uri.port
+            if self.server_uri.explicit_port
+            else (port if not self.server_uri.has_scheme else None)
+        )
+        self.server_target = self.resolver.resolve(
+            str(server),
+            default_port=port,
+            default_transport=self.requested_transport,
+        )
+        self.server_port = self.server_uri_port
+        self.port = port if port is not None else self.server_target.port
+
         self.myIP = myIP
         self.username = username
         self.password = password
@@ -1136,9 +1349,12 @@ class SIPClient:
 
         if proxy_port is None:
             proxy_port = proxyPort
-        self.proxy, self.proxy_port = self._normalize_proxy_target(
-            proxy, proxy_port, self.port
-        )
+        self.proxy_target = self._normalize_proxy_target(proxy, proxy_port)
+        self.proxy = self.proxy_target.host if self.proxy_target else None
+        self.proxy_port = self.proxy_target.port if self.proxy_target else None
+        self.tls_context = tls_context
+        self.tls_server_name = tls_server_name
+        self.connection: Optional[SIPConnection] = None
 
         self.phone = phone
 
@@ -1188,43 +1404,33 @@ class SIPClient:
         return value.strip()
 
     @staticmethod
-    def _sip_target_from_uri(uri: str, default_port: int = 5060) -> Tuple[str, int]:
-        target = uri.strip()
-        if target.startswith("<") and target.endswith(">"):
-            target = target[1:-1].strip()
-        if target.lower().startswith("sip:"):
-            target = target[4:]
-        if "@" in target:
-            target = target.split("@", 1)[1]
-        target = target.split("?", 1)[0]
-        if ";" in target:
-            target = target.split(";", 1)[0]
-        if ":" in target:
-            host, port = target.rsplit(":", 1)
-            try:
-                return host, int(port)
-            except ValueError:
-                pass
-        return target, default_port
+    def _sip_target_from_uri(
+        uri: str, default_port: Optional[int] = 5060
+    ) -> Tuple[str, int]:
+        target = SIPResolver().resolve(uri, default_port=default_port)
+        return target.host, target.port
 
-    @classmethod
     def _normalize_proxy_target(
-        cls,
+        self,
         proxy: Optional[str],
         proxy_port: Optional[int],
-        default_port: int,
-    ) -> Tuple[Optional[str], Optional[int]]:
+    ) -> Optional[ResolvedSIPTarget]:
         raw = str(proxy or "").strip()
         if not raw:
-            return None, None
-        host, parsed_port = cls._sip_target_from_uri(raw, default_port)
-        port = parsed_port if proxy_port is None else int(proxy_port)
-        return host, port
+            return None
+        return self.resolver.resolve(
+            raw,
+            default_port=proxy_port,
+            default_transport=self.requested_transport,
+        )
 
     def signal_target(self) -> Tuple[str, int]:
-        if self.proxy is not None and self.proxy_port is not None:
-            return self.proxy, self.proxy_port
-        return self.server_host, self.server_port
+        target = self.proxy_target or self.server_target
+        return target.host, target.port
+
+    def signal_transport(self) -> SIPTransport:
+        target = self.proxy_target or self.server_target
+        return target.transport
 
     def response_target(self, request: SIPMessage) -> Tuple[str, int]:
         try:
@@ -1252,25 +1458,78 @@ class SIPClient:
             return self._extract_uri(str(request.headers["To"]["raw"]))
         return self._extract_uri(str(request.headers["From"]["raw"]))
 
-
     @staticmethod
+    def _format_hostport(
+        host: str,
+        port: Optional[int] = None,
+        *,
+        always_include_port: bool = False,
+    ) -> str:
+        return format_hostport(
+            host, port, always_include_port=always_include_port
+        )
+
+    @classmethod
     def _format_sip_uri(
+        cls,
         host: str,
         port: Optional[int] = None,
         *,
         user: Optional[str] = None,
         transport: Optional[str] = None,
+        always_include_port: bool = False,
+        scheme: str = "sip",
     ) -> str:
-        uri = "sip:"
+        uri = f"{scheme}:"
         if user:
             uri += f"{user}@"
-        uri += host
-        if port is not None and port != 5060:
-            uri += f":{port}"
+        uri += cls._format_hostport(
+            host,
+            port,
+            always_include_port=always_include_port,
+        )
         if transport:
             uri += f";transport={transport}"
         return uri
 
+    def _contact_uri(self, *, user: Optional[str] = None) -> str:
+        """Return this UA's SIP Contact URI.
+
+        pyVoIP currently listens for SIP signaling over UDP only.  The SIP URI
+        transport parameter is therefore advertised explicitly so registrars,
+        notifiers, and dialog peers route subsequent requests back over the
+        transport pyVoIP can actually receive.
+
+        Keep the local port explicit even when it is the default SIP port
+        5060.  RFC 3261 URI comparison does not require an omitted default
+        port to compare equal to an explicit port, and a URI with no transport
+        parameter can compare differently from the same URI with
+        ``;transport=udp``.  Emitting the same explicit Contact binding for
+        initial REGISTER, refresh REGISTER, and deregistration avoids stale
+        bindings on strict registrars.
+        """
+        contact_scheme = "sips" if self.server_scheme == "sips" else "sip"
+        transport = self.signal_transport()
+        transport_token = (
+            "TCP"
+            if contact_scheme == "sips" and transport == SIPTransport.TLS
+            else transport.uri_token
+        )
+
+        return self._format_sip_uri(
+            self.myIP,
+            self.myPort,
+            user=user or self.username,
+            transport=transport_token,
+            always_include_port=True,
+            scheme=contact_scheme,
+        )
+
+    def _contact_header(self, *, include_instance: bool = False) -> str:
+        header = f"Contact: <{self._contact_uri()}>"
+        if include_instance:
+            header += f';+sip.instance="<urn:uuid:{self.urnUUID}>"'
+        return header + "\r\n"
 
     @staticmethod
     def _sdp_address_type(address: str) -> str:
@@ -1288,13 +1547,56 @@ class SIPClient:
     ) -> str:
         return self._format_sip_uri(
             self.server_host,
-            self.server_port,
+            self.server_uri_port,
             user=user,
             transport=transport,
+            scheme=self.server_scheme,
         )
 
     def _remote_user_uri(self, user: str) -> str:
-        return self._format_sip_uri(self.server_host, self.server_port, user=user)
+        return self._format_sip_uri(
+            self.server_host,
+            self.server_uri_port,
+            user=user,
+            scheme=self.server_scheme,
+        )
+
+    def _via_header(
+        self,
+        *,
+        branch: Optional[str] = None,
+        rport: bool = True,
+    ) -> str:
+        branch = branch or self.gen_branch()
+        line = (
+            f"Via: SIP/2.0/{self.signal_transport().via_token} "
+            + self._format_hostport(
+                self.myIP,
+                self.myPort,
+                always_include_port=True,
+            )
+            + f";branch={branch}"
+        )
+        if rport:
+            line += ";rport"
+        return line + "\r\n"
+
+    def send_raw(
+        self,
+        data: bytes,
+        target: Optional[Tuple[str, int]] = None,
+    ) -> None:
+        if self.connection is None:
+            raise RuntimeError("SIP client is not connected.")
+        self.connection.send(data, target or self.signal_target())
+
+    def _recv_message_before(self, deadline: float) -> Optional[SIPMessage]:
+        if self.connection is None:
+            return None
+        raw = self.connection.recv_raw_message_before(
+            deadline, running=lambda: self.NSD
+        )
+        return SIPMessage(raw) if raw is not None else None
 
     def send_response(self, request: SIPMessage, response: str) -> None:
         self._send_request_response(request, response)
@@ -1428,16 +1730,9 @@ class SIPClient:
         )
 
         request = f"SUBSCRIBE {request_uri} SIP/2.0\r\n"
-        request += (
-            f"Via: SIP/2.0/UDP {self.myIP}:{self.myPort};"
-            + f"branch={self.gen_branch()};rport\r\n"
-        )
+        request += self._via_header(rport=True)
         request += "Max-Forwards: 70\r\n"
-        request += (
-            "Contact: "
-            + f"<sip:{self.username}@{self.myIP}:{self.myPort};"
-            + "transport=UDP>\r\n"
-        )
+        request += self._contact_header()
         request += f"To: {self._subscription_to_header(subscription)}\r\n"
         request += (
             f"From: <{self._registrar_uri(user=self.username)}>;"
@@ -1459,10 +1754,7 @@ class SIPClient:
     def _send_request_response(
         self, request: SIPMessage, response: str
     ) -> None:
-        self.out.sendto(
-            response.encode("utf8"),
-            self.response_target(request),
-        )
+        self.send_raw(response.encode("utf8"), self.response_target(request))
 
     @staticmethod
     def _request_header_value(request: str, header: str) -> str:
@@ -1490,8 +1782,7 @@ class SIPClient:
         *,
         action: str,
     ) -> SIPMessage:
-        self.out.setblocking(False)
-        self.out.sendto(request.encode("utf8"), self.signal_target())
+        self.send_raw(request.encode("utf8"), self.signal_target())
         return self._wait_for_transaction_response(request, action=action)
 
     def _wait_for_transaction_response(
@@ -1505,12 +1796,10 @@ class SIPClient:
         last_provisional: Optional[SIPMessage] = None
 
         while time.monotonic() < deadline:
-            remaining = max(0.0, deadline - time.monotonic())
-            ready = select.select([self.s], [], [], remaining)
-            if not ready[0]:
+            response = self._recv_message_before(deadline)
+            if response is None:
                 break
 
-            response = SIPMessage(self.s.recv(8192))
             if response.type == SIPMessageType.MESSAGE:
                 self.parse_message(response)
                 continue
@@ -1856,7 +2145,7 @@ class SIPClient:
         )
 
         with self.recvLock:
-            self.out.sendto(
+            self.send_raw(
                 request.encode("utf8"),
                 self._subscription_send_target(subscription),
             )
@@ -1864,12 +2153,10 @@ class SIPClient:
             retries = 0
 
             while self.NSD and time.monotonic() < deadline:
-                timeout = min(1.0, max(0.0, deadline - time.monotonic()))
-                ready = select.select([self.s], [], [], timeout)
-                if not ready[0]:
+                response = self._recv_message_before(deadline)
+                if response is None:
                     continue
 
-                response = SIPMessage(self.s.recv(8192))
                 if response.type == SIPMessageType.MESSAGE:
                     if response.method == "NOTIFY":
                         self._handle_notify(response)
@@ -1917,7 +2204,7 @@ class SIPClient:
                         expires=subscription.pending_expires,
                         auth_line=auth_line,
                     )
-                    self.out.sendto(
+                    self.send_raw(
                         request.encode("utf8"),
                         self._subscription_send_target(subscription),
                     )
@@ -1962,7 +2249,7 @@ class SIPClient:
         request = self._build_subscribe_request(subscription, expires=0)
 
         with self.recvLock:
-            self.out.sendto(
+            self.send_raw(
                 request.encode("utf8"),
                 self._subscription_send_target(subscription),
             )
@@ -1970,12 +2257,10 @@ class SIPClient:
             retries = 0
 
             while self.NSD and time.monotonic() < deadline:
-                timeout = min(1.0, max(0.0, deadline - time.monotonic()))
-                ready = select.select([self.s], [], [], timeout)
-                if not ready[0]:
+                response = self._recv_message_before(deadline)
+                if response is None:
                     continue
 
-                response = SIPMessage(self.s.recv(8192))
                 if response.type == SIPMessageType.MESSAGE:
                     if response.method == "NOTIFY":
                         self._handle_notify(response)
@@ -2023,7 +2308,7 @@ class SIPClient:
                         expires=0,
                         auth_line=auth_line,
                     )
-                    self.out.sendto(
+                    self.send_raw(
                         request.encode("utf8"),
                         self._subscription_send_target(subscription),
                     )
@@ -2121,7 +2406,7 @@ class SIPClient:
 
     def recv(self) -> None:
         try:
-            raw = self.s.recv(8192)
+            raw = self.connection.recv_raw_message()
         except BlockingIOError:
             # Re-raise so recv_loop() can release locks and continue
             raise
@@ -2135,9 +2420,7 @@ class SIPClient:
             if "SIP Version" in str(e):
                 try:
                     resp = self._gen_sip_version_not_supported_raw(raw)
-                    self.out.sendto(
-                        resp.encode("utf8"), self.signal_target()
-                    )
+                    self.send_raw(resp.encode("utf8"), self.signal_target())
                 except Exception as ex:
                     debug(f"Failed sending 505 response: {ex}")
             else:
@@ -2288,9 +2571,16 @@ class SIPClient:
         if self.NSD:
             raise RuntimeError("Attempted to start already started SIPClient")
         self.NSD = True
-        self.s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # self.out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.s.bind((self.myIP, self.myPort))
+        target = self.proxy_target or self.server_target
+        self.connection = SIPConnection(
+            self.myIP,
+            self.myPort,
+            target,
+            tls_context=self.tls_context,
+            tls_server_name=self.tls_server_name,
+        )
+        self.connection.open()
+        self.s = self.connection.socket
         self.out = self.s
         self.register()
         t = Timer(1, self.recv_loop)
@@ -2309,6 +2599,11 @@ class SIPClient:
         self._close_sockets()
 
     def _close_sockets(self) -> None:
+        if self.connection is not None:
+            self.connection.close()
+            self.connection = None
+            return
+
         if hasattr(self, "s") and self.s:
             self.s.close()
         if hasattr(self, "out") and self.out:
@@ -2422,7 +2717,7 @@ class SIPClient:
             ""
             + request.headers["CSeq"]["method"]
             + ":"
-            + self._registrar_uri(transport="UDP")
+            + self._registrar_uri()
         )
         HA2 = hashlib.md5(HA2.encode("utf8")).hexdigest()
         nonce = request.authentication["nonce"]
@@ -2470,10 +2765,7 @@ class SIPClient:
 
     def gen_first_response(self, deregister=False) -> str:
         regRequest = f"REGISTER {self._registrar_uri()} SIP/2.0\r\n"
-        regRequest += (
-            f"Via: SIP/2.0/UDP {self.myIP}:{self.myPort};"
-            + f"branch={self.gen_branch()};rport\r\n"
-        )
+        regRequest += self._via_header(rport=True)
         regRequest += (
             f'From: "{self.username}" '
             + f"<{self._registrar_uri(user=self.username)}>;tag="
@@ -2485,12 +2777,7 @@ class SIPClient:
         )
         regRequest += f"Call-ID: {self.gen_call_id()}\r\n"
         regRequest += f"CSeq: {self.registerCounter.next()} REGISTER\r\n"
-        regRequest += (
-            "Contact: "
-            + f"<sip:{self.username}@{self.myIP}:{self.myPort};"
-            + "transport=UDP>;+sip.instance="
-            + f'"<urn:uuid:{self.urnUUID}>"\r\n'
-        )
+        regRequest += self._contact_header(include_instance=True)
         regRequest += f'Allow: {(", ".join(pyVoIP.SIPCompatibleMethods))}\r\n'
         regRequest += "Max-Forwards: 70\r\n"
         regRequest += "Allow-Events: org.3gpp.nwinitdereg\r\n"
@@ -2518,10 +2805,7 @@ class SIPClient:
         subRequest = (
             f"SUBSCRIBE {self._registrar_uri(user=self.username)} SIP/2.0\r\n"
         )
-        subRequest += (
-            f"Via: SIP/2.0/UDP {self.myIP}:{self.myPort};"
-            + f"branch={self.gen_branch()};rport\r\n"
-        )
+        subRequest += self._via_header(rport=True)
         subRequest += (
             f'From: "{self.username}" '
             + f"<{self._registrar_uri(user=self.username)}>;tag="
@@ -2530,13 +2814,7 @@ class SIPClient:
         subRequest += f"To: <{self._registrar_uri(user=self.username)}>\r\n"
         subRequest += f'Call-ID: {response.headers["Call-ID"]}\r\n'
         subRequest += f"CSeq: {self.subscribeCounter.next()} SUBSCRIBE\r\n"
-        # TODO: check if transport is needed
-        subRequest += (
-            "Contact: "
-            + f"<sip:{self.username}@{self.myIP}:{self.myPort};"
-            + "transport=UDP>;+sip.instance="
-            + f'"<urn:uuid:{self.urnUUID}>"\r\n'
-        )
+        subRequest += self._contact_header(include_instance=True)
         subRequest += "Max-Forwards: 70\r\n"
         subRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
         subRequest += f"Expires: {self.default_expires * 2}\r\n"
@@ -2568,15 +2846,12 @@ class SIPClient:
             request,
             header_name=header_name,
             method="REGISTER",
-            uri=self._registrar_uri(transport="UDP"),
+            uri=self._registrar_uri(),
         )
 
         regRequest = f"REGISTER {self._registrar_uri()} SIP/2.0\r\n"
 
-        regRequest += (
-            f"Via: SIP/2.0/UDP {self.myIP}:{self.myPort};branch="
-            + f"{self.gen_branch()};rport\r\n"
-        )
+        regRequest += self._via_header(rport=True)
         regRequest += (
             f'From: "{self.username}" '
             + f"<{self._registrar_uri(user=self.username)}>;tag="
@@ -2589,12 +2864,7 @@ class SIPClient:
         call_id = request.headers.get("Call-ID", self.gen_call_id())
         regRequest += f"Call-ID: {call_id}\r\n"
         regRequest += f"CSeq: {self.registerCounter.next()} REGISTER\r\n"
-        regRequest += (
-            "Contact: "
-            + f"<sip:{self.username}@{self.myIP}:{self.myPort};"
-            + "transport=UDP>;+sip.instance="
-            + f'"<urn:uuid:{self.urnUUID}>"\r\n'
-        )
+        regRequest += self._contact_header(include_instance=True)
         regRequest += f'Allow: {(", ".join(pyVoIP.SIPCompatibleMethods))}\r\n'
         regRequest += "Max-Forwards: 70\r\n"
         regRequest += "Allow-Events: org.3gpp.nwinitdereg\r\n"
@@ -2700,7 +2970,7 @@ class SIPClient:
             f"CSeq: {request.headers['CSeq']['check']} "
             + f"{request.headers['CSeq']['method']}\r\n"
         )
-        regRequest += f"Contact: {request.headers['Contact']}\r\n"
+        regRequest += self._contact_header()
         regRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
         regRequest += self._gen_supported_header()
         regRequest += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
@@ -2771,10 +3041,7 @@ class SIPClient:
             f"CSeq: {request.headers['CSeq']['check']} "
             + f"{request.headers['CSeq']['method']}\r\n"
         )
-        regRequest += (
-            "Contact: "
-            + f"<sip:{self.username}@{self.myIP}:{self.myPort}>\r\n"
-        )
+        regRequest += self._contact_header()
         regRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
         regRequest += self._gen_supported_header()
         regRequest += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
@@ -2840,15 +3107,9 @@ class SIPClient:
 
         remote_uri = self._remote_user_uri(number)
         invRequest = f"INVITE {remote_uri} SIP/2.0\r\n"
-        invRequest += (
-            f"Via: SIP/2.0/UDP {self.myIP}:{self.myPort};branch="
-            + f"{branch}\r\n"
-        )
+        invRequest += self._via_header(branch=branch, rport=True)
         invRequest += "Max-Forwards: 70\r\n"
-        invRequest += (
-            "Contact: "
-            + f"<sip:{self.username}@{self.myIP}:{self.myPort}>\r\n"
-        )
+        invRequest += self._contact_header()
         invRequest += f"To: <{remote_uri}>\r\n"
         invRequest += f"From: <sip:{self.username}@{self.myIP}>;tag={tag}\r\n"
         invRequest += f"Call-ID: {call_id}\r\n"
@@ -2889,7 +3150,7 @@ class SIPClient:
 
     def cancel(self, request: SIPMessage) -> None:
         message = self.gen_cancel(request)
-        self.out.sendto(message.encode("utf8"), self.signal_target())
+        self.send_raw(message.encode("utf8"), self.signal_target())
 
     def genBye(self, request: SIPMessage) -> str:
         warnings.warn(
@@ -2904,10 +3165,7 @@ class SIPClient:
         tag = self.tagLibrary[request.headers["Call-ID"]]
         c = self._dialog_remote_uri(request)
         byeRequest = f"BYE {c} SIP/2.0\r\n"
-        byeRequest += (
-            f"Via: SIP/2.0/UDP {self.myIP}:{self.myPort};"
-            + f"branch={self.gen_branch()};rport\r\n"
-        )
+        byeRequest += self._via_header(rport=True)
         fromH = request.headers["From"]["raw"]
         toH = request.headers["To"]["raw"]
         if request.headers["From"]["tag"] == tag:
@@ -2926,10 +3184,7 @@ class SIPClient:
         cseq = int(request.headers["CSeq"]["check"]) + 1
         byeRequest += f"CSeq: {cseq} BYE\r\n"
         byeRequest += "Max-Forwards: 70\r\n"
-        byeRequest += (
-            "Contact: "
-            + f"<sip:{self.username}@{self.myIP}:{self.myPort}>\r\n"
-        )
+        byeRequest += self._contact_header()
         byeRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
         byeRequest += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
         byeRequest += "Content-Length: 0\r\n\r\n"
@@ -2958,10 +3213,7 @@ class SIPClient:
 
         if is_2xx and request.headers.get("Contact"):
             ack_uri = self._extract_uri(str(request.headers["Contact"]))
-            via = (
-                f"Via: SIP/2.0/UDP {self.myIP}:{self.myPort};"
-                + f"branch={self.gen_branch()};rport\r\n"
-            )
+            via = self._via_header(rport=True)
         else:
             ack_uri = request.headers["To"]["raw"].lstrip("<").rstrip(">")
             via = self._gen_response_via_header(request)
@@ -2990,8 +3242,13 @@ class SIPClient:
         via = ""
         for h_via in request.headers["Via"]:
             v_line = (
-                "Via: SIP/2.0/UDP "
-                + f'{h_via["address"][0]}:{h_via["address"][1]}'
+                "Via: "
+                + f'{h_via.get("type", "SIP/2.0/UDP")} '
+                + self._format_hostport(
+                    h_via["address"][0],
+                    int(h_via["address"][1]),
+                    always_include_port=True,
+                )
             )
             if "branch" in h_via.keys():
                 v_line += f';branch={h_via["branch"]}'
@@ -3049,7 +3306,7 @@ class SIPClient:
             number, str(sess_id), ms, sendtype, branch, call_id
         )
         with self.recvLock:
-            self.out.sendto(invite.encode("utf8"), self.signal_target())
+            self.send_raw(invite.encode("utf8"), self.signal_target())
             self._set_last_invite_debug(event="invite-sent")
             debug("Invited")
             deadline = time.monotonic() + self.invite_timeout
@@ -3057,12 +3314,10 @@ class SIPClient:
             last_response: Optional[SIPMessage] = None
 
             while self.NSD and time.monotonic() < deadline:
-                timeout = min(1.0, max(0.0, deadline - time.monotonic()))
-                ready = select.select([self.s], [], [], timeout)
-                if not ready[0]:
+                response = self._recv_message_before(deadline)
+                if response is None:
                     continue
 
-                response = SIPMessage(self.s.recv(8192))
                 last_response = response
 
                 if response.headers.get("Call-ID") != call_id:
@@ -3107,10 +3362,7 @@ class SIPClient:
                     SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
                 ) and retries < self.invite_max_retries:
                     ack = self.gen_ack(response)
-                    self.out.sendto(
-                        ack.encode("utf8"),
-                        self.ack_target(response),
-                    )
+                    self.send_raw(ack.encode("utf8"), self.ack_target(response))
 
                     header_name = "Authorization"
                     if (
@@ -3135,7 +3387,7 @@ class SIPClient:
                         "\r\nContent-Length",
                         f"\r\n{auth_line}Content-Length",
                     )
-                    self.out.sendto(invite.encode("utf8"), self.signal_target())
+                    self.send_raw(invite.encode("utf8"), self.signal_target())
                     retries += 1
                     self._set_last_invite_debug(
                         event="invite-auth-sent",
@@ -3262,10 +3514,7 @@ class SIPClient:
 
     def bye(self, request: SIPMessage) -> None:
         message = self.gen_bye(request)
-        self.out.sendto(
-            message.encode("utf8"),
-            self.dialog_target(request),
-        )
+        self.send_raw(message.encode("utf8"), self.dialog_target(request))
 
     def deregister(self) -> bool:
         attempts = 0
@@ -3510,12 +3759,11 @@ class SIPClient:
                     + "still TRYING"
                 )
 
-            ready = select.select([self.s], [], [], remaining)
-            if not ready[0]:
+            response = self._recv_message_before(time.monotonic() + remaining)
+            if response is None:
                 raise TimeoutError(
                     f"Waited {self.register_timeout} seconds but server is "
                     + "still TRYING"
                 )
-            resp = self.s.recv(8192)
-            response = SIPMessage(resp)
+
         return response

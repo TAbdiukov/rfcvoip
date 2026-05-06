@@ -1,6 +1,6 @@
 from enum import Enum
 from threading import Timer
-from typing import Any, Callable, Deque, Dict, List, Optional, Union
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple, Union
 from collections import deque
 import audioop
 import io
@@ -18,16 +18,20 @@ __all__ = [
     "byte_to_bits",
     "DynamicPayloadType",
     "codec_info",
+    "is_audio_codec",
+    "is_transmittable_audio_codec",
+    "is_video_codec",
     "payload_type_from_name",
+    "payload_type_media_kind",
     "supported_codecs",
     "PayloadType",
+    "select_transmittable_audio_codec",
     "RTPParseError",
     "RTPProtocol",
     "RTPPacketManager",
     "RTPClient",
     "TransmitType",
 ]
-
 
 debug = pyVoIP.debug
 
@@ -158,6 +162,123 @@ class PayloadType(Enum):
     EVENT = "telephone-event", 8000, 0, "telephone-event"
     UNKNOWN = "UNKNOWN", 0, 0, "UNKNOWN CODEC"
 
+_AUDIO_PAYLOAD_TYPES = frozenset(
+    (
+        PayloadType.PCMU,
+        PayloadType.GSM,
+        PayloadType.G723,
+        PayloadType.DVI4_8000,
+        PayloadType.DVI4_16000,
+        PayloadType.LPC,
+        PayloadType.PCMA,
+        PayloadType.G722,
+        PayloadType.L16_2,
+        PayloadType.L16,
+        PayloadType.QCELP,
+        PayloadType.CN,
+        PayloadType.MPA,
+        PayloadType.G728,
+        PayloadType.DVI4_11025,
+        PayloadType.DVI4_22050,
+        PayloadType.G729,
+        # RFC 3551 defines MP2T as both audio and video.  It is classified as
+        # audio here for reporting, but it is intentionally not transmittable
+        # because PyVoIP does not implement an MP2T encoder.
+        PayloadType.MP2T,
+    )
+)
+
+_VIDEO_PAYLOAD_TYPES = frozenset(
+    (
+        PayloadType.CELB,
+        PayloadType.JPEG,
+        PayloadType.NV,
+        PayloadType.H261,
+        PayloadType.MPV,
+        PayloadType.MP2T,
+        PayloadType.H263,
+    )
+)
+
+_ENCODABLE_AUDIO_PAYLOAD_TYPES = frozenset(
+    (
+        PayloadType.PCMU,
+        PayloadType.PCMA,
+    )
+)
+
+
+def payload_type_media_kind(codec: PayloadType) -> str:
+    """Return PyVoIP's broad media classification for an RTP payload type.
+
+    This is deliberately separate from SDP media sections.  A payload such as
+    ``telephone-event`` appears inside an ``m=audio`` section, but it is not an
+    audio codec that can be selected for the continuous RTP media stream.
+    """
+    if codec == PayloadType.EVENT:
+        return "event"
+    if codec == PayloadType.UNKNOWN:
+        return "unknown"
+    if codec == PayloadType.MP2T:
+        return "audio/video"
+    if codec in _AUDIO_PAYLOAD_TYPES:
+        return "audio"
+    if codec in _VIDEO_PAYLOAD_TYPES:
+        return "video"
+    return "unknown"
+
+
+def is_audio_codec(codec: PayloadType) -> bool:
+    """Return whether ``codec`` represents an RTP audio payload type."""
+    return codec in _AUDIO_PAYLOAD_TYPES
+
+
+def is_video_codec(codec: PayloadType) -> bool:
+    """Return whether ``codec`` represents an RTP video payload type."""
+    return codec in _VIDEO_PAYLOAD_TYPES
+
+
+def is_transmittable_audio_codec(codec: PayloadType) -> bool:
+    """Return whether PyVoIP can encode ``codec`` as the main audio stream."""
+    if codec not in _ENCODABLE_AUDIO_PAYLOAD_TYPES:
+        return False
+    if codec not in getattr(pyVoIP, "RTPCompatibleCodecs", ()):  # pragma: no branch
+        return False
+    try:
+        int(codec)
+    except (DynamicPayloadType, TypeError, ValueError):
+        return False
+    return True
+
+
+def select_transmittable_audio_codec(
+    assoc: Dict[int, PayloadType]
+) -> Tuple[int, PayloadType]:
+    """Select the negotiated payload number and codec used for RTP audio.
+
+    ``assoc`` maps negotiated RTP payload numbers to :class:`PayloadType`
+    values.  Returning the negotiated payload number is important when a peer
+    maps a known codec, such as PCMU, to a dynamic payload number via SDP
+    ``rtpmap``.
+    """
+    rejected = []
+    for payload_type, codec in assoc.items():
+        try:
+            payload_number = int(payload_type)
+        except (TypeError, ValueError):
+            rejected.append(f"{payload_type}:{codec} (invalid payload number)")
+            continue
+
+        if is_transmittable_audio_codec(codec):
+            return payload_number, codec
+
+        rejected.append(
+            f"{payload_number}:{codec} ({payload_type_media_kind(codec)})"
+        )
+
+    detail = ": " + ", ".join(rejected) if rejected else "."
+    raise RTPParseError("No transmittable audio codec negotiated" + detail)
+
 
 def payload_type_from_name(name: str) -> PayloadType:
     """Return a :class:`PayloadType` matching an SDP codec name.
@@ -206,6 +327,8 @@ def codec_info(
         "payload_type": payload_type,
         "name": str(codec),
         "description": codec.description,
+        "payload_kind": payload_type_media_kind(codec),
+        "can_transmit_audio": is_transmittable_audio_codec(codec),
         "rate": codec.rate,
         "channels": codec.channel,
         "is_dynamic": not isinstance(codec.value, int),
@@ -215,7 +338,6 @@ def codec_info(
         "supported": bool(supported),
         "source": source,
     }
-
 
 def supported_codecs() -> List[Dict[str, Any]]:
     """Return codecs supported by this PyVoIP build/configuration."""
@@ -375,26 +497,22 @@ class RTPClient:
         self.NSD = True
         # Example: {0: PayloadType.PCMU, 101: PayloadType.EVENT}
         self.assoc = assoc
-        debug("Selecting audio codec for transmission")
-        self.preference: Optional[PayloadType] = None
-        for m in assoc:
-            try:
-                if int(assoc[m]) is not None:
-                    debug(f"Selected {assoc[m]}")
-                    """
-                    Select the first available actual codec to encode with.
-                    TODO: will need to change if video codecs
-                    are ever implemented.
-                    """
-                    self.preference = assoc[m]
-                    break
-            except Exception:
-                debug(f"{assoc[m]} cannot be selected as an audio codec")
-        if self.preference is None:
-            raise RTPParseError(
-                "No transmittable audio codec negotiated (assoc contained only "
-                "dynamic/unsupported payloads)."
-            )
+        debug("Selecting negotiated audio codec for transmission")
+        try:
+            (
+                self.preference_payload_type,
+                self.preference,
+            ) = select_transmittable_audio_codec(assoc)
+        except RTPParseError:
+            debug(
+                "No transmittable audio codec negotiated from assoc="
+                + ",".join(f"{pt}:{codec}" for pt, codec in assoc.items())
+             )
+            raise
+        debug(
+            f"Selected {self.preference} "
+            + f"as RTP payload {self.preference_payload_type}"
+        )
 
         self.inIP = inIP
         self.inPort = inPort
@@ -654,7 +772,7 @@ class RTPClient:
             payload = self.encode_packet(raw_payload)
             timestamp = self.outTimestamp & 0xFFFFFFFF
             self._send_rtp_packet(
-                int(self.preference),
+                self.preference_payload_type,
                 payload,
                 marker=False,
                 timestamp=timestamp,

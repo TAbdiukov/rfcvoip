@@ -65,6 +65,39 @@ phone = VoIPPhone(
 
 `proxy` may be a hostname, `host:port`, or a SIP URI such as `sip:pbx.example.net:5060`.
 
+### TCP/TLS SIP transport with RFC 3263-compliant resolution
+
+```python
+# TCP, explicit URI transport wins.
+phone = VoIPPhone(
+    "sip:registrar.example.com;transport=tcp",
+    None,
+    "alice",
+    "secret",
+    myIP="192.0.2.10",
+)
+
+# TLS via sips: and RFC 3263 DNS if no explicit port is present.
+phone = VoIPPhone(
+    "sips:registrar.example.com",
+    None,
+    "alice",
+    "secret",
+    myIP="192.0.2.10",
+    tls_server_name="registrar.example.com",
+)
+
+# Legacy host + explicit port stays simple unless transport is supplied.
+phone = VoIPPhone(
+    "registrar.example.com",
+    5060,
+    "alice",
+    "secret",
+    myIP="192.0.2.10",
+    transport="tcp",
+)
+```
+
 ### Inspecting supported codecs
 Parsed SIP/SDP messages and active calls can report the codecs offered by the
 remote endpoint and the codecs supported by PyVoIP.
