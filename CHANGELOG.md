@@ -2,6 +2,7 @@
 
 ## 2.7.7+RFC
 
+- PyVOIP: Fix phantom calls due to ambiguous INVITE handling.
 - RTP: Fix call deny flow crashing (methodically fixes [#243](https://github.com/tayler6000/pyVoIP/issues/243))
 - SIP Experimental: Add TCP/TLS SIP transport with RFC 3263-compliant resolution
 (NAPTR/SRV, `;transport=` support, and TLS via SIPS)
