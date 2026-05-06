@@ -1031,11 +1031,31 @@ class VoIPPhone:
             + f"to={request.headers.get('To')}",
         )
 
+
         if call_id in self.calls:
             debug("Re-negotiation detected!")
             if self.calls[call_id].state != CallState.RINGING:
                 self.calls[call_id].renegotiate(request)
             return
+
+        to_header = request.headers.get("To", {})
+        to_tag = (
+            to_header.get("tag", "")
+            if isinstance(to_header, dict)
+            else ""
+        )
+        if to_tag:
+            debug(
+                request.summary(),
+                "Rejecting in-dialog INVITE for unknown call "
+                + f"call_id={call_id} to_tag={to_tag}",
+            )
+            message = self.sip.gen_response(
+                request, SIP.SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST
+            )
+            self.sip.send_response(request, message)
+            return
+
         if self.callCallback is None:
             message = self.sip.gen_busy(request)
             self.sip.send_response(request, message)
@@ -1397,11 +1417,13 @@ class VoIPPhone:
         for thread in self.threads:
             if not thread.is_alive():
                 call_id = self.threadLookup[thread]
-                try:
-                    del self.calls[call_id]
-                except KeyError:
+                call = self.calls.get(call_id)
+                if call is None:
                     debug("Unable to delete from calls dictionary!")
                     debug(f"call_id={call_id} calls={self.calls}")
+                elif call.state == CallState.ENDED:
+                    del self.calls[call_id]
+
                 try:
                     del self.threadLookup[thread]
                 except KeyError:

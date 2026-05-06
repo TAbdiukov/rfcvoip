@@ -1587,15 +1587,30 @@ class SIPClient:
         target: Optional[Tuple[str, int]] = None,
     ) -> None:
         if self.connection is None:
-            raise RuntimeError("SIP client is not connected.")
+            sock = getattr(self, "out", None) or getattr(self, "s", None)
+            if sock is None:
+                raise RuntimeError("SIP client is not connected.")
+
+            if target is None:
+                target = self.signal_target()
+
+            sock.sendto(data, target)
+            return
+
         self.connection.send(data, target or self.signal_target())
 
     def _recv_message_before(self, deadline: float) -> Optional[SIPMessage]:
         if self.connection is None:
-            return None
-        raw = self.connection.recv_raw_message_before(
-            deadline, running=lambda: self.NSD
-        )
+            sock = getattr(self, "s", None)
+            if sock is None:
+                return None
+
+            remaining = max(0.0, deadline - time.monotonic())
+            ready = select.select([sock], [], [], remaining)
+            if not ready[0]:
+                return None
+
+            return SIPMessage(sock.recv(8192))
         return SIPMessage(raw) if raw is not None else None
 
     def send_response(self, request: SIPMessage, response: str) -> None:
