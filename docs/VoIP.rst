@@ -35,7 +35,7 @@ VoIP.\ **CallState**
 
     In this state, you can use ``VoIPCall.answer()`` or ``VoIPCall.deny()``.
 
-  CallState.\ **ANSWRED**
+  CallState.\ **ANSWERED**
     This CallState is used to describe when a call has been answered and is active.
 
     In this state, you can use ``VoIPCall.hangup()``.
@@ -122,7 +122,7 @@ The VoIPCall class is used to represent a single VoIP Session, which may be to m
       Denies the call if the phone's state is CallState.RINGING.
 
     **hangup**\ () -> None
-      Ends the call if the phone's state is CallState.ANSWRED.
+      Ends the call if the phone's state is CallState.ANSWERED.
 
     **bye**\ () -> None
       Ends the call but does not send a SIP BYE message to the SIP server.  This function is used to end the call on the server side when the client ended the call.  **THE** :term:`USER<user>` **SHOUND NOT CALL THIS FUNCTION OR THE** :term:`CLIENT<client>` **WILL BE LEFT ON THE LINE WITH NO RESPONSE. CALL HANGUP() INSTEAD.**
@@ -187,5 +187,5 @@ The VoIPPhone class is used to manage the :ref:`SIPClient` class and create :ref
     This method ends all currently ongoing calls, then stops the :ref:`SIPClient` class
 
   **call**\ (number: str) -> :ref:`VoIPCall`
-    Originates a call using PCMU and telephone-event. The *number* argument must be a string, and it returns a :ref:`VoIPCall` class in CallState.DIALING.  You should use a while loop to wait until the CallState is ANSWRED.
+    Originates a call using PCMU and telephone-event. The *number* argument must be a string, and it returns a :ref:`VoIPCall` class in CallState.DIALING.  You should use a while loop to wait until the CallState is ANSWERED.
 
