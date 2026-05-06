@@ -1750,6 +1750,11 @@ class SIPClient:
                 return None
 
             return SIPMessage(sock.recv(8192))
+
+        raw = self.connection.recv_raw_message_before(
+            deadline,
+            running=lambda: self.NSD,
+        )
         return SIPMessage(raw) if raw is not None else None
 
     def send_response(self, request: SIPMessage, response: str) -> None:
