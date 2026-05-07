@@ -123,6 +123,38 @@ report = sip_message.codec_support_report()
 pyvoip_codecs = pyVoIP.supported_codecs()
 ```
 
+### Pre-call codec inspection
+Local codec information is available without an active SIP session. Remote
+codec information can be probed before starting a call with SIP `OPTIONS` when
+the peer/provider returns SDP in its `OPTIONS` response.
+
+```python
+from pyVoIP.VoIP import VoIPPhone
+
+
+phone = VoIPPhone(
+    "sip.example.com",
+    5060,
+    "alice",
+    "secret",
+    myIP="192.0.2.10",
+)
+
+# Purely local; this works before phone.start().
+local_report = phone.available_codecs()
+print("Local codec offer:", local_report["local_offer"])
+
+# Remote probing requires SIP signalling, so start/register first.
+phone.start()
+remote_report = phone.available_codecs("1001")
+print("Remote codecs:", remote_report["remote"])
+print("Call-compatible audio:", remote_report["call_compatible"])
+print("Can start call from codec data:", remote_report["can_start_call"])
+```
+
+If the remote side does not include SDP in the `OPTIONS` response,
+`remote_report["remote"]` will be empty and `can_start_call` will be `None`.
+
 ### Sponsors
 
 - [Nabu Casa](https://www.nabucasa.com/)

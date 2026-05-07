@@ -322,6 +322,12 @@ def codec_info(
     if supported is None:
         supported = codec in getattr(pyVoIP, "RTPCompatibleCodecs", [])
 
+    is_dynamic = (
+        payload_type is None
+        or not isinstance(codec.value, int)
+        or (isinstance(payload_type, int) and payload_type >= 96)
+    )
+
     return {
         "media_type": media_type,
         "payload_type": payload_type,
@@ -331,7 +337,7 @@ def codec_info(
         "can_transmit_audio": is_transmittable_audio_codec(codec),
         "rate": codec.rate,
         "channels": codec.channel,
-        "is_dynamic": not isinstance(codec.value, int),
+        "is_dynamic": is_dynamic,
         "fmtp": list(fmtp or []),
         "codec_supported": bool(supported),
         "protocol_supported": None,

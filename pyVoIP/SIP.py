@@ -618,7 +618,7 @@ class SIPMessage:
 
     def codec_support_report(
         self, media_type: Optional[str] = "audio"
-    ) -> Dict[str, List[Dict[str, Any]]]:
+    ) -> Dict[str, Any]:
         return codec_support_report(self, media_type=media_type)
 
     def parse(self, data: bytes) -> None:
@@ -1415,7 +1415,7 @@ def _codec_name_key(codec: Dict[str, Any]) -> str:
 def codec_support_report(
     message: SIPMessage,
     media_type: Optional[str] = "audio",
-) -> Dict[str, List[Dict[str, Any]]]:
+) -> Dict[str, Any]:
     """Compare a SIP message's SDP codecs against PyVoIP support."""
     remote = sip_supported_codecs(message, media_type=media_type)
     pyvoip_codecs = pyVoIP.RTP.supported_codecs()
@@ -1427,6 +1427,13 @@ def codec_support_report(
         for codec in pyvoip_codecs
         if _codec_name_key(codec) not in remote_names
     ]
+    remote_has_sdp = bool(message.body.get("m"))
+    transmittable_audio = [
+        codec
+        for codec in compatible
+        if codec.get("media_type") == "audio"
+        and codec.get("can_transmit_audio")
+    ]
 
     return {
         "remote": remote,
@@ -1436,6 +1443,10 @@ def codec_support_report(
         "good": compatible,
         "missing": unsupported,
         "pyvoip_missing_from_remote": pyvoip_missing_from_remote,
+        "remote_has_sdp": remote_has_sdp,
+        "transmittable_audio": transmittable_audio,
+        "call_compatible": transmittable_audio,
+        "can_start_call": bool(transmittable_audio) if remote_has_sdp else None,
     }
 
 
@@ -1523,6 +1534,8 @@ class SIPClient:
         self.invite_max_retries = 1
         self.subscription_timeout = 15
         self.subscription_max_retries = 1
+        self.options_timeout = 15
+        self.options_max_retries = 1
 
         self.inviteCounter = Counter()
         self.registerCounter = Counter()
@@ -1530,6 +1543,7 @@ class SIPClient:
         self.byeCounter = Counter()
         self.callID = Counter()
         self.sessID = Counter()
+        self.optionsCounter = Counter()
 
         self.urnUUID = self.gen_urn_uuid()
 
@@ -1864,6 +1878,148 @@ class SIPClient:
             return f"sip:{target}"
 
         return self._format_sip_uri(self.server_host, self.server_port, user=target)
+
+    def _normalize_request_target(self, target: str) -> str:
+        """Return a SIP/SIPS request URI for pre-dialog requests.
+
+        Numeric extensions are resolved against the configured registrar, while
+        fully-qualified SIP/SIPS URIs and user@domain targets are preserved.
+        """
+        target = self._extract_uri(str(target or ""))
+        if not target:
+            raise ValueError("SIP request target cannot be empty.")
+
+        if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target):
+            return target
+
+        if "@" in target:
+            return f"{self.server_scheme}:{target}"
+
+        return self._remote_user_uri(target)
+
+    def _build_options_request(
+        self,
+        target_uri: str,
+        *,
+        call_id: str,
+        local_tag: str,
+        branch: Optional[str] = None,
+        auth_line: str = "",
+    ) -> str:
+        request = f"OPTIONS {target_uri} SIP/2.0\r\n"
+        request += self._via_header(branch=branch, rport=True)
+        request += "Max-Forwards: 70\r\n"
+        request += self._contact_header()
+        request += f"To: <{target_uri}>\r\n"
+        request += (
+            f"From: <{self._registrar_uri(user=self.username)}>;"
+            + f"tag={local_tag}\r\n"
+        )
+        request += f"Call-ID: {call_id}\r\n"
+        request += f"CSeq: {self.optionsCounter.next()} OPTIONS\r\n"
+        request += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
+        request += "Accept: application/sdp\r\n"
+        request += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        if auth_line:
+            request += auth_line
+        request += "Content-Length: 0\r\n\r\n"
+        return request
+
+    def options(
+        self,
+        target: str,
+        *,
+        timeout: Optional[float] = None,
+    ) -> SIPMessage:
+        """Send SIP OPTIONS to a peer and return the final response.
+
+        This is useful for pre-call capability and codec discovery. Remote
+        codecs are only available when the peer includes an SDP body in the
+        OPTIONS response.
+        """
+        if not self.NSD:
+            raise RuntimeError("SIP client is not running.")
+
+        target_uri = self._normalize_request_target(target)
+        call_id = self.gen_call_id()
+        local_tag = self.gen_tag()
+        branch = self.gen_branch()
+        request = self._build_options_request(
+            target_uri,
+            call_id=call_id,
+            local_tag=local_tag,
+            branch=branch,
+        )
+        timeout_s = self.options_timeout if timeout is None else float(timeout)
+        deadline = time.monotonic() + timeout_s
+        retries = 0
+
+        with self.recvLock:
+            self.send_raw(request.encode("utf8"), self.signal_target())
+
+            while self.NSD and time.monotonic() < deadline:
+                response = self._recv_message_before(deadline)
+                if response is None:
+                    continue
+
+                if response.type == SIPMessageType.MESSAGE:
+                    if response.method == "NOTIFY":
+                        self._handle_notify(response)
+                    else:
+                        self.parse_message(response)
+                    continue
+
+                call_id, cseq_check, cseq_method = self._request_transaction(request)
+                cseq = response.headers.get("CSeq", {})
+                response_cseq_check = cseq.get("check") if isinstance(cseq, dict) else None
+                response_cseq_method = cseq.get("method") if isinstance(cseq, dict) else None
+                if (
+                    response.headers.get("Call-ID") != call_id
+                    or response_cseq_check != cseq_check
+                    or response_cseq_method != cseq_method
+                ):
+                    self.parse_message(response)
+                    continue
+
+                status_code = int(response.status)
+                if 100 <= status_code < 200:
+                    continue
+
+                if response.status in (
+                    SIPStatus.UNAUTHORIZED,
+                    SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
+                ) and retries < self.options_max_retries:
+                    header_name = "Authorization"
+                    if (
+                        response.status == SIPStatus.PROXY_AUTHENTICATION_REQUIRED
+                        or response.authentication_header == "Proxy-Authenticate"
+                    ):
+                        header_name = "Proxy-Authorization"
+
+                    auth_line = self._build_digest_auth_header(
+                        response,
+                        header_name=header_name,
+                        method="OPTIONS",
+                        uri=target_uri,
+                    )
+                    branch = self._bump_branch(branch)
+                    request = self._build_options_request(
+                        target_uri,
+                        call_id=call_id,
+                        local_tag=local_tag,
+                        branch=branch,
+                        auth_line=auth_line,
+                    )
+                    self.send_raw(request.encode("utf8"), self.signal_target())
+                    retries += 1
+                    continue
+
+                return response
+
+        raise TimeoutError(
+            f"OPTIONS timed out after {timeout_s}s "
+            + f"(target={target_uri}, Call-ID={call_id})."
+        )
 
     def _subscription_send_target(
         self, subscription: SIPSubscription
