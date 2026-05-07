@@ -145,7 +145,6 @@ report = sip_message.codec_support_report()
 
 # And at module level:
 pyvoip_codecs = pyVoIP.supported_codecs()
-```
 
 # Include optional codecs that are currently unavailable, useful for frontend UI:
 codec_status = pyVoIP.codec_availability()
@@ -158,6 +157,7 @@ print(pyVoIP.codec_priorities())
 pyVoIP.set_codec_priority(pyVoIP.PayloadType.PCMA, 950)
 pyVoIP.set_codec_priority(pyVoIP.PayloadType.PCMU, 900)
 pyVoIP.reset_codec_priorities()
+```
 
 If Python loads libopus after PyVoIP has already been imported, refresh the
 codec registry before creating or placing calls:
