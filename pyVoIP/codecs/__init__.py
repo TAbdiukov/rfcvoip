@@ -139,6 +139,7 @@ def codec_availability(payload_type: PayloadType) -> Dict[str, object]:
             "default_payload_type": 101,
             "is_dynamic": True,
             "priority_score": codec_priority_score(payload_type),
+            "preferred_source_sample_rate": None,
         }
 
     cls = codec_class(payload_type)
@@ -173,6 +174,11 @@ def codec_availability(payload_type: PayloadType) -> Dict[str, object]:
             "default_payload_type": cls.default_payload_type,
             "is_dynamic": bool(cls.dynamic),
             "priority_score": codec_priority_score(payload_type),
+            "preferred_source_sample_rate": getattr(
+                cls,
+                "preferred_source_sample_rate",
+                getattr(cls, "source_sample_rate", 8000),
+            ),
         }
     )
     return data
@@ -238,7 +244,13 @@ def default_payload_type(payload_type: PayloadType) -> Optional[int]:
         return None
 
 
-def create_codec(payload_type: PayloadType) -> Optional[RTPCodec]:
+def create_codec(
+    payload_type: PayloadType,
+    *,
+    source_sample_rate: Optional[int] = None,
+    source_sample_width: int = 1,
+    source_channels: int = 1,
+) -> Optional[RTPCodec]:
     cls = codec_class(payload_type)
     if cls is None:
         return None
@@ -248,7 +260,14 @@ def create_codec(payload_type: PayloadType) -> Optional[RTPCodec]:
         raise RuntimeError(
             f"{payload_type} codec unavailable: {availability.reason}"
         )
-    return cls()
+
+    adapter = cls()
+    adapter.configure_source_format(
+        sample_rate=source_sample_rate,
+        sample_width=source_sample_width,
+        channels=source_channels,
+    )
+    return adapter
 
 
 def rtpmap_for_codec(payload_type: PayloadType, negotiated_payload: int) -> str:

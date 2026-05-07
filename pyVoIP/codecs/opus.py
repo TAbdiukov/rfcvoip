@@ -150,6 +150,8 @@ class OpusCodec(RTPCodec):
     default_payload_type = 111
     dynamic = True
     priority_score = 1000
+    preferred_source_sample_rate = 48000
+    source_sample_rate = 48000
     default_fmtp = ["minptime=10;useinbandfec=1"]
     max_data_bytes = 4000
     max_frame_size = 5760
@@ -237,16 +239,7 @@ class OpusCodec(RTPCodec):
         return frame_size in {120, 240, 480, 960, 1920, 2880}
 
     def _to_opus_pcm(self, payload: bytes) -> bytes:
-        signed8 = audioop.bias(payload, 1, -128)
-        pcm16_8k = audioop.lin2lin(signed8, 1, 2)
-        pcm16_48k, self._encode_rate_state = audioop.ratecv(
-            pcm16_8k,
-            2,
-            1,
-            8000,
-            48000,
-            self._encode_rate_state,
-        )
+        pcm16_48k = self._source_u8_to_pcm16(payload, self.rate)
 
         frame_size = len(pcm16_48k) // 2
         if self._valid_frame_size(frame_size):
@@ -302,13 +295,4 @@ class OpusCodec(RTPCodec):
         if self.channels > 1:
             pcm16_48k = audioop.tomono(pcm16_48k, 2, 0.5, 0.5)
 
-        pcm16_8k, self._decode_rate_state = audioop.ratecv(
-            pcm16_48k,
-            2,
-            1,
-            48000,
-            8000,
-            self._decode_rate_state,
-        )
-        signed8 = audioop.lin2lin(pcm16_8k, 2, 1)
-        return audioop.bias(signed8, 1, 128)
+        return self._pcm16_to_source_u8(pcm16_48k, self.rate)

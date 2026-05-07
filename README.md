@@ -3,25 +3,28 @@ PyVoIP is a pure python VoIP/SIP/RTP library.  Currently, it supports PCMA,
 PCMU, PCMA-WB, PCMU-WB, telephone-event, optional Opus when libopus is
 available, and optional SILK when a pysilk backend is available.
 
-This library does not depend on a sound library, i.e. you can use any sound library that can handle linear sound data i.e. pyaudio or even wave.  Keep in mind PCMU/PCMA only supports 8000Hz, 1 channel, 8 bit audio.
+This library does not depend on a sound library, i.e. you can use any sound library that can handle linear sound data i.e. pyaudio or even wave.  The public PyVoIP audio format is unsigned 8-bit mono with a configurable sample rate. By default, PyVoIP uses the negotiated codec's preferred public sample rate; pass `audio_sample_rate=8000` to keep the legacy 8 kHz behavior. Keep in mind PCMU/PCMA are still 8000Hz RTP codecs on the wire.
 
 Opus support is optional. PyVoIP first reuses the libopus handle already loaded,
 then falls back to common system libopus names. If libopus is
 not available, Opus is reported as unavailable and is not included in SIP offers.
-The public PyVoIP audio read/write format remains 8000Hz, 1 channel, 8 bit
-audio; Opus frames are converted internally.
+The public PyVoIP audio read/write format remains unsigned 8-bit mono. When
+`audio_sample_rate` is omitted, Opus uses a 48000Hz public sample rate and
+converts internally as needed.
 
 SILK support is optional. Install `pyVoIP[silk]` or install `silk-python`
 separately to provide the `pysilk` backend. When available, PyVoIP advertises
 SILK as dynamic RTP payloads for 24000Hz, 16000Hz, 12000Hz, and 8000Hz. The
-public PyVoIP audio read/write format remains 8000Hz, 1 channel, 8 bit audio;
-SILK frames are converted internally.
+public PyVoIP audio read/write format remains unsigned 8-bit mono. When
+`audio_sample_rate` is omitted, SILK uses the selected SILK RTP clock as the
+public sample rate and converts internally as needed.
 
 PCMA-WB and PCMU-WB are implemented as RFC 5391 / G.711.1 R1 core-layer
 payloads. PyVoIP advertises `mode-set=1`, uses a 16000Hz RTP clock, and keeps
-the public read/write format at 8000Hz, 1 channel, 8 bit audio. Incoming
-G.711.1 packets in wider modes are decoded from their G.711-compatible L0 core
-layer.
+the public read/write format as unsigned 8-bit mono with a configurable sample
+rate. When `audio_sample_rate` is omitted, these codecs use a 16000Hz public
+sample rate. Incoming G.711.1 packets in wider modes are decoded from their
+G.711-compatible L0 core layer.
 
 ## Getting Started
 Simply run `pip install pyVoIP`, or if installing from source:
@@ -60,6 +63,7 @@ if __name__ == "__main__":
         sipPort=<Port to use for SIP (int, default 5060)>,
         rtpPortLow=<low end of the RTP Port Range>,
         rtpPortHigh=<high end of the RTP Port Range>,
+        audio_sample_rate=None,  # None = codec-preferred; 8000 = legacy behavior
     )
     phone.start()
     input("Press enter to disable the phone")

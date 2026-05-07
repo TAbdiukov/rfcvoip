@@ -578,6 +578,9 @@ def codec_info(
         "priority_score": codec_priority_score(codec),
         "rate": codec.rate,
         "channels": codec.channel,
+        "preferred_source_sample_rate": availability.get(
+            "preferred_source_sample_rate"
+        ),
         "is_dynamic": is_dynamic,
         "fmtp": fmtp_list,
         "fmtp_supported": fmtp_supported,
@@ -757,6 +760,9 @@ class RTPClient:
         outPort: int,
         sendrecv: TransmitType,
         dtmf: Optional[Callable[[str], None]] = None,
+        audio_sample_rate: Optional[int] = None,
+        audio_sample_width: int = 1,
+        audio_channels: int = 1,
     ):
         self.NSD = True
         # Example: {0: PayloadType.PCMU, 101: PayloadType.EVENT}
@@ -778,6 +784,21 @@ class RTPClient:
             f"Selected {self.preference} "
             + f"as RTP payload {self.preference_payload_type}"
         )
+        self.audio_sample_rate = self._resolve_audio_sample_rate(
+            audio_sample_rate
+        )
+        try:
+            self.audio_sample_width = int(audio_sample_width)
+            self.audio_channels = int(audio_channels)
+        except (TypeError, ValueError) as ex:
+            raise RTPParseError(
+                "Public RTP audio format values must be integers."
+            ) from ex
+        if self.audio_sample_width != 1 or self.audio_channels != 1:
+            raise RTPParseError(
+                "PyVoIP public audio currently supports unsigned 8-bit mono; "
+                "only the sample rate is configurable."
+            )
 
         self.inIP = inIP
         self.inPort = inPort
@@ -798,6 +819,41 @@ class RTPClient:
         self._pending_dtmf: Deque[str] = deque()
         self._dtmf_lock = threading.Lock()
 
+    @staticmethod
+    def _preferred_source_sample_rate(codec: PayloadType) -> int:
+        try:
+            from pyVoIP.codecs import codec_class
+
+            cls = codec_class(codec)
+            if cls is not None:
+                rate = getattr(
+                    cls,
+                    "preferred_source_sample_rate",
+                    getattr(cls, "source_sample_rate", None),
+                )
+                if rate:
+                    return int(rate)
+        except Exception:
+            pass
+
+        return int(getattr(codec, "rate", 8000) or 8000)
+
+    def _resolve_audio_sample_rate(
+        self, audio_sample_rate: Optional[int]
+    ) -> int:
+        sample_rate = (
+            self._preferred_source_sample_rate(self.preference)
+            if audio_sample_rate is None
+            else audio_sample_rate
+        )
+        try:
+            sample_rate = int(sample_rate)
+        except (TypeError, ValueError) as ex:
+            raise RTPParseError("Audio sample rate must be an integer.") from ex
+        if sample_rate <= 0:
+            raise RTPParseError("Audio sample rate must be positive.")
+        return sample_rate
+
     def _codec_adapter(self, codec: PayloadType):
         adapter = self._codec_adapters.get(codec)
         if adapter is not None:
@@ -805,12 +861,22 @@ class RTPClient:
 
         from pyVoIP.codecs import create_codec
 
-        adapter = create_codec(codec)
+        adapter = create_codec(
+            codec,
+            source_sample_rate=self.audio_sample_rate,
+            source_sample_width=self.audio_sample_width,
+            source_channels=self.audio_channels,
+        )
         if adapter is None:
             raise RTPParseError(f"No codec implementation for {codec}.")
 
         self._codec_adapters[codec] = adapter
         return adapter
+
+    def audio_frame_size(self, duration_ms: Optional[int] = None) -> int:
+        return self._codec_adapter(self.preference).source_frame_size(
+            duration_ms
+        )
 
     def _find_telephone_event_payload_type(self) -> Optional[int]:
         for payload_type, codec in self.assoc.items():
@@ -938,6 +1004,9 @@ class RTPClient:
             return False
 
         clock = 8000
+        audio_clock = int(
+            getattr(self._codec_adapter(self.preference), "rate", clock)
+        )
         event_code = _DTMF_CHAR_TO_EVENT[code]
         start_timestamp = self.outTimestamp & 0xFFFFFFFF
         total_duration = max(1, int((duration_ms * clock) / 1000))
@@ -983,7 +1052,13 @@ class RTPClient:
                 timestamp=start_timestamp,
             )
 
-        self.outTimestamp = (start_timestamp + total_duration) & 0xFFFFFFFF
+        audio_timestamp_advance = max(
+            1,
+            int(round((total_duration / clock) * audio_clock)),
+        )
+        self.outTimestamp = (
+            start_timestamp + audio_timestamp_advance
+        ) & 0xFFFFFFFF
         return True
 
     def start(self) -> None:
@@ -1013,7 +1088,13 @@ class RTPClient:
         if sout is not None and sout is not sin:
             sout.close()
 
-    def read(self, length: int = 160, blocking: bool = True) -> bytes:
+    def read(
+        self,
+        length: Optional[int] = None,
+        blocking: bool = True,
+    ) -> bytes:
+        if length is None:
+            length = self.audio_frame_size()
         if not blocking:
             return self.pmin.read(length)
         packet = self.pmin.read(length)
@@ -1047,8 +1128,8 @@ class RTPClient:
                 continue
 
             last_sent = time.monotonic_ns()
-            raw_payload = self.pmout.read()
             adapter = self._codec_adapter(self.preference)
+            raw_payload = self.pmout.read(adapter.source_frame_size())
             try:
                 payload = adapter.encode(raw_payload)
             except Exception as ex:

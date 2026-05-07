@@ -313,6 +313,9 @@ class VoIPCall:
             baseport,
             self.sendmode,
             dtmf=self.dtmf_callback,
+            audio_sample_rate=self.phone.audio_sample_rate,
+            audio_sample_width=self.phone.audio_sample_width,
+            audio_channels=self.phone.audio_channels,
         )
         self.RTPClients.append(c)
 
@@ -707,7 +710,28 @@ class VoIPCall:
         for x in self.RTPClients:
             x.write(data)
 
-    def readAudio(self, length=160, blocking=True) -> bytes:
+    def audio_frame_size(self, duration_ms: int = 20) -> int:
+        if self.RTPClients:
+            return self.RTPClients[0].audio_frame_size(duration_ms)
+        return self.phone.public_audio_frame_size(duration_ms)
+
+    def audio_format(self) -> Dict[str, Any]:
+        sample_rate = (
+            self.RTPClients[0].audio_sample_rate
+            if self.RTPClients
+            else self.phone.audio_sample_rate
+        )
+        return {
+            "sample_rate": sample_rate,
+            "sample_rate_mode": (
+                "auto" if self.phone.audio_sample_rate is None else "fixed"
+            ),
+            "sample_width": self.phone.audio_sample_width,
+            "channels": self.phone.audio_channels,
+            "encoding": "unsigned-8bit-linear",
+        }
+
+    def readAudio(self, length=None, blocking=True) -> bytes:
         warnings.warn(
             "readAudio is deprecated due to PEP8 compliance. "
             + "Use read_audio instead.",
@@ -716,10 +740,13 @@ class VoIPCall:
         )
         return self.read_audio(length, blocking)
 
-    def read_audio(self, length=160, blocking=True) -> bytes:
+    def read_audio(self, length=None, blocking=True) -> bytes:
         if blocking:
             while self.state not in (CallState.ANSWERED, CallState.ENDED):
                 time.sleep(0.01)
+
+        if length is None:
+            length = self.audio_frame_size()
 
         if self.state != CallState.ANSWERED or len(self.RTPClients) == 0:
             return b"\x80" * length
@@ -753,6 +780,7 @@ class VoIPPhone:
         tls_context: Any = None,
         tls_server_name: Optional[str] = None,
         codec_priorities: Optional[Dict[Any, int]] = None,
+        audio_sample_rate: Optional[int] = None,
     ):
         if rtpPortLow > rtpPortHigh:
             raise InvalidRangeError("'rtpPortHigh' must be >= 'rtpPortLow'")
@@ -782,6 +810,20 @@ class VoIPPhone:
         self.tls_context = tls_context
         self.tls_server_name = tls_server_name
         self.codec_priorities = dict(codec_priorities or {})
+        if audio_sample_rate is not None:
+            try:
+                audio_sample_rate = int(audio_sample_rate)
+            except (TypeError, ValueError) as ex:
+                raise InvalidRangeError(
+                    "'audio_sample_rate' must be an integer"
+                ) from ex
+            if audio_sample_rate <= 0:
+                raise InvalidRangeError(
+                    "'audio_sample_rate' must be positive"
+                )
+        self.audio_sample_rate = audio_sample_rate
+        self.audio_sample_width = 1
+        self.audio_channels = 1
         self.callCallback = callCallback
         self._status = PhoneStatus.INACTIVE
         if self.codec_priorities:
@@ -984,6 +1026,24 @@ class VoIPPhone:
     def get_status(self) -> PhoneStatus:
         return self._status
 
+    def public_audio_frame_size(self, duration_ms: int = 20) -> int:
+        # Before negotiation, auto mode has no selected codec yet.  Use the
+        # legacy 8 kHz frame size as the fallback silence/read size.
+        sample_rate = self.audio_sample_rate or 8000
+        return max(1, int(round(sample_rate * (duration_ms / 1000.0))))
+
+    def audio_format(self) -> Dict[str, Any]:
+        return {
+            "sample_rate": self.audio_sample_rate,
+            "sample_rate_mode": (
+                "auto" if self.audio_sample_rate is None else "fixed"
+            ),
+            "fallback_sample_rate": self.audio_sample_rate or 8000,
+            "sample_width": self.audio_sample_width,
+            "channels": self.audio_channels,
+            "encoding": "unsigned-8bit-linear",
+        }
+
     def supported_codecs(self) -> List[Dict[str, Any]]:
         return RTP.supported_codecs()
 
@@ -1049,6 +1109,11 @@ class VoIPPhone:
             info["protocol"] = RTP.RTPProtocol.AVP.value
             info["protocol_supported"] = True
             info["bandwidth_supported"] = True
+            info["public_audio_sample_rate"] = (
+                self.audio_sample_rate
+                or info.get("preferred_source_sample_rate")
+                or info.get("rate")
+            )
             info["supported"] = bool(
                 info["codec_supported"]
                 and info["protocol_supported"]
@@ -1071,6 +1136,7 @@ class VoIPPhone:
             "local_offer": local_offer,
             "local_transmittable_audio": local_transmittable_audio,
             "local_can_start_call": bool(local_transmittable_audio),
+            "audio_format": self.audio_format(),
         }
 
     def remote_supported_codecs(

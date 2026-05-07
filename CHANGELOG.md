@@ -8,6 +8,7 @@
 - Implement opus codec (through libopus)
 - Implement PCMA-WB/PCMU-WB codecs (G.111 extension 1)
 - Implement Silk codec via [pysilk](https://github.com/synodriver/pysilk)
+- Remove hardcoded 8000hz mono bottleneck (to allow for more advanced audio processing)
 
 ## 2.7.7+RFC
 

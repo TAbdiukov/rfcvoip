@@ -188,47 +188,16 @@ class SilkCodec(RTPCodec):
         return data + (pad * (length - len(data)))
 
     def _public_to_silk_pcm16(self, payload: bytes) -> bytes:
-        if not payload:
-            payload = b"\x80" * 160
-
-        signed8 = audioop.bias(payload, 1, -128)
-        pcm16_8k = audioop.lin2lin(signed8, 1, 2)
-        if self.rate == self.source_sample_rate:
-            pcm16 = pcm16_8k
-        else:
-            pcm16, self._encode_rate_state = audioop.ratecv(
-                pcm16_8k,
-                2,
-                1,
-                self.source_sample_rate,
-                self.rate,
-                self._encode_rate_state,
-            )
-
+        pcm16 = self._source_u8_to_pcm16(payload, self.rate)
         return self._fit(pcm16, self._pcm16_bytes_per_frame, b"\x00")
 
     def _silk_pcm16_to_public(self, pcm16: bytes) -> bytes:
-        if not pcm16:
-            return b"\x80" * 160
-
-        if self.rate == self.source_sample_rate:
-            pcm16_8k = pcm16
-        else:
-            pcm16_8k, self._decode_rate_state = audioop.ratecv(
-                pcm16,
-                2,
-                1,
-                self.rate,
-                self.source_sample_rate,
-                self._decode_rate_state,
-            )
-
-        signed8 = audioop.lin2lin(pcm16_8k, 2, 1)
-        public = audioop.bias(signed8, 1, 128)
-        public_frame_len = int(
-            (self.source_sample_rate * self.frame_duration_ms) / 1000
+        public = self._pcm16_to_source_u8(pcm16, self.rate)
+        return self._fit(
+            public,
+            self.source_frame_size(self.frame_duration_ms),
+            b"\x80",
         )
-        return self._fit(public, public_frame_len, b"\x80")
 
     def encode(self, payload: bytes) -> bytes:
         pcm16 = self._public_to_silk_pcm16(payload)
@@ -267,6 +236,8 @@ class SilkCodec(RTPCodec):
 
 class Silk24000Codec(SilkCodec):
     rate = 24000
+    preferred_source_sample_rate = 24000
+    source_sample_rate = 24000
     default_payload_type = 114
     priority_score = 950
     bit_rate = 24000
@@ -274,6 +245,8 @@ class Silk24000Codec(SilkCodec):
 
 class Silk16000Codec(SilkCodec):
     rate = 16000
+    preferred_source_sample_rate = 16000
+    source_sample_rate = 16000
     default_payload_type = 115
     priority_score = 940
     bit_rate = 20000
@@ -281,6 +254,8 @@ class Silk16000Codec(SilkCodec):
 
 class Silk12000Codec(SilkCodec):
     rate = 12000
+    preferred_source_sample_rate = 12000
+    source_sample_rate = 12000
     default_payload_type = 116
     priority_score = 930
     bit_rate = 16000
@@ -288,6 +263,8 @@ class Silk12000Codec(SilkCodec):
 
 class Silk8000Codec(SilkCodec):
     rate = 8000
+    preferred_source_sample_rate = 8000
+    source_sample_rate = 8000
     default_payload_type = 117
     priority_score = 920
     bit_rate = 12000
