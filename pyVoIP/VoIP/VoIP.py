@@ -23,6 +23,17 @@ __all__ = [
 debug = pyVoIP.debug
 
 
+def _media_fmtp_settings(media: Dict[str, Any], method: Any) -> List[str]:
+    attributes = media.get("attributes", {}).get(str(method), {})
+    if not isinstance(attributes, dict):
+        return []
+
+    fmtp = attributes.get("fmtp", {})
+    if isinstance(fmtp, dict):
+        return [str(setting) for setting in fmtp.get("settings", [])]
+    return []
+
+
 class InvalidRangeError(Exception):
     pass
 
@@ -179,10 +190,17 @@ class VoIPCall:
 
                 for m in assoc:
                     codec = assoc[m]
-                    if codec in pyVoIP.RTPCompatibleCodecs and SIP.codec_bandwidth_supported(
-                        codec,
-                        session_bandwidth=session_bandwidth,
-                        media_bandwidth=media_bandwidth,
+                    if (
+                        codec in pyVoIP.RTPCompatibleCodecs
+                        and RTP.codec_fmtp_supported(
+                            codec,
+                            _media_fmtp_settings(i, m),
+                        )
+                        and SIP.codec_bandwidth_supported(
+                            codec,
+                            session_bandwidth=session_bandwidth,
+                            media_bandwidth=media_bandwidth,
+                        )
                     ):
 
                         codecs[m] = codec
@@ -194,6 +212,8 @@ class VoIPCall:
 
                 if not codecs:
                     continue
+
+                codecs = RTP.prioritize_payload_type_map(codecs)
 
                 port = self.phone.request_port()
                 self.assignedPorts[port] = codecs
@@ -513,10 +533,17 @@ class VoIPCall:
             session_bandwidth = request.body.get("b", [])
             media_bandwidth = i.get("bandwidth", [])
             for payload_type, codec in assoc.items():
-                if codec in pyVoIP.RTPCompatibleCodecs and SIP.codec_bandwidth_supported(
-                    codec,
-                    session_bandwidth=session_bandwidth,
-                    media_bandwidth=media_bandwidth,
+                if (
+                    codec in pyVoIP.RTPCompatibleCodecs
+                    and RTP.codec_fmtp_supported(
+                        codec,
+                        _media_fmtp_settings(i, payload_type),
+                    )
+                    and SIP.codec_bandwidth_supported(
+                        codec,
+                        session_bandwidth=session_bandwidth,
+                        media_bandwidth=media_bandwidth,
+                    )
                 ):
                     codecs[payload_type] = codec
                     if RTP.is_transmittable_audio_codec(codec):
@@ -524,6 +551,8 @@ class VoIPCall:
 
             if not has_transmittable_codec:
                 continue
+
+            codecs = RTP.prioritize_payload_type_map(codecs)
 
             self.create_rtp_clients(
                 codecs, self.myIP, self.port, request, i["port"]
@@ -708,6 +737,7 @@ class VoIPPhone:
         transport: Optional[str] = None,
         tls_context: Any = None,
         tls_server_name: Optional[str] = None,
+        codec_priorities: Optional[Dict[Any, int]] = None,
     ):
         if rtpPortLow > rtpPortHigh:
             raise InvalidRangeError("'rtpPortHigh' must be >= 'rtpPortLow'")
@@ -736,9 +766,14 @@ class VoIPPhone:
         self.transport = transport
         self.tls_context = tls_context
         self.tls_server_name = tls_server_name
+        self.codec_priorities = dict(codec_priorities or {})
         self.callCallback = callCallback
         self._status = PhoneStatus.INACTIVE
-        pyVoIP.refresh_supported_codecs()
+        if self.codec_priorities:
+            for codec, score in self.codec_priorities.items():
+                pyVoIP.set_codec_priority(codec, score)
+        else:
+            pyVoIP.refresh_supported_codecs()
 
         # "recvonly", "sendrecv", "sendonly", "inactive"
         self.sendmode = "sendrecv"
@@ -942,6 +977,12 @@ class VoIPPhone:
 
     def refresh_supported_codecs(self) -> List[RTP.PayloadType]:
         return pyVoIP.refresh_supported_codecs()
+
+    def set_codec_priority(self, codec: RTP.PayloadType, score: int) -> List[RTP.PayloadType]:
+        return pyVoIP.set_codec_priority(codec, score)
+
+    def reset_codec_priorities(self) -> List[RTP.PayloadType]:
+        return pyVoIP.reset_codec_priorities()
 
     def local_supported_codecs(self) -> List[Dict[str, Any]]:
         """Return codecs supported by this PyVoIP build/configuration."""
@@ -1167,6 +1208,11 @@ class VoIPPhone:
                         continue
 
                 if codec not in pyVoIP.RTPCompatibleCodecs:
+                    continue
+                if not RTP.codec_fmtp_supported(
+                    codec,
+                    _media_fmtp_settings(media, method),
+                ):
                     continue
                 if not SIP.codec_bandwidth_supported(
                     codec,

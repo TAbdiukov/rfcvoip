@@ -19,6 +19,8 @@ __all__ = [
     "DynamicPayloadType",
     "codec_availability",
     "codec_info",
+    "codec_fmtp_supported",
+    "codec_priority_score",
     "default_payload_type",
     "fmtp_for_payload_type",
     "is_audio_codec",
@@ -26,7 +28,10 @@ __all__ = [
     "is_video_codec",
     "payload_type_from_name",
     "payload_type_media_kind",
+    "prioritize_payload_type_map",
     "rtpmap_for_payload_type",
+    "reset_codec_priorities",
+    "set_codec_priority",
     "supported_codecs",
     "PayloadType",
     "select_transmittable_audio_codec",
@@ -140,6 +145,8 @@ class PayloadType(Enum):
     DVI4_16000 = 6, 16000, 1, "DVI4"
     LPC = 7, 8000, 1, "LPC"
     PCMA = 8, 8000, 1, "PCMA"
+    PCMU_WB = "PCMU-WB", 16000, 1, "PCMU-WB"
+    PCMA_WB = "PCMA-WB", 16000, 1, "PCMA-WB"
     G722 = 9, 8000, 1, "G722"
     L16_2 = 10, 44100, 2, "L16"
     L16 = 11, 44100, 1, "L16"
@@ -176,6 +183,8 @@ _AUDIO_PAYLOAD_TYPES = frozenset(
         PayloadType.DVI4_16000,
         PayloadType.LPC,
         PayloadType.PCMA,
+        PayloadType.PCMU_WB,
+        PayloadType.PCMA_WB,
         PayloadType.G722,
         PayloadType.L16_2,
         PayloadType.L16,
@@ -210,6 +219,8 @@ _ENCODABLE_AUDIO_PAYLOAD_TYPES = frozenset(
     (
         PayloadType.PCMU,
         PayloadType.PCMA,
+        PayloadType.PCMU_WB,
+        PayloadType.PCMA_WB,
         PayloadType.OPUS,
     )
 )
@@ -263,6 +274,7 @@ def _codec_availability_details(codec: PayloadType) -> Dict[str, Any]:
             "can_transmit_audio": False,
             "default_payload_type": None,
             "is_dynamic": True,
+            "priority_score": 0,
         }
 
 
@@ -280,6 +292,70 @@ def codec_availability(
     from pyVoIP.codecs import availability_report
 
     return availability_report()
+
+
+def codec_priority_score(codec: PayloadType) -> int:
+    """Return the local preference score for ``codec``.
+
+    Larger scores are preferred when building local SDP offers and when
+    selecting a negotiated RTP audio codec. Scores are intentionally separate
+    from SDP payload numbers so deployments can tune codec preference without
+    changing the wire-level payload mapping.
+    """
+    try:
+        from pyVoIP.codecs import codec_priority_score as _priority_score
+
+        return _priority_score(codec)
+    except Exception:
+        return 0
+
+
+def set_codec_priority(codec: PayloadType, score: int) -> None:
+    """Override a codec priority score for this process."""
+    from pyVoIP.codecs import set_codec_priority as _set_codec_priority
+
+    _set_codec_priority(codec, score)
+    refresh = getattr(pyVoIP, "refresh_supported_codecs", None)
+    if callable(refresh):
+        refresh()
+
+
+def reset_codec_priorities() -> None:
+    """Reset all codec priority overrides to their defaults."""
+    from pyVoIP.codecs import reset_codec_priorities as _reset_codec_priorities
+
+    _reset_codec_priorities()
+    refresh = getattr(pyVoIP, "refresh_supported_codecs", None)
+    if callable(refresh):
+        refresh()
+
+
+def prioritize_payload_type_map(
+    assoc: Dict[int, PayloadType]
+) -> Dict[int, PayloadType]:
+    """Return ``assoc`` ordered by PyVoIP codec priority.
+
+    Ties preserve the input order, which keeps remote SDP order meaningful when
+    local scores are equal.
+    """
+    indexed = list(enumerate(assoc.items()))
+    indexed.sort(
+        key=lambda item: (-codec_priority_score(item[1][1]), item[0])
+    )
+    return {payload_type: codec for _idx, (payload_type, codec) in indexed}
+
+
+def codec_fmtp_supported(
+    codec: PayloadType,
+    fmtp: Optional[List[str]] = None,
+) -> bool:
+    """Return whether PyVoIP can satisfy negotiated FMTP constraints."""
+    try:
+        from pyVoIP.codecs import codec_fmtp_supported as _codec_fmtp_supported
+
+        return _codec_fmtp_supported(codec, fmtp or [])
+    except Exception:
+        return True
 
 
 def default_payload_type(codec: PayloadType) -> Optional[int]:
@@ -346,7 +422,8 @@ def select_transmittable_audio_codec(
     ``rtpmap``.
     """
     rejected = []
-    for payload_type, codec in assoc.items():
+    candidates: List[Tuple[int, int, PayloadType]] = []
+    for index, (payload_type, codec) in enumerate(assoc.items()):
         try:
             payload_number = int(payload_type)
         except (TypeError, ValueError):
@@ -354,11 +431,19 @@ def select_transmittable_audio_codec(
             continue
 
         if is_transmittable_audio_codec(codec):
-            return payload_number, codec
+            candidates.append((index, payload_number, codec))
+            continue
 
         rejected.append(
             f"{payload_number}:{codec} ({payload_type_media_kind(codec)})"
         )
+
+    if candidates:
+        _index, payload_number, codec = sorted(
+            candidates,
+            key=lambda item: (-codec_priority_score(item[2]), item[0]),
+        )[0]
+        return payload_number, codec
 
     detail = ": " + ", ".join(rejected) if rejected else "."
     raise RTPParseError("No transmittable audio codec negotiated" + detail)
@@ -399,6 +484,8 @@ def codec_info(
     """Return a serializable description of an RTP codec."""
     availability = _codec_availability_details(codec)
     preferred_payload_type = default_payload_type(codec)
+    fmtp_list = list(fmtp or [])
+    fmtp_supported = codec_fmtp_supported(codec, fmtp_list)
 
     if payload_type is None:
         payload_type = preferred_payload_type
@@ -413,6 +500,7 @@ def codec_info(
         supported = (
             codec in getattr(pyVoIP, "RTPCompatibleCodecs", [])
             and bool(availability.get("available", True))
+            and fmtp_supported
         )
 
     is_dynamic = (
@@ -428,10 +516,12 @@ def codec_info(
         "description": codec.description,
         "payload_kind": payload_type_media_kind(codec),
         "can_transmit_audio": is_transmittable_audio_codec(codec),
+        "priority_score": codec_priority_score(codec),
         "rate": codec.rate,
         "channels": codec.channel,
         "is_dynamic": is_dynamic,
-        "fmtp": list(fmtp or []),
+        "fmtp": fmtp_list,
+        "fmtp_supported": fmtp_supported,
         "codec_supported": bool(supported),
         "protocol_supported": None,
         "supported": bool(supported),

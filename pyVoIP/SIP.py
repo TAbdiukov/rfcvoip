@@ -1217,6 +1217,13 @@ def _codec_required_bandwidth_bps(codec: Any) -> Optional[int]:
         if codec in (pyVoIP.RTP.PayloadType.PCMU, pyVoIP.RTP.PayloadType.PCMA):
             channels = max(1, int(codec.channel or 1))
             return int(codec.rate) * channels * 8
+        if codec in (
+            pyVoIP.RTP.PayloadType.PCMU_WB,
+            pyVoIP.RTP.PayloadType.PCMA_WB,
+        ):
+            # PyVoIP transmits G.711.1 R1/core mode for these codecs, which
+            # carries 40 octets per 5 ms frame = 64 kbit/s payload bandwidth.
+            return 64000
         if codec == pyVoIP.RTP.PayloadType.OPUS:
             # Opus is variable bitrate; enforce explicit SDP caps only when a
             # fixed local payload bitrate is known.
@@ -1295,12 +1302,14 @@ def _unknown_codec_info(
         "channels": channels,
         "is_dynamic": payload_type is None or payload_type >= 96,
         "fmtp": list(fmtp),
+        "fmtp_supported": False,
         "codec_supported": False,
         "protocol_supported": _media_protocol_supported(media),
         "supported": False,
         "available": False,
         "availability_reason": "Codec is not known to PyVoIP.",
         "library": None,
+        "priority_score": 0,
         "default_payload_type": None,
         "rtpmap": None,
         "bandwidth_supported": True,
@@ -1366,6 +1375,7 @@ def _codec_info_from_media(
 
     codec_supported = codec in getattr(pyVoIP, "RTPCompatibleCodecs", [])
     protocol_supported = _media_protocol_supported(media)
+    fmtp_supported = pyVoIP.RTP.codec_fmtp_supported(codec, fmtp)
     bandwidth_supported = codec_bandwidth_supported(
         codec,
         session_bandwidth=session_bandwidth,
@@ -1377,10 +1387,16 @@ def _codec_info_from_media(
         media_type=media.get("type"),
         fmtp=fmtp,
         source=source,
-        supported=codec_supported and protocol_supported and bandwidth_supported,
+        supported=(
+            codec_supported
+            and protocol_supported
+            and fmtp_supported
+            and bandwidth_supported
+        ),
     )
     info["codec_supported"] = codec_supported
     info["protocol_supported"] = protocol_supported
+    info["fmtp_supported"] = fmtp_supported
     if rate is not None:
         info["rate"] = rate
     if channels is not None:

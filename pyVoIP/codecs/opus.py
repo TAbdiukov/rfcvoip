@@ -149,6 +149,7 @@ class OpusCodec(RTPCodec):
     rtpmap_channels = 2
     default_payload_type = 111
     dynamic = True
+    priority_score = 1000
     default_fmtp = ["minptime=10;useinbandfec=1"]
     max_data_bytes = 4000
     max_frame_size = 5760

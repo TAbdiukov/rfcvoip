@@ -33,6 +33,7 @@ class RTPCodec:
     default_payload_type: Optional[int] = None
     dynamic = False
     can_transmit_audio = True
+    priority_score = 0
     frame_duration_ms = 20
     source_sample_rate = 8000
     source_sample_width = 1
@@ -54,6 +55,10 @@ class RTPCodec:
     @classmethod
     def fmtp(cls) -> List[str]:
         return list(cls.default_fmtp)
+
+    @classmethod
+    def fmtp_supported(cls, fmtp: List[str]) -> bool:
+        return True
 
     def packet_duration_seconds(self, source_payload: bytes) -> float:
         bytes_per_second = (

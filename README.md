@@ -1,6 +1,7 @@
 # pyVoIP
 PyVoIP is a pure python VoIP/SIP/RTP library.  Currently, it supports PCMA,
-PCMU, telephone-event, and optional Opus when libopus is available.
+PCMU, PCMA-WB, PCMU-WB, telephone-event, and optional Opus when libopus is
+available.
 
 This library does not depend on a sound library, i.e. you can use any sound library that can handle linear sound data i.e. pyaudio or even wave.  Keep in mind PCMU/PCMA only supports 8000Hz, 1 channel, 8 bit audio.
 
@@ -9,6 +10,12 @@ then falls back to common system libopus names. If libopus is
 not available, Opus is reported as unavailable and is not included in SIP offers.
 The public PyVoIP audio read/write format remains 8000Hz, 1 channel, 8 bit
 audio; Opus frames are converted internally.
+
+PCMA-WB and PCMU-WB are implemented as RFC 5391 / G.711.1 R1 core-layer
+payloads. PyVoIP advertises `mode-set=1`, uses a 16000Hz RTP clock, and keeps
+the public read/write format at 8000Hz, 1 channel, 8 bit audio. Incoming
+G.711.1 packets in wider modes are decoded from their G.711-compatible L0 core
+layer.
 
 ## Getting Started
 Simply run `pip install pyVoIP`, or if installing from source:
@@ -105,7 +112,7 @@ phone = VoIPPhone(
 )
 ```
 
-### Inspecting supported codecs
+### Inspecting and prioritising supported codecs
 Parsed SIP/SDP messages and active calls can report the codecs offered by the
 remote endpoint and the codecs supported by PyVoIP.
 
@@ -134,11 +141,19 @@ pyvoip_codecs = pyVoIP.supported_codecs()
 codec_status = pyVoIP.codec_availability()
 all_known_codecs = pyVoIP.supported_codecs(include_unavailable=True)
 
+# Codec priority scores control local SDP offer order and negotiated codec
+# selection. Higher scores are preferred. Defaults prefer Opus, then G.711.1
+# wideband core codecs, then narrowband G.711.
+print(pyVoIP.codec_priorities())
+pyVoIP.set_codec_priority(pyVoIP.PayloadType.PCMA, 950)
+pyVoIP.set_codec_priority(pyVoIP.PayloadType.PCMU, 900)
+pyVoIP.reset_codec_priorities()
+
 If Python loads libopus after PyVoIP has already been imported, refresh the
 codec registry before creating or placing calls:
 
 ```python
-import pyVoIP +
+import pyVoIP
 pyVoIP.refresh_supported_codecs()
 print(pyVoIP.codec_availability())
 ```

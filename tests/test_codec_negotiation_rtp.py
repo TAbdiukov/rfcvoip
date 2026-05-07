@@ -82,4 +82,6 @@ def test_default_audio_offer_includes_all_transmittable_audio_codecs_and_dtmf():
         0: RTP.PayloadType.PCMU,
         8: RTP.PayloadType.PCMA,
         101: RTP.PayloadType.EVENT,
+        112: RTP.PayloadType.PCMU_WB,
+        113: RTP.PayloadType.PCMA_WB,
     }

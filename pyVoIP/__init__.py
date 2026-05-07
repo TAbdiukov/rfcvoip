@@ -1,8 +1,12 @@
 __all__ = [
     "SIP", "RTP", "VoIP",
     "codec_availability",
+    "codec_priorities",
+    "codec_priority_score",
     "codec_support_report",
     "refresh_supported_codecs",
+    "reset_codec_priorities",
+    "set_codec_priority",
     "sip_supported_codecs",
     "supported_codecs",
 ]
@@ -69,6 +73,48 @@ def refresh_supported_codecs():
     refresh_codec_availability()
     RTPCompatibleCodecs = enabled_payload_types(include_events=True)
     return list(RTPCompatibleCodecs)
+
+
+def set_codec_priority(payload_type, score):
+    """Override a codec priority score and refresh the enabled codec order."""
+    global RTPCompatibleCodecs
+
+    from pyVoIP.codecs import enabled_payload_types
+    from pyVoIP.codecs import set_codec_priority as _set_codec_priority
+
+    _set_codec_priority(payload_type, score)
+    RTPCompatibleCodecs = enabled_payload_types(include_events=True)
+    return list(RTPCompatibleCodecs)
+
+
+def reset_codec_priorities():
+    """Reset codec priority overrides and refresh the enabled codec order."""
+    global RTPCompatibleCodecs
+
+    from pyVoIP.codecs import enabled_payload_types, reset_codec_priorities as _reset
+
+    _reset()
+    RTPCompatibleCodecs = enabled_payload_types(include_events=True)
+    return list(RTPCompatibleCodecs)
+
+
+def codec_priority_score(payload_type):
+    """Return the current priority score for one payload type."""
+    from pyVoIP.codecs import codec_priority_score as _codec_priority_score
+
+    return _codec_priority_score(payload_type)
+
+
+def codec_priorities(include_events=True):
+    """Return current codec priority scores keyed by codec name."""
+    from pyVoIP.codecs import codec_priorities as _codec_priorities
+
+    return {
+        str(codec): score
+        for codec, score in _codec_priorities(
+            include_events=include_events
+        ).items()
+    }
 
 
 def codec_availability(refresh=False):
