@@ -4,7 +4,9 @@
 
 - Design and implement codec abstraction
 - Set up G.111 codec
-- Implement OPUS codec (through libopus)
+- Implement opus codec (through libopus)
+- Implement PCMA-WB/PCMU-WB codecs (G.111 extension 1)
+- Implement codec priorities
 
 ## 2.7.7+RFC
 
