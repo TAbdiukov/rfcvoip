@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.7.8+RFC
+
+- Design and implement codec abstraction
+- Set up G.111 codec
+- Implement OPUS codec (through libopus)
+
 ## 2.7.7+RFC
 
 - SIP Experimental: Add TCP/TLS SIP transport with RFC 3263-compliant resolution (NAPTR/SRV, `;transport=` support, and TLS via SIPS)

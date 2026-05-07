@@ -17,12 +17,16 @@ __all__ = [
     "add_bytes",
     "byte_to_bits",
     "DynamicPayloadType",
+    "codec_availability",
     "codec_info",
+    "default_payload_type",
+    "fmtp_for_payload_type",
     "is_audio_codec",
     "is_transmittable_audio_codec",
     "is_video_codec",
     "payload_type_from_name",
     "payload_type_media_kind",
+    "rtpmap_for_payload_type",
     "supported_codecs",
     "PayloadType",
     "select_transmittable_audio_codec",
@@ -147,6 +151,7 @@ class PayloadType(Enum):
     DVI4_11025 = 16, 11025, 1, "DVI4"
     DVI4_22050 = 17, 22050, 1, "DVI4"
     G729 = 18, 8000, 1, "G729"
+    OPUS = "opus", 48000, 1, "opus"
 
     # Video
     CELB = 25, 90000, 0, "CelB"
@@ -181,6 +186,7 @@ _AUDIO_PAYLOAD_TYPES = frozenset(
         PayloadType.DVI4_11025,
         PayloadType.DVI4_22050,
         PayloadType.G729,
+        PayloadType.OPUS,
         # RFC 3551 defines MP2T as both audio and video.  It is classified as
         # audio here for reporting, but it is intentionally not transmittable
         # because PyVoIP does not implement an MP2T encoder.
@@ -204,6 +210,7 @@ _ENCODABLE_AUDIO_PAYLOAD_TYPES = frozenset(
     (
         PayloadType.PCMU,
         PayloadType.PCMA,
+        PayloadType.OPUS,
     )
 )
 
@@ -238,17 +245,94 @@ def is_video_codec(codec: PayloadType) -> bool:
     return codec in _VIDEO_PAYLOAD_TYPES
 
 
+def _codec_availability_details(codec: PayloadType) -> Dict[str, Any]:
+    try:
+        from pyVoIP.codecs import codec_availability as _availability
+
+        return _availability(codec)
+    except Exception as ex:
+        return {
+            "available": False,
+            "reason": str(ex),
+            "library": None,
+            "name": str(codec),
+            "description": getattr(codec, "description", None),
+            "payload_kind": payload_type_media_kind(codec),
+            "rate": getattr(codec, "rate", 0),
+            "channels": getattr(codec, "channel", 0),
+            "can_transmit_audio": False,
+            "default_payload_type": None,
+            "is_dynamic": True,
+        }
+
+
+def codec_availability(
+    codec: Optional[PayloadType] = None,
+) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+    """Return codec availability details.
+
+    With no argument this returns all known codec implementations, including
+    optional codecs that are not currently available.
+    """
+    if codec is not None:
+        return _codec_availability_details(codec)
+
+    from pyVoIP.codecs import availability_report
+
+    return availability_report()
+
+
+def default_payload_type(codec: PayloadType) -> Optional[int]:
+    try:
+        from pyVoIP.codecs import default_payload_type as _default_payload_type
+
+        return _default_payload_type(codec)
+    except Exception:
+        try:
+            return int(codec)
+        except Exception:
+            return None
+
+
+def rtpmap_for_payload_type(payload_type: int, codec: PayloadType) -> str:
+    try:
+        from pyVoIP.codecs import rtpmap_for_codec
+
+        rtpmap = rtpmap_for_codec(codec, int(payload_type))
+        if rtpmap:
+            return rtpmap
+    except Exception:
+        pass
+
+    channels = codec.channel
+    channel_suffix = f"/{channels}" if channels and channels > 1 else ""
+    return f"{payload_type} {codec}/{codec.rate}{channel_suffix}"
+
+
+def fmtp_for_payload_type(payload_type: int, codec: PayloadType) -> List[str]:
+    try:
+        from pyVoIP.codecs import fmtp_for_codec
+
+        return fmtp_for_codec(codec)
+    except Exception:
+        if codec == PayloadType.EVENT:
+            return ["0-15"]
+        return []
+
+
 def is_transmittable_audio_codec(codec: PayloadType) -> bool:
     """Return whether PyVoIP can encode ``codec`` as the main audio stream."""
     if codec not in _ENCODABLE_AUDIO_PAYLOAD_TYPES:
         return False
     if codec not in getattr(pyVoIP, "RTPCompatibleCodecs", ()):  # pragma: no branch
         return False
+
     try:
-        int(codec)
-    except (DynamicPayloadType, TypeError, ValueError):
-        return False
-    return True
+        from pyVoIP.codecs import codec_can_transmit_audio
+
+        return codec_can_transmit_audio(codec)
+    except Exception:
+        return codec in (PayloadType.PCMU, PayloadType.PCMA)
 
 
 def select_transmittable_audio_codec(
@@ -313,6 +397,12 @@ def codec_info(
     supported: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Return a serializable description of an RTP codec."""
+    availability = _codec_availability_details(codec)
+    preferred_payload_type = default_payload_type(codec)
+
+    if payload_type is None:
+        payload_type = preferred_payload_type
+
     if payload_type is None:
         try:
             payload_type = int(codec)
@@ -320,7 +410,10 @@ def codec_info(
             payload_type = None
 
     if supported is None:
-        supported = codec in getattr(pyVoIP, "RTPCompatibleCodecs", [])
+        supported = (
+            codec in getattr(pyVoIP, "RTPCompatibleCodecs", [])
+            and bool(availability.get("available", True))
+        )
 
     is_dynamic = (
         payload_type is None
@@ -342,14 +435,30 @@ def codec_info(
         "codec_supported": bool(supported),
         "protocol_supported": None,
         "supported": bool(supported),
+        "available": bool(availability.get("available", supported)),
+        "availability_reason": availability.get("reason"),
+        "library": availability.get("library"),
+        "default_payload_type": preferred_payload_type,
+        "rtpmap": (
+            rtpmap_for_payload_type(payload_type, codec)
+            if payload_type is not None
+            else None
+        ),
         "source": source,
     }
 
-def supported_codecs() -> List[Dict[str, Any]]:
+def supported_codecs(include_unavailable: bool = False) -> List[Dict[str, Any]]:
     """Return codecs supported by this PyVoIP build/configuration."""
+    if include_unavailable:
+        from pyVoIP.codecs import known_payload_types
+
+        codecs = known_payload_types(include_events=True)
+    else:
+        codecs = getattr(pyVoIP, "RTPCompatibleCodecs", [])
+
     return [
-        codec_info(codec)
-        for codec in getattr(pyVoIP, "RTPCompatibleCodecs", [])
+        codec_info(codec, payload_type=default_payload_type(codec))
+        for codec in codecs
     ]
 
 
@@ -503,6 +612,7 @@ class RTPClient:
         self.NSD = True
         # Example: {0: PayloadType.PCMU, 101: PayloadType.EVENT}
         self.assoc = assoc
+        self._codec_adapters: Dict[PayloadType, Any] = {}
         debug("Selecting negotiated audio codec for transmission")
         try:
             (
@@ -538,6 +648,20 @@ class RTPClient:
         self._telephone_event_pt = self._find_telephone_event_payload_type()
         self._pending_dtmf: Deque[str] = deque()
         self._dtmf_lock = threading.Lock()
+
+    def _codec_adapter(self, codec: PayloadType):
+        adapter = self._codec_adapters.get(codec)
+        if adapter is not None:
+            return adapter
+
+        from pyVoIP.codecs import create_codec
+
+        adapter = create_codec(codec)
+        if adapter is None:
+            raise RTPParseError(f"No codec implementation for {codec}.")
+
+        self._codec_adapters[codec] = adapter
+        return adapter
 
     def _find_telephone_event_payload_type(self) -> Optional[int]:
         for payload_type, codec in self.assoc.items():
@@ -775,7 +899,17 @@ class RTPClient:
 
             last_sent = time.monotonic_ns()
             raw_payload = self.pmout.read()
-            payload = self.encode_packet(raw_payload)
+            adapter = self._codec_adapter(self.preference)
+            try:
+                payload = adapter.encode(raw_payload)
+            except Exception as ex:
+                warnings.warn(
+                    f"RTP audio encode failed for {self.preference}: {ex}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                time.sleep(0.02)
+                continue
             timestamp = self.outTimestamp & 0xFFFFFFFF
             self._send_rtp_packet(
                 self.preference_payload_type,
@@ -783,11 +917,13 @@ class RTPClient:
                 marker=False,
                 timestamp=timestamp,
             )
-            self.outTimestamp = (self.outTimestamp + len(payload)) & 0xFFFFFFFF
+            self.outTimestamp = (
+                self.outTimestamp
+                + adapter.rtp_timestamp_increment(raw_payload, payload)
+            ) & 0xFFFFFFFF
             # Calculate how long it took to generate this packet.
             # Then how long we should wait to send the next, then devide by 2.
-            rate = self.preference.rate if self.preference.rate > 0 else 8000
-            delay = (1 / rate) * 160
+            delay = adapter.packet_duration_seconds(raw_payload)
             sleep_time = max(
                 0, delay - ((time.monotonic_ns() - last_sent) / 1000000000)
             )
@@ -809,16 +945,29 @@ class RTPClient:
 
     def parse_packet(self, packet: bytes) -> None:
         msg = RTPMessage(packet, self.assoc)
-        if msg.payload_type == PayloadType.PCMU:
-            self.parse_pcmu(msg)
-        elif msg.payload_type == PayloadType.PCMA:
-            self.parse_pcma(msg)
-        elif msg.payload_type == PayloadType.EVENT:
+        if msg.payload_type == PayloadType.EVENT:
             self.parse_telephone_event(msg)
+        elif is_audio_codec(msg.payload_type):
+            self.parse_audio(msg)
         else:
             raise RTPParseError(
                 "Unsupported codec (parse): " + str(msg.payload_type)
             )
+
+    def parse_audio(
+        self,
+        packet: RTPMessage,
+        codec: Optional[PayloadType] = None,
+    ) -> None:
+        codec = codec or packet.payload_type
+        adapter = self._codec_adapter(codec)
+        try:
+            data = adapter.decode(packet.payload)
+        except Exception as ex:
+            raise RTPParseError(
+                f"RTP audio decode failed for {codec}: {ex}"
+            ) from ex
+        self.pmin.write(adapter.output_offset(packet.timestamp), data)
 
     def encodePacket(self, payload: bytes) -> bytes:
         warnings.warn(
@@ -830,14 +979,7 @@ class RTPClient:
         return self.encode_packet(payload)
 
     def encode_packet(self, payload: bytes) -> bytes:
-        if self.preference == PayloadType.PCMU:
-            return self.encode_pcmu(payload)
-        elif self.preference == PayloadType.PCMA:
-            return self.encode_pcma(payload)
-        else:
-            raise RTPParseError(
-                "Unsupported codec (encode): " + str(self.preference)
-            )
+        return self._codec_adapter(self.preference).encode(payload)
 
     def parsePCMU(self, packet: RTPMessage) -> None:
         warnings.warn(
@@ -849,9 +991,7 @@ class RTPClient:
         return self.parse_pcmu(packet)
 
     def parse_pcmu(self, packet: RTPMessage) -> None:
-        data = audioop.ulaw2lin(packet.payload, 1)
-        data = audioop.bias(data, 1, 128)
-        self.pmin.write(packet.timestamp, data)
+        self.parse_audio(packet, PayloadType.PCMU)
 
     def encodePCMU(self, packet: bytes) -> bytes:
         warnings.warn(
@@ -863,9 +1003,7 @@ class RTPClient:
         return self.encode_pcmu(packet)
 
     def encode_pcmu(self, packet: bytes) -> bytes:
-        packet = audioop.bias(packet, 1, -128)
-        packet = audioop.lin2ulaw(packet, 1)
-        return packet
+        return self._codec_adapter(PayloadType.PCMU).encode(packet)
 
     def parsePCMA(self, packet: RTPMessage) -> None:
         warnings.warn(
@@ -877,9 +1015,7 @@ class RTPClient:
         return self.parse_pcma(packet)
 
     def parse_pcma(self, packet: RTPMessage) -> None:
-        data = audioop.alaw2lin(packet.payload, 1)
-        data = audioop.bias(data, 1, 128)
-        self.pmin.write(packet.timestamp, data)
+        self.parse_audio(packet, PayloadType.PCMA)
 
     def encodePCMA(self, packet: bytes) -> bytes:
         warnings.warn(
@@ -891,9 +1027,7 @@ class RTPClient:
         return self.encode_pcma(packet)
 
     def encode_pcma(self, packet: bytes) -> bytes:
-        packet = audioop.bias(packet, 1, -128)
-        packet = audioop.lin2alaw(packet, 1)
-        return packet
+        return self._codec_adapter(PayloadType.PCMA).encode(packet)
 
     def parseTelephoneEvent(self, packet: RTPMessage) -> None:
         warnings.warn(

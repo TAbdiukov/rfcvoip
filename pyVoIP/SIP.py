@@ -1217,6 +1217,10 @@ def _codec_required_bandwidth_bps(codec: Any) -> Optional[int]:
         if codec in (pyVoIP.RTP.PayloadType.PCMU, pyVoIP.RTP.PayloadType.PCMA):
             channels = max(1, int(codec.channel or 1))
             return int(codec.rate) * channels * 8
+        if codec == pyVoIP.RTP.PayloadType.OPUS:
+            # Opus is variable bitrate; enforce explicit SDP caps only when a
+            # fixed local payload bitrate is known.
+            return None
     except Exception:
         return None
     return None
@@ -1294,6 +1298,11 @@ def _unknown_codec_info(
         "codec_supported": False,
         "protocol_supported": _media_protocol_supported(media),
         "supported": False,
+        "available": False,
+        "availability_reason": "Codec is not known to PyVoIP.",
+        "library": None,
+        "default_payload_type": None,
+        "rtpmap": None,
         "bandwidth_supported": True,
         "bandwidth": _bandwidth_context(
             session_bandwidth=session_bandwidth,
@@ -3346,9 +3355,14 @@ class SIPClient:
         body += "\r\n"
         for x in ms:
             for m in ms[x]:
-                body += f"a=rtpmap:{m} {ms[x][m]}/{ms[x][m].rate}\r\n"
-                if str(ms[x][m]) == "telephone-event":
-                    body += f"a=fmtp:{m} 0-15\r\n"
+                codec = ms[x][m]
+                body += (
+                    "a=rtpmap:"
+                    + pyVoIP.RTP.rtpmap_for_payload_type(m, codec)
+                    + "\r\n"
+                )
+                for fmtp in pyVoIP.RTP.fmtp_for_payload_type(m, codec):
+                    body += f"a=fmtp:{m} {fmtp}\r\n"
         body += "a=ptime:20\r\n"
         body += "a=maxptime:150\r\n"
         body += f"a={sendtype}\r\n"
@@ -3421,9 +3435,14 @@ class SIPClient:
         body += "\r\n"
         for x in ms:
             for m in ms[x]:
-                body += f"a=rtpmap:{m} {ms[x][m]}/{ms[x][m].rate}\r\n"
-                if str(ms[x][m]) == "telephone-event":
-                    body += f"a=fmtp:{m} 0-15\r\n"
+                codec = ms[x][m]
+                body += (
+                    "a=rtpmap:"
+                    + pyVoIP.RTP.rtpmap_for_payload_type(m, codec)
+                    + "\r\n"
+                )
+                for fmtp in pyVoIP.RTP.fmtp_for_payload_type(m, codec):
+                    body += f"a=fmtp:{m} {fmtp}\r\n"
         body += "a=ptime:20\r\n"
         body += "a=maxptime:150\r\n"
         body += f"a={sendtype}\r\n"

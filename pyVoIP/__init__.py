@@ -1,6 +1,8 @@
 __all__ = [
     "SIP", "RTP", "VoIP",
+    "codec_availability",
     "codec_support_report",
+    "refresh_supported_codecs",
     "sip_supported_codecs",
     "supported_codecs",
 ]
@@ -36,6 +38,13 @@ def debug(s, e=None):
 # noqa because import will fail if debug is not defined
 from pyVoIP.RTP import PayloadType  # noqa: E402
 
+
+def _build_rtp_compatible_codecs():
+    from pyVoIP.codecs import enabled_payload_types
+
+    return enabled_payload_types(include_events=True)
+
+
 SIPCompatibleMethods = [
     "INVITE",
     "ACK",
@@ -48,14 +57,32 @@ SIPCompatibleMethods = [
 SIPCompatibleVersions = ["SIP/2.0"]
 
 RTPCompatibleVersions = [2]
-RTPCompatibleCodecs = [PayloadType.PCMU, PayloadType.PCMA, PayloadType.EVENT]
+RTPCompatibleCodecs = _build_rtp_compatible_codecs()
 
 
-def supported_codecs():
+def refresh_supported_codecs():
+    """Refresh optional codec availability and return enabled payload types."""
+    global RTPCompatibleCodecs
+
+    from pyVoIP.codecs import enabled_payload_types, refresh_codec_availability
+
+    refresh_codec_availability()
+    RTPCompatibleCodecs = enabled_payload_types(include_events=True)
+    return list(RTPCompatibleCodecs)
+
+
+def codec_availability(refresh=False):
+    """Return all known codec availability details, including unavailable ones."""
+    from pyVoIP.codecs import availability_report
+
+    return availability_report(refresh=refresh)
+
+
+def supported_codecs(include_unavailable=False):
     """Return codecs supported by this PyVoIP build/configuration."""
     from pyVoIP.RTP import supported_codecs as _supported_codecs
 
-    return _supported_codecs()
+    return _supported_codecs(include_unavailable=include_unavailable)
 
 
 def sip_supported_codecs(message, media_type="audio"):

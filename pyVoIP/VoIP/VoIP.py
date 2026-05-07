@@ -738,6 +738,7 @@ class VoIPPhone:
         self.tls_server_name = tls_server_name
         self.callCallback = callCallback
         self._status = PhoneStatus.INACTIVE
+        pyVoIP.refresh_supported_codecs()
 
         # "recvonly", "sendrecv", "sendonly", "inactive"
         self.sendmode = "sendrecv"
@@ -936,9 +937,34 @@ class VoIPPhone:
     def supported_codecs(self) -> List[Dict[str, Any]]:
         return RTP.supported_codecs()
 
+    def codec_availability(self, refresh: bool = False) -> List[Dict[str, Any]]:
+        return pyVoIP.codec_availability(refresh=refresh)
+
+    def refresh_supported_codecs(self) -> List[RTP.PayloadType]:
+        return pyVoIP.refresh_supported_codecs()
+
     def local_supported_codecs(self) -> List[Dict[str, Any]]:
         """Return codecs supported by this PyVoIP build/configuration."""
         return self.supported_codecs()
+
+    def _add_codec_to_offer(
+        self,
+        offer_codecs: Dict[int, RTP.PayloadType],
+        codec: RTP.PayloadType,
+    ) -> None:
+        payload_type = RTP.default_payload_type(codec)
+        if payload_type is None:
+            try:
+                payload_type = int(codec)
+            except Exception:
+                payload_type = 96
+
+        while payload_type in offer_codecs:
+            payload_type += 1
+            if payload_type > 127:
+                payload_type = 96
+
+        offer_codecs[payload_type] = codec
 
     def local_codec_offer(self) -> List[Dict[str, Any]]:
         """Return the audio codecs this phone would offer in an INVITE.
@@ -950,13 +976,10 @@ class VoIPPhone:
         offer_codecs: Dict[int, RTP.PayloadType] = {}
         for codec in pyVoIP.RTPCompatibleCodecs:
             if RTP.is_transmittable_audio_codec(codec):
-                offer_codecs[int(codec)] = codec
+                self._add_codec_to_offer(offer_codecs, codec)
 
         if RTP.PayloadType.EVENT in pyVoIP.RTPCompatibleCodecs:
-            telephone_event_payload = 101
-            while telephone_event_payload in offer_codecs:
-                telephone_event_payload += 1
-            offer_codecs[telephone_event_payload] = RTP.PayloadType.EVENT
+            self._add_codec_to_offer(offer_codecs, RTP.PayloadType.EVENT)
 
         offer = []
         for payload_type, codec in offer_codecs.items():
@@ -1088,13 +1111,10 @@ class VoIPPhone:
         for codec in pyVoIP.RTPCompatibleCodecs:
             if not RTP.is_transmittable_audio_codec(codec):
                 continue
-            codecs[int(codec)] = codec
+            self._add_codec_to_offer(codecs, codec)
 
         if RTP.PayloadType.EVENT in pyVoIP.RTPCompatibleCodecs:
-            telephone_event_payload = 101
-            while telephone_event_payload in codecs:
-                telephone_event_payload += 1
-            codecs[telephone_event_payload] = RTP.PayloadType.EVENT
+            self._add_codec_to_offer(codecs, RTP.PayloadType.EVENT)
 
         if not any(RTP.is_transmittable_audio_codec(codec) for codec in codecs.values()):
             raise RTP.RTPParseError("No transmittable audio codecs are enabled.")

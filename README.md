@@ -1,7 +1,14 @@
 # pyVoIP
-PyVoIP is a pure python VoIP/SIP/RTP library.  Currently, it supports PCMA, PCMU, and telephone-event.
+PyVoIP is a pure python VoIP/SIP/RTP library.  Currently, it supports PCMA,
+PCMU, telephone-event, and optional Opus when libopus is available.
 
 This library does not depend on a sound library, i.e. you can use any sound library that can handle linear sound data i.e. pyaudio or even wave.  Keep in mind PCMU/PCMA only supports 8000Hz, 1 channel, 8 bit audio.
+
+Opus support is optional. PyVoIP first reuses the libopus handle already loaded,
+then falls back to common system libopus names. If libopus is
+not available, Opus is reported as unavailable and is not included in SIP offers.
+The public PyVoIP audio read/write format remains 8000Hz, 1 channel, 8 bit
+audio; Opus frames are converted internally.
 
 ## Getting Started
 Simply run `pip install pyVoIP`, or if installing from source:
@@ -121,6 +128,19 @@ report = sip_message.codec_support_report()
 
 # And at module level:
 pyvoip_codecs = pyVoIP.supported_codecs()
+```
+
+# Include optional codecs that are currently unavailable, useful for frontend UI:
+codec_status = pyVoIP.codec_availability()
+all_known_codecs = pyVoIP.supported_codecs(include_unavailable=True)
+
+If Python loads libopus after PyVoIP has already been imported, refresh the
+codec registry before creating or placing calls:
+
+```python
+import pyVoIP +
+pyVoIP.refresh_supported_codecs()
+print(pyVoIP.codec_availability())
 ```
 
 ### Pre-call codec inspection

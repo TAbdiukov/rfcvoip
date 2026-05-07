@@ -34,6 +34,9 @@ setup(
         "Bug Tracker": "https://github.com/tayler6000/pyVoIP/issues",
         "Documentaiton": "https://pyvoip.readthedocs.io/",
     },
+    extras_require={
+        "opus": ["discord.py>=2.0"],
+    },
     classifiers=[
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",
