@@ -196,7 +196,8 @@ print("Can start call from codec data:", remote_report["can_start_call"])
 If the remote side does not include SDP in the `OPTIONS` response,
 `remote_report["remote"]` will be empty and `can_start_call` will be `None`.
 
-### Sponsors
+### Contributors
 
 - [Nabu Casa](https://www.nabucasa.com/)
 - [Home Assistant](https://www.home-assistant.io/)
+- [synodriver](https://github.com/synodriver) (pysilk)
