@@ -200,6 +200,18 @@ print("Can start call from codec data:", remote_report["can_start_call"])
 If the remote side does not include SDP in the `OPTIONS` response,
 `remote_report["remote"]` will be empty and `can_start_call` will be `None`.
 
+### Development checks
+
+The repository includes CI checks for package compilation and pytest-based
+tests. To run the same checks locally:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pip install .
+python -m compileall -q pyVoIP
+python -m pytest -q
+```
+
 ### Contributors
 
 - [Nabu Casa](https://www.nabucasa.com/)
