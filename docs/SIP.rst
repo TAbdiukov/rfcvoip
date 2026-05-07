@@ -87,7 +87,9 @@ The SIPClient class is used to communicate with the PBX/VoIP server.  It is resp
 
     The *fatalCallback* argument is called when repeated SIP registration failures cause the owning phone to stop.
 
-    The *auth_username* argument is an optional digest username to use for proxy-authentication challenges such as SIP 407.  If omitted, *username* is reused.
+	auth_username: Optional[str] = None
+		Optional authentication identity used for Proxy-Authorization challenges.
+		If omitted, the normal username is used.
 
   **recv**\ () -> None
     This method is called by SIPClient.start() and is responsible for receiving and parsing through SIP requests.  **This should not be called by the** :term:`user`.

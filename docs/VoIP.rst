@@ -163,7 +163,9 @@ The VoIPPhone class is used to manage the :ref:`SIPClient` class and create :ref
 
     The *rtpPortLow* and *rtpPortHigh* arguments are used to generate random ports to use for audio transfer.  Per RFC 4566 Sections `5.7 <https://tools.ietf.org/html/rfc4566#section-5.7>`_ and `5.14 <https://tools.ietf.org/html/rfc4566#section-5.14>`_, it can take multiple ports to fully communicate with other :term:`clients<client>`, as such a large range is recommended.  If an invalid range is given, a :ref:`InvalidStateError<invalidstateerror>` will be thrown.
 
-	The *auth_username* argument is an optional digest username to use for proxy-authentication challenges such as SIP 407.  If omitted, *username* is reused.
+	auth_username: Optional[str] = None
+		Optional authentication identity used for Proxy-Authorization challenges.
+		If omitted, the normal username is used.
 
   **callback**\ (request: :ref:`SIPMessage`) -> None
     This method is called by the :ref:`SIPClient` when an INVITE or BYE request is received.  This function then creates a :ref:`VoIPCall` or terminates it respectively.  When a VoIPCall is created, it will then pass it to the *callCallback* function as an argument.  If *callCallback* is set to None, this function replies as BUSY. **This function should not be called by the** :term:`user`.
