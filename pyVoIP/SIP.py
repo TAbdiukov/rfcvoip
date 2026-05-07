@@ -575,8 +575,14 @@ class SIPMessage:
         self.status = SIPStatus(491)
         self.headers: Dict[str, Any] = {"Via": []}
         self.body: Dict[str, Any] = {}
+
+        # Backwards-compatible auth storage.  ``authentication`` and
+        # ``authentication_header`` keep the most recently parsed digest auth
+        # header, while ``authentication_challenges`` preserves per-challenge
+        # state so WWW-Authenticate and Proxy-Authenticate can coexist.
         self.authentication: Dict[str, str] = {}
-        # Which header populated `self.authentication` (WWW-Authenticate,
+        self.authentication_challenges: Dict[str, Dict[str, str]] = {}
+        # Which header populated ``self.authentication`` (WWW-Authenticate,
         # Proxy-Authenticate, Authorization, Proxy-Authorization).
         self.authentication_header: Optional[str] = None
         self.body_raw = b""
@@ -733,13 +739,15 @@ class SIPMessage:
             # Common formats:
             #   Digest realm="...", nonce="..."
             # Some stacks omit the space after "Digest".
-            if data.startswith("Digest"):
+            if data.lower().startswith("digest"):
                 data = data[len("Digest") :].lstrip()
             row_data = self.auth_match.findall(data)
             header_data = {}
             for var, data in row_data:
                 header_data[var] = data.strip('"')
             self.headers[header] = header_data
+            if header in ("WWW-Authenticate", "Proxy-Authenticate"):
+                self.authentication_challenges[header] = dict(header_data)
             self.authentication = header_data
             self.authentication_header = header
         else:
@@ -2867,7 +2875,10 @@ class SIPClient:
         ):
             header_name = "Proxy-Authenticate"
 
-        realm = request.authentication["realm"]
+        challenge_header = self._authorization_challenge_header(header_name)
+        auth = self._select_auth_challenge(request, challenge_header)
+
+        realm = auth["realm"]
         user = self._auth_user_for_header(header_name)
 
         HA1 = user + ":" + realm + ":" + self.password
@@ -2879,7 +2890,7 @@ class SIPClient:
             + self._registrar_uri()
         )
         HA2 = hashlib.md5(HA2.encode("utf8")).hexdigest()
-        nonce = request.authentication["nonce"]
+        nonce = auth["nonce"]
         response = (HA1 + ":" + nonce + ":" + HA2).encode("utf8")
         response = hashlib.md5(response).hexdigest().encode("utf8")
 
@@ -3615,6 +3626,36 @@ class SIPClient:
             return self.auth_username
         return self.username
 
+    @staticmethod
+    def _authorization_challenge_header(
+        header_name: Optional[str],
+    ) -> str:
+        if header_name in ("Proxy-Authenticate", "Proxy-Authorization"):
+            return "Proxy-Authenticate"
+        return "WWW-Authenticate"
+
+    @staticmethod
+    def _select_auth_challenge(
+        message: SIPMessage,
+        challenge_header: str,
+    ) -> Dict[str, str]:
+        challenges = getattr(message, "authentication_challenges", {})
+        if isinstance(challenges, dict):
+            auth = challenges.get(challenge_header)
+            if isinstance(auth, dict) and auth:
+                return auth
+
+        auth = message.headers.get(challenge_header)
+        if isinstance(auth, dict) and auth:
+            return auth
+
+        if getattr(message, "authentication_header", None) == challenge_header:
+            return message.authentication
+
+        # Preserve existing fallback behavior for older SIPMessage-like
+        # objects and unusual responses with only one parsed auth header.
+        return message.authentication
+
     def _build_digest_auth_header(
         self,
         challenge: SIPMessage,
@@ -3623,7 +3664,8 @@ class SIPClient:
         method: str,
         uri: str,
     ) -> str:
-        auth = challenge.authentication or {}
+        challenge_header = self._authorization_challenge_header(header_name)
+        auth = self._select_auth_challenge(challenge, challenge_header)
         realm = auth.get("realm")
         nonce = auth.get("nonce")
         if not realm or not nonce:
