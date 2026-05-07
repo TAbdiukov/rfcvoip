@@ -159,6 +159,10 @@ class PayloadType(Enum):
     DVI4_22050 = 17, 22050, 1, "DVI4"
     G729 = 18, 8000, 1, "G729"
     OPUS = "opus", 48000, 1, "opus"
+    SILK_24000 = "SILK/24000", 24000, 1, "SILK"
+    SILK_16000 = "SILK/16000", 16000, 1, "SILK"
+    SILK_12000 = "SILK/12000", 12000, 1, "SILK"
+    SILK_8000 = "SILK/8000", 8000, 1, "SILK"
 
     # Video
     CELB = 25, 90000, 0, "CelB"
@@ -196,6 +200,10 @@ _AUDIO_PAYLOAD_TYPES = frozenset(
         PayloadType.DVI4_22050,
         PayloadType.G729,
         PayloadType.OPUS,
+        PayloadType.SILK_24000,
+        PayloadType.SILK_16000,
+        PayloadType.SILK_12000,
+        PayloadType.SILK_8000,
         # RFC 3551 defines MP2T as both audio and video.  It is classified as
         # audio here for reporting, but it is intentionally not transmittable
         # because PyVoIP does not implement an MP2T encoder.
@@ -222,6 +230,10 @@ _ENCODABLE_AUDIO_PAYLOAD_TYPES = frozenset(
         PayloadType.PCMU_WB,
         PayloadType.PCMA_WB,
         PayloadType.OPUS,
+        PayloadType.SILK_24000,
+        PayloadType.SILK_16000,
+        PayloadType.SILK_12000,
+        PayloadType.SILK_8000,
     )
 )
 
@@ -449,27 +461,74 @@ def select_transmittable_audio_codec(
     raise RTPParseError("No transmittable audio codec negotiated" + detail)
 
 
-def payload_type_from_name(name: str) -> PayloadType:
+def payload_type_from_name(
+    name: str,
+    rate: Optional[Union[int, str]] = None,
+    channels: Optional[Union[int, str]] = None,
+) -> PayloadType:
     """Return a :class:`PayloadType` matching an SDP codec name.
 
     SDP ``rtpmap`` lines identify dynamic payloads by encoding names such as
     ``telephone-event`` or ``opus``.  Static payloads are often represented by
     their payload number, but some peers still include an ``rtpmap`` name like
-    ``PCMU``.  This helper resolves the names known by PyVoIP without relying
-    on hard-coded codec lists outside this module.
+    ``PCMU``.  ``rate`` and ``channels`` disambiguate families with the same
+    encoding name, such as ``DVI4`` and ``SILK``.
     """
     needle = str(name or "").strip().lower()
     if not needle:
         raise ValueError("Codec name cannot be empty.")
 
+    desired_rate = None
+    if rate not in (None, ""):
+        try:
+            desired_rate = int(rate)
+        except (TypeError, ValueError):
+            desired_rate = None
+
+    desired_channels = None
+    if channels not in (None, ""):
+        try:
+            desired_channels = int(channels)
+        except (TypeError, ValueError):
+            desired_channels = None
+
+    matches = []
     for codec in PayloadType:
         names = {str(codec).lower(), codec.description.lower()}
         if isinstance(codec.value, str):
             names.add(codec.value.lower())
         if needle in names:
-            return codec
+            matches.append(codec)
 
-    raise ValueError(f"RTP Payload type {name!r} not found.")
+    if not matches:
+        raise ValueError(f"RTP Payload type {name!r} not found.")
+
+    if desired_rate is not None:
+        rate_matches = [
+            codec for codec in matches if int(getattr(codec, "rate", 0)) == desired_rate
+        ]
+        if rate_matches:
+            matches = rate_matches
+        elif len(matches) > 1:
+            raise ValueError(
+                f"RTP Payload type {name!r}/{desired_rate} not found."
+            )
+
+    if desired_channels is not None:
+        channel_matches = [
+            codec
+            for codec in matches
+            if int(getattr(codec, "channel", 0)) == desired_channels
+        ]
+        if channel_matches:
+            matches = channel_matches
+        elif len(matches) > 1:
+            raise ValueError(
+                f"RTP Payload type {name!r} with {desired_channels} "
+                + "channels not found."
+            )
+
+    return matches[0]
 
 
 def codec_info(

@@ -3,10 +3,11 @@
 ## 2.7.8+RFC
 
 - Design and implement codec abstraction
+- Implement codec priorities
 - Set up G.111 codec
 - Implement opus codec (through libopus)
 - Implement PCMA-WB/PCMU-WB codecs (G.111 extension 1)
-- Implement codec priorities
+- Implement Silk codec via [pysilk](https://github.com/synodriver/pysilk)
 
 ## 2.7.7+RFC
 

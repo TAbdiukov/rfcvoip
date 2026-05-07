@@ -1228,6 +1228,15 @@ def _codec_required_bandwidth_bps(codec: Any) -> Optional[int]:
             # Opus is variable bitrate; enforce explicit SDP caps only when a
             # fixed local payload bitrate is known.
             return None
+        if codec in (
+            pyVoIP.RTP.PayloadType.SILK_24000,
+            pyVoIP.RTP.PayloadType.SILK_16000,
+            pyVoIP.RTP.PayloadType.SILK_12000,
+            pyVoIP.RTP.PayloadType.SILK_8000,
+        ):
+            # SILK is adaptive/variable bitrate.  Its fmtp
+            # maxaveragebitrate is checked by the codec implementation.
+            return None
     except Exception:
         return None
     return None
@@ -1349,7 +1358,11 @@ def _codec_info_from_media(
         rate = _safe_int(rtpmap.get("frequency"))
         channels = _safe_int(rtpmap.get("encoding"))
         try:
-            codec = pyVoIP.RTP.payload_type_from_name(name)
+            codec = pyVoIP.RTP.payload_type_from_name(
+                name,
+                rate=rate,
+                channels=channels,
+            )
         except ValueError:
             codec = None
 

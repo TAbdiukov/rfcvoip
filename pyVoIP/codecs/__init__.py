@@ -4,10 +4,21 @@ from pyVoIP.RTP import PayloadType
 from pyVoIP.codecs.base import CodecAvailability, RTPCodec
 from pyVoIP.codecs.g711 import PCMACodec, PCMAWBCodec, PCMUCodec, PCMUWBCodec
 from pyVoIP.codecs.opus import OpusCodec
+from pyVoIP.codecs.silk import (
+    Silk8000Codec,
+    Silk12000Codec,
+    Silk16000Codec,
+    Silk24000Codec,
+    SilkCodec,
+)
 
 
 _CODEC_CLASSES: Dict[PayloadType, Type[RTPCodec]] = {
     PayloadType.OPUS: OpusCodec,
+    PayloadType.SILK_24000: Silk24000Codec,
+    PayloadType.SILK_16000: Silk16000Codec,
+    PayloadType.SILK_12000: Silk12000Codec,
+    PayloadType.SILK_8000: Silk8000Codec,
     PayloadType.PCMU_WB: PCMUWBCodec,
     PayloadType.PCMA_WB: PCMAWBCodec,
     PayloadType.PCMU: PCMUCodec,
@@ -16,6 +27,10 @@ _CODEC_CLASSES: Dict[PayloadType, Type[RTPCodec]] = {
 
 _CODEC_ORDER = (
     PayloadType.OPUS,
+    PayloadType.SILK_24000,
+    PayloadType.SILK_16000,
+    PayloadType.SILK_12000,
+    PayloadType.SILK_8000,
     PayloadType.PCMU_WB,
     PayloadType.PCMA_WB,
     PayloadType.PCMU,
@@ -104,6 +119,7 @@ def known_payload_types(*, include_events: bool = True) -> List[PayloadType]:
 
 def refresh_codec_availability() -> None:
     OpusCodec.refresh_availability_cache()
+    SilkCodec.refresh_availability_cache()
 
 
 def codec_availability(payload_type: PayloadType) -> Dict[str, object]:

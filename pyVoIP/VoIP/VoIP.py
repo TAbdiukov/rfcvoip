@@ -34,6 +34,30 @@ def _media_fmtp_settings(media: Dict[str, Any], method: Any) -> List[str]:
     return []
 
 
+def _payload_type_from_media_method(
+    media: Dict[str, Any],
+    method: Any,
+) -> RTP.PayloadType:
+    try:
+        return RTP.PayloadType(int(method))
+    except (TypeError, ValueError):
+        pass
+
+    attributes = media.get("attributes", {}).get(str(method), {})
+    if not isinstance(attributes, dict):
+        raise KeyError(method)
+
+    rtpmap = attributes.get("rtpmap", {})
+    if not isinstance(rtpmap, dict):
+        raise KeyError("rtpmap")
+
+    return RTP.payload_type_from_name(
+        str(rtpmap.get("name") or ""),
+        rate=rtpmap.get("frequency"),
+        channels=rtpmap.get("encoding"),
+    )
+
+
 class InvalidRangeError(Exception):
     pass
 
@@ -141,37 +165,34 @@ class VoIPCall:
                 pt = None
                 for x in i["methods"]:
                     try:
-                        p = RTP.PayloadType(int(x))
+                        p = _payload_type_from_media_method(i, x)
                         assoc[int(x)] = p
                     except ValueError:
+                        # Sometimes rtpmap raises a KeyError because fmtp
+                        # is set instead.
                         try:
-                            p = RTP.payload_type_from_name(
-                                i["attributes"][x]["rtpmap"]["name"]
-                            )
-                            assoc[int(x)] = p
-                        except ValueError:
-                            # Sometimes rtpmap raise a KeyError because fmtp
-                            # is set instate
                             pt = i["attributes"][x]["rtpmap"]["name"]
-                            warnings.warn(
-                                f"RTP Payload type {pt} not found.",
-                                stacklevel=20,
-                            )
-                            # Resets the warning filter so this warning will
-                            # come up again if it happens.  However, this
-                            # also resets all other warnings.
-                            warnings.simplefilter("default")
-                            p = RTP.PayloadType("UNKNOWN")
-                            assoc[int(x)] = p
                         except KeyError:
-                            # fix issue 42
-                            # When rtpmap is not found, also set the found
-                            # element to UNKNOWN
-                            warnings.warn(
-                                f"RTP KeyError {x} not found.", stacklevel=20
-                            )
-                            p = RTP.PayloadType("UNKNOWN")
-                            assoc[int(x)] = p
+                            pt = x
+                        warnings.warn(
+                            f"RTP Payload type {pt} not found.",
+                            stacklevel=20,
+                        )
+                        # Resets the warning filter so this warning will
+                        # come up again if it happens.  However, this
+                        # also resets all other warnings.
+                        warnings.simplefilter("default")
+                        p = RTP.PayloadType("UNKNOWN")
+                        assoc[int(x)] = p
+                    except KeyError:
+                        # fix issue 42
+                        # When rtpmap is not found, also set the found
+                        # element to UNKNOWN
+                        warnings.warn(
+                            f"RTP KeyError {x} not found.", stacklevel=20
+                        )
+                        p = RTP.PayloadType("UNKNOWN")
+                        assoc[int(x)] = p
 
                 if e:
                     if pt:
@@ -511,22 +532,16 @@ class VoIPCall:
             p = None
             for x in i["methods"]:
                 try:
-                    p = RTP.PayloadType(int(x))
+                    p = _payload_type_from_media_method(i, x)
                     assoc[int(x)] = p
-                except ValueError:
-                    try:
-                        p = RTP.payload_type_from_name(
-                            i["attributes"][x]["rtpmap"]["name"]
-                        )
-                        assoc[int(x)] = p
-                    except ValueError:
-                        if p:
-                            raise RTP.RTPParseError(
-                                f"RTP Payload type {p} not found."
-                            )
+                except (KeyError, ValueError):
+                    if p:
                         raise RTP.RTPParseError(
-                            "RTP Payload type could not be derived from SDP."
+                            f"RTP Payload type {p} not found."
                         )
+                    raise RTP.RTPParseError(
+                        "RTP Payload type could not be derived from SDP."
+                    )
 
             codecs = {}
             has_transmittable_codec = False
@@ -1196,16 +1211,9 @@ class VoIPPhone:
 
             for method in media.get("methods", []):
                 try:
-                    codec = RTP.PayloadType(int(method))
-                except ValueError:
-                    try:
-                        codec_name = media["attributes"][method]["rtpmap"]["name"]
-                    except KeyError:
-                        continue
-                    try:
-                        codec = RTP.payload_type_from_name(codec_name)
-                    except ValueError:
-                        continue
+                    codec = _payload_type_from_media_method(media, method)
+                except (KeyError, ValueError):
+                    continue
 
                 if codec not in pyVoIP.RTPCompatibleCodecs:
                     continue

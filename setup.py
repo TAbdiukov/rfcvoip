@@ -36,6 +36,8 @@ setup(
     },
     extras_require={
         "opus": ["discord.py>=2.0"],
+        "silk": ["silk-python>=0.2.6"],
+        "all": ["discord.py>=2.0", "silk-python>=0.2.6"],
     },
     classifiers=[
         "Programming Language :: Python :: 3",
