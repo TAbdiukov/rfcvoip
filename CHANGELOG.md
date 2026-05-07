@@ -4,7 +4,7 @@
 
 - SIP Experimental: Add TCP/TLS SIP transport with RFC 3263-compliant resolution (NAPTR/SRV, `;transport=` support, and TLS via SIPS)
 - SIP: RFC 3261-compliant compact headers support (supersedes [PyVOIP#309](https://github.com/tayler6000/pyVoIP/pull/309))
-- SIP: RFC 5621-compliant multipart SDP support (Robust MIME walker that supports recursive nested packets; much better than [PyVOIP#259](https://github.com/tayler6000/pyVoIP/pull/259))
+- SIP: RFC 5621-compliant multipart SDP support (Robust MIME walker supports recursive data; much supersedes [PyVOIP#259](https://github.com/tayler6000/pyVoIP/pull/259))
 - PyVOIP: Fix phantom calls due to ambiguous INVITE handling.
 - RTP: Fix call deny flow crashing (methodically fixes [PyVOIP#243](https://github.com/tayler6000/pyVoIP/issues/243))
 - Docs: Fix 'ANSWERED' typo (fixes: [PyVOIP#310](https://github.com/tayler6000/pyVoIP/issues/310))
