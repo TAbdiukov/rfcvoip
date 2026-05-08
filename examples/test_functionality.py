@@ -8,35 +8,31 @@ TEST_CONDITION = (
 )
 REASON = "Not checking functionality"
 
-@pytest.fixture
-def phone():
-    phone = VoIPPhone(
+def _functional_phone(username, password):
+    return VoIPPhone(
         "127.0.0.1",
         5060,
-        "pass",
-        "Testing123!",
+        username,
+        password,
         myIP="127.0.0.1",
         sipPort=5059,
         proxy="127.0.0.1",
         proxyPort=5060,
     )
+
+
+@pytest.fixture
+def phone():
+    phone = _functional_phone("pass", "Testing123!")
     phone.start()
     yield phone
     phone.stop()
 
 
+
 @pytest.fixture
 def nopass_phone():
-    phone = VoIPPhone(
-        "127.0.0.1",
-        5060,
-        "nopass",
-        "",
-        myIP="127.0.0.1",
-        sipPort=5059,
-        proxy="127.0.0.1",
-        proxyPort=5060,
-    )
+    phone = _functional_phone("nopass", "")
     phone.start()
     yield phone
     phone.stop()
@@ -44,9 +40,7 @@ def nopass_phone():
 
 @pytest.mark.skipif(TEST_CONDITION, reason=REASON)
 def test_nopass():
-	phone = VoIPPhone(
-		"127.0.0.1", 5060, "nopass", "", myIP="127.0.0.1", sipPort=5059
-	)
+	phone = _functional_phone("nopass", "")
 	assert phone.get_status() == PhoneStatus.INACTIVE
 	phone.start()
 	while phone.get_status() == PhoneStatus.REGISTERING:
@@ -60,14 +54,7 @@ def test_nopass():
 
 @pytest.mark.skipif(TEST_CONDITION, reason=REASON)
 def test_pass():
-	phone = VoIPPhone(
-		"127.0.0.1",
-		5060,
-		"pass",
-		"Testing123!",
-		myIP="127.0.0.1",
-		sipPort=5059,
-	)
+	phone = _functional_phone("pass", "Testing123!")
 	assert phone.get_status() == PhoneStatus.INACTIVE
 	phone.start()
 	while phone.get_status() == PhoneStatus.REGISTERING:
@@ -98,8 +85,6 @@ def test_make_nopass_call(nopass_phone):
 	call.hangup()
 	assert call.state == CallState.ENDED
 
-
-@pytest.mark.skip
 @pytest.mark.skipif(TEST_CONDITION, reason=REASON)
 def test_remote_hangup(phone):
 	call = phone.call("answerme")

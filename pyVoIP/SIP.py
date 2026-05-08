@@ -2796,7 +2796,10 @@ class SIPClient:
     def recv_loop(self) -> None:
         while self.NSD:
             try:
-                with acquired_lock_and_unblocked_socket(self.recvLock, self.s):
+                sock = getattr(self, "s", None)
+                if sock is None:
+                    break
+                with acquired_lock_and_unblocked_socket(self.recvLock, sock):
                     self.recv()
             except BlockingIOError:
                 time.sleep(0.01)

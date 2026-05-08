@@ -47,7 +47,7 @@ jobs:
         run: python -m compileall -q pyVoIP
 
       - name: Run pytest
-        run: python -m pytest -q
+        run: python -m pytest -q tests
 
   package:
     name: Build package
