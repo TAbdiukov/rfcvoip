@@ -3,7 +3,7 @@
 ## 2.7.9+RFC
 
 - Codecs are now auto-discovered
-- Codec implementation modules to own their own payload-type binding and codec metadata
+- Codec implementation modules own their own metadata and payload-type binding
 - Cleanup
 
 ## 2.7.8+RFC
