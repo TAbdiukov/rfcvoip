@@ -304,6 +304,28 @@ class VoIPCall:
         if not request.body.get("c"):
             return
 
+        phone = getattr(self, "phone", None)
+        audio_sample_rate = getattr(phone, "audio_sample_rate", None)
+        audio_sample_width = getattr(phone, "audio_sample_width", 1)
+        audio_channels = getattr(phone, "audio_channels", 1)
+
+        rtp_kwargs = {"dtmf": self.dtmf_callback}
+
+        # Keep lightweight tests and older RTPClient-compatible doubles working:
+        # the real RTPClient defaults are already equivalent for the common
+        # unsigned 8-bit mono auto-rate case, so only pass the newer audio
+        # format keywords when the phone has a non-default public format.
+        if (
+            audio_sample_rate is not None
+            or audio_sample_width != 1
+            or audio_channels != 1
+        ):
+            rtp_kwargs.update(
+                audio_sample_rate=audio_sample_rate,
+                audio_sample_width=audio_sample_width,
+                audio_channels=audio_channels,
+            )
+
         remote_ip = request.body["c"][0]["address"]
         c = RTP.RTPClient(
             codecs,
@@ -312,10 +334,7 @@ class VoIPCall:
             remote_ip,
             baseport,
             self.sendmode,
-            dtmf=self.dtmf_callback,
-            audio_sample_rate=self.phone.audio_sample_rate,
-            audio_sample_width=self.phone.audio_sample_width,
-            audio_channels=self.phone.audio_channels,
+            **rtp_kwargs,
         )
         self.RTPClients.append(c)
 

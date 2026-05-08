@@ -2,6 +2,8 @@ import pytest
 
 from pyVoIP import RTP, SIP
 from pyVoIP.VoIP import VoIPPhone
+from pyVoIP import RTPCompatibleCodecs
+
 
 
 def sip_invite_with_sdp(sdp: str) -> SIP.SIPMessage:
@@ -78,10 +80,20 @@ def test_dynamic_rtpmap_audio_offer_is_compatible():
 def test_default_audio_offer_includes_all_transmittable_audio_codecs_and_dtmf():
     phone = VoIPPhone("sip.example.com", 5060, "alice", "secret", myIP="192.0.2.10")
 
-    assert phone._default_audio_offer() == {
-        0: RTP.PayloadType.PCMU,
-        8: RTP.PayloadType.PCMA,
-        101: RTP.PayloadType.EVENT,
-        112: RTP.PayloadType.PCMU_WB,
-        113: RTP.PayloadType.PCMA_WB,
+    offer = phone._default_audio_offer()
+
+    assert offer[0] == RTP.PayloadType.PCMU
+    assert offer[8] == RTP.PayloadType.PCMA
+    assert offer[101] == RTP.PayloadType.EVENT
+    assert offer[112] == RTP.PayloadType.PCMU_WB
+    assert offer[113] == RTP.PayloadType.PCMA_WB
+
+    expected_codecs = {
+        codec
+        for codec in RTPCompatibleCodecs
+        if RTP.is_transmittable_audio_codec(codec)
     }
+    if RTP.PayloadType.EVENT in RTPCompatibleCodecs:
+        expected_codecs.add(RTP.PayloadType.EVENT)
+
+    assert set(offer.values()) == expected_codecs

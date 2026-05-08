@@ -62,10 +62,11 @@ class _G711WidebandCoreCodec(RTPCodec):
     preferred_source_sample_rate = 16000
     source_sample_rate = 16000
     default_fmtp = ["mode-set=1"]
-    frame_duration_ms = 5
+    frame_duration_ms = 20
     core_sample_rate = 8000
     _mode_index = 1
     _core_frame_bytes = 40
+    _core_frame_duration_ms = 5
     _core_pcm16_frame_bytes = _core_frame_bytes * 2
     _mode_frame_bytes = {
         1: 40,
@@ -131,14 +132,21 @@ class _G711WidebandCoreCodec(RTPCodec):
 
         audio_data = payload[1:]
         core_payload = bytearray()
+        frame_count = 0
         for offset in range(0, len(audio_data) - frame_size + 1, frame_size):
             frame = audio_data[offset : offset + frame_size]
             core_payload.extend(frame[: self._core_frame_bytes])
+            frame_count += 1
 
         if not core_payload:
             return b""
+
         pcm16_8k = self._decode_core_pcm16(bytes(core_payload))
-        return self._pcm16_to_source_u8(pcm16_8k, self.core_sample_rate)
+        decoded = self._pcm16_to_source_u8(pcm16_8k, self.core_sample_rate)
+        expected_length = self.source_frame_size(
+            self._core_frame_duration_ms * frame_count
+        )
+        return self._fit_bytes(decoded, expected_length, b"\x80")
 
 
 class PCMUWBCodec(_G711WidebandCoreCodec):

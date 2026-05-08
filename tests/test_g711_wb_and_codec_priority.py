@@ -6,21 +6,22 @@ from pyVoIP.codecs import create_codec
 def test_pcmu_wb_encodes_g7111_r1_core_payload():
     codec = create_codec(RTP.PayloadType.PCMU_WB)
 
-    payload = codec.encode(b"\x80" * 160)
+    payload = codec.encode(b"\x80" * codec.source_frame_size(20))
 
     assert payload[0] & 0x07 == 1
     assert len(payload) == 161
-    assert len(codec.decode(payload)) == 160
+    assert len(codec.decode(payload)) == codec.source_frame_size(20)
 
 
 def test_pcma_wb_extracts_l0_core_from_r3_payload():
     pcma = create_codec(RTP.PayloadType.PCMA)
     pcma_wb = create_codec(RTP.PayloadType.PCMA_WB)
-    core = pcma.encode(b"\x80" * 40)
+    core = pcma.encode(b"\x80" * pcma.source_frame_size(5))
 
     payload = bytes([4]) + core + (b"\x00" * 20)
 
-    assert len(pcma_wb.decode(payload)) == 40
+    decoded = pcma_wb.decode(payload)
+    assert len(decoded) == pcma_wb.source_frame_size(5)
 
 
 def test_wideband_mode_set_must_allow_r1_for_transmit():
