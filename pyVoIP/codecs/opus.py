@@ -142,6 +142,7 @@ def _get_libopus_encode_handle():
 
 
 class OpusCodec(RTPCodec):
+    payload_type = "opus"
     name = "opus"
     description = "opus"
     rate = 48000

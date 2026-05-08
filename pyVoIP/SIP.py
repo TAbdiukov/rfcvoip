@@ -1207,39 +1207,13 @@ def _enforceable_bandwidth_limit_bps(
 
 
 def _codec_required_bandwidth_bps(codec: Any) -> Optional[int]:
-    """Return PyVoIP's payload bitrate requirement for known codecs.
-
-    PyVoIP currently transmits G.711 PCMU/PCMA as 8-bit samples at 8 kHz,
-    which needs 64 kbit/s of payload bandwidth. telephone-event is not a
-    continuous audio codec, so it has no fixed stream bandwidth requirement.
-    """
+    """Return a registered codec's payload bitrate requirement, if fixed."""
     try:
-        if codec in (pyVoIP.RTP.PayloadType.PCMU, pyVoIP.RTP.PayloadType.PCMA):
-            channels = max(1, int(codec.channel or 1))
-            return int(codec.rate) * channels * 8
-        if codec in (
-            pyVoIP.RTP.PayloadType.PCMU_WB,
-            pyVoIP.RTP.PayloadType.PCMA_WB,
-        ):
-            # PyVoIP transmits G.711.1 R1/core mode for these codecs, which
-            # carries 40 octets per 5 ms frame = 64 kbit/s payload bandwidth.
-            return 64000
-        if codec == pyVoIP.RTP.PayloadType.OPUS:
-            # Opus is variable bitrate; enforce explicit SDP caps only when a
-            # fixed local payload bitrate is known.
-            return None
-        if codec in (
-            pyVoIP.RTP.PayloadType.SILK_24000,
-            pyVoIP.RTP.PayloadType.SILK_16000,
-            pyVoIP.RTP.PayloadType.SILK_12000,
-            pyVoIP.RTP.PayloadType.SILK_8000,
-        ):
-            # SILK is adaptive/variable bitrate.  Its fmtp
-            # maxaveragebitrate is checked by the codec implementation.
-            return None
+        from pyVoIP.codecs import codec_required_bandwidth_bps as required_bps
+
+        return required_bps(codec)
     except Exception:
         return None
-    return None
 
 
 def codec_bandwidth_supported(

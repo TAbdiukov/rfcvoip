@@ -25,6 +25,7 @@ class RTPCodec:
     public sample rate and their RTP/native clock internally.
     """
 
+    payload_type = None
     name = ""
     description = ""
     payload_kind = "audio"
@@ -41,6 +42,7 @@ class RTPCodec:
     source_sample_width = 1
     source_channels = 1
     default_fmtp: List[str] = []
+    required_bandwidth_bps: Optional[int] = None
 
     @classmethod
     def availability(cls) -> CodecAvailability:

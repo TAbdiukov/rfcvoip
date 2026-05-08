@@ -235,6 +235,7 @@ class SilkCodec(RTPCodec):
 
 
 class Silk24000Codec(SilkCodec):
+    payload_type = "SILK/24000"
     rate = 24000
     preferred_source_sample_rate = 24000
     source_sample_rate = 24000
@@ -244,6 +245,7 @@ class Silk24000Codec(SilkCodec):
 
 
 class Silk16000Codec(SilkCodec):
+    payload_type = "SILK/16000"
     rate = 16000
     preferred_source_sample_rate = 16000
     source_sample_rate = 16000
@@ -253,6 +255,7 @@ class Silk16000Codec(SilkCodec):
 
 
 class Silk12000Codec(SilkCodec):
+    payload_type = "SILK/12000"
     rate = 12000
     preferred_source_sample_rate = 12000
     source_sample_rate = 12000
@@ -262,6 +265,7 @@ class Silk12000Codec(SilkCodec):
 
 
 class Silk8000Codec(SilkCodec):
+    payload_type = "SILK/8000"
     rate = 8000
     preferred_source_sample_rate = 8000
     source_sample_rate = 8000

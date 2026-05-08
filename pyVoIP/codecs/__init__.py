@@ -1,46 +1,9 @@
-from typing import Dict, List, Optional, Type
+from importlib import import_module
+import pkgutil
+from typing import Dict, List, Optional, Tuple, Type
 
 from pyVoIP.RTP import PayloadType
 from pyVoIP.codecs.base import CodecAvailability, RTPCodec
-from pyVoIP.codecs.g711 import PCMACodec, PCMAWBCodec, PCMUCodec, PCMUWBCodec
-from pyVoIP.codecs.opus import OpusCodec
-from pyVoIP.codecs.silk import (
-    Silk8000Codec,
-    Silk12000Codec,
-    Silk16000Codec,
-    Silk24000Codec,
-    SilkCodec,
-)
-
-
-_CODEC_CLASSES: Dict[PayloadType, Type[RTPCodec]] = {
-    PayloadType.OPUS: OpusCodec,
-    PayloadType.SILK_24000: Silk24000Codec,
-    PayloadType.SILK_16000: Silk16000Codec,
-    PayloadType.SILK_12000: Silk12000Codec,
-    PayloadType.SILK_8000: Silk8000Codec,
-    PayloadType.PCMU_WB: PCMUWBCodec,
-    PayloadType.PCMA_WB: PCMAWBCodec,
-    PayloadType.PCMU: PCMUCodec,
-    PayloadType.PCMA: PCMACodec,
-}
-
-_CODEC_ORDER = (
-    PayloadType.OPUS,
-    PayloadType.SILK_24000,
-    PayloadType.SILK_16000,
-    PayloadType.SILK_12000,
-    PayloadType.SILK_8000,
-    PayloadType.PCMU_WB,
-    PayloadType.PCMA_WB,
-    PayloadType.PCMU,
-    PayloadType.PCMA,
-)
-
-_CODEC_ORDER_INDEX = {
-    payload_type: index for index, payload_type in enumerate(_CODEC_ORDER)
-}
-_CODEC_PRIORITY_OVERRIDES: Dict[PayloadType, int] = {}
 
 
 def _normalize_payload_type(payload_type) -> PayloadType:
@@ -64,6 +27,54 @@ def _normalize_payload_type(payload_type) -> PayloadType:
             return codec
 
     raise ValueError(f"RTP payload type {payload_type!r} not found.")
+
+
+def _iter_codec_modules():
+    for module_info in pkgutil.iter_modules(__path__):
+        if module_info.name == "base" or module_info.name.startswith("_"):
+            continue
+        yield import_module(f"{__name__}.{module_info.name}")
+
+
+def _discover_codec_classes() -> Tuple[
+    Dict[PayloadType, Type[RTPCodec]],
+    Dict[PayloadType, int],
+]:
+    codec_classes: Dict[PayloadType, Type[RTPCodec]] = {}
+    codec_order: Dict[PayloadType, int] = {}
+
+    for module in _iter_codec_modules():
+        for obj in module.__dict__.values():
+            if (
+                not isinstance(obj, type)
+                or obj is RTPCodec
+                or not issubclass(obj, RTPCodec)
+                or obj.__module__ != module.__name__
+            ):
+                continue
+
+            if not obj.__name__.startswith("_"):
+                globals()[obj.__name__] = obj
+
+            payload_ref = getattr(obj, "payload_type", None)
+            if payload_ref is None:
+                continue
+
+            payload_type = _normalize_payload_type(payload_ref)
+            if payload_type in codec_classes:
+                raise ValueError(
+                    f"Duplicate codec registration for {payload_type}: "
+                    + f"{codec_classes[payload_type].__name__}, {obj.__name__}"
+                )
+
+            codec_classes[payload_type] = obj
+            codec_order[payload_type] = len(codec_order)
+
+    return codec_classes, codec_order
+
+
+_CODEC_CLASSES, _CODEC_ORDER_INDEX = _discover_codec_classes()
+_CODEC_PRIORITY_OVERRIDES: Dict[PayloadType, int] = {}
 
 
 def codec_class(payload_type: PayloadType) -> Optional[Type[RTPCodec]]:
@@ -111,15 +122,17 @@ def sorted_payload_types(payload_types: List[PayloadType]) -> List[PayloadType]:
 
 
 def known_payload_types(*, include_events: bool = True) -> List[PayloadType]:
-    payload_types = sorted_payload_types(list(_CODEC_ORDER))
+    payload_types = sorted_payload_types(list(_CODEC_CLASSES))
     if include_events:
         payload_types.append(PayloadType.EVENT)
     return payload_types
 
 
 def refresh_codec_availability() -> None:
-    OpusCodec.refresh_availability_cache()
-    SilkCodec.refresh_availability_cache()
+    for cls in _CODEC_CLASSES.values():
+        refresh = getattr(cls, "refresh_availability_cache", None)
+        if callable(refresh):
+            refresh()
 
 
 def codec_availability(payload_type: PayloadType) -> Dict[str, object]:
@@ -140,6 +153,7 @@ def codec_availability(payload_type: PayloadType) -> Dict[str, object]:
             "is_dynamic": True,
             "priority_score": codec_priority_score(payload_type),
             "preferred_source_sample_rate": None,
+            "required_bandwidth_bps": None,
         }
 
     cls = codec_class(payload_type)
@@ -157,6 +171,7 @@ def codec_availability(payload_type: PayloadType) -> Dict[str, object]:
             "default_payload_type": None,
             "is_dynamic": True,
             "priority_score": 0,
+            "required_bandwidth_bps": None,
         }
 
     availability = cls.availability()
@@ -179,6 +194,7 @@ def codec_availability(payload_type: PayloadType) -> Dict[str, object]:
                 "preferred_source_sample_rate",
                 getattr(cls, "source_sample_rate", 8000),
             ),
+            "required_bandwidth_bps": cls.required_bandwidth_bps,
         }
     )
     return data
@@ -199,7 +215,7 @@ def availability_report(
 
 def enabled_payload_types(*, include_events: bool = True) -> List[PayloadType]:
     enabled: List[PayloadType] = []
-    for payload_type in _CODEC_ORDER:
+    for payload_type in known_payload_types(include_events=False):
         cls = codec_class(payload_type)
         if cls is None:
             continue
@@ -221,6 +237,20 @@ def codec_fmtp_supported(payload_type: PayloadType, fmtp: List[str]) -> bool:
     if cls is None:
         return False
     return bool(cls.fmtp_supported(list(fmtp or [])))
+
+
+def codec_payload_kind(payload_type: PayloadType) -> Optional[str]:
+    cls = codec_class(payload_type)
+    if cls is None:
+        return None
+    return getattr(cls, "payload_kind", None)
+
+
+def codec_required_bandwidth_bps(payload_type: PayloadType) -> Optional[int]:
+    cls = codec_class(payload_type)
+    if cls is None or cls.required_bandwidth_bps is None:
+        return None
+    return int(cls.required_bandwidth_bps)
 
 
 def codec_can_transmit_audio(payload_type: PayloadType) -> bool:

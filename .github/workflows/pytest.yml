@@ -39,4 +39,4 @@ jobs:
           docker build docker -t pyvoip/tests
           docker run -d -p 5060:5060/udp pyvoip/tests
       - name: pytest
-        run: pytest --check-func
+        run: pytest

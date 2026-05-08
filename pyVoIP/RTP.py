@@ -223,21 +223,6 @@ _VIDEO_PAYLOAD_TYPES = frozenset(
     )
 )
 
-_ENCODABLE_AUDIO_PAYLOAD_TYPES = frozenset(
-    (
-        PayloadType.PCMU,
-        PayloadType.PCMA,
-        PayloadType.PCMU_WB,
-        PayloadType.PCMA_WB,
-        PayloadType.OPUS,
-        PayloadType.SILK_24000,
-        PayloadType.SILK_16000,
-        PayloadType.SILK_12000,
-        PayloadType.SILK_8000,
-    )
-)
-
-
 def payload_type_media_kind(codec: PayloadType) -> str:
     """Return PyVoIP's broad media classification for an RTP payload type.
 
@@ -251,6 +236,16 @@ def payload_type_media_kind(codec: PayloadType) -> str:
         return "unknown"
     if codec == PayloadType.MP2T:
         return "audio/video"
+
+    try:
+        from pyVoIP.codecs import codec_payload_kind
+
+        payload_kind = codec_payload_kind(codec)
+        if payload_kind:
+            return payload_kind
+    except Exception:
+        pass
+
     if codec in _AUDIO_PAYLOAD_TYPES:
         return "audio"
     if codec in _VIDEO_PAYLOAD_TYPES:
@@ -260,12 +255,12 @@ def payload_type_media_kind(codec: PayloadType) -> str:
 
 def is_audio_codec(codec: PayloadType) -> bool:
     """Return whether ``codec`` represents an RTP audio payload type."""
-    return codec in _AUDIO_PAYLOAD_TYPES
+    return payload_type_media_kind(codec) in ("audio", "audio/video")
 
 
 def is_video_codec(codec: PayloadType) -> bool:
     """Return whether ``codec`` represents an RTP video payload type."""
-    return codec in _VIDEO_PAYLOAD_TYPES
+    return payload_type_media_kind(codec) in ("video", "audio/video")
 
 
 def _codec_availability_details(codec: PayloadType) -> Dict[str, Any]:
@@ -410,8 +405,6 @@ def fmtp_for_payload_type(payload_type: int, codec: PayloadType) -> List[str]:
 
 def is_transmittable_audio_codec(codec: PayloadType) -> bool:
     """Return whether PyVoIP can encode ``codec`` as the main audio stream."""
-    if codec not in _ENCODABLE_AUDIO_PAYLOAD_TYPES:
-        return False
     if codec not in getattr(pyVoIP, "RTPCompatibleCodecs", ()):  # pragma: no branch
         return False
 
@@ -420,7 +413,7 @@ def is_transmittable_audio_codec(codec: PayloadType) -> bool:
 
         return codec_can_transmit_audio(codec)
     except Exception:
-        return codec in (PayloadType.PCMU, PayloadType.PCMA)
+        return False
 
 
 def select_transmittable_audio_codec(

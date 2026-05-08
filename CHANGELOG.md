@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.7.9+RFC
+
+- Codecs are now auto-discovered
+- Codec implementation modules to own their own payload-type binding and codec metadata
+- Cleanup
+
 ## 2.7.8+RFC
 
 - Design and implement codec abstraction
@@ -9,7 +15,7 @@
 - Implement PCMA-WB/PCMU-WB codecs (G.111 extension 1)
 - Implement Silk codec via [pysilk](https://github.com/synodriver/pysilk)
 - Remove hardcoded 8000hz mono bottleneck (to allow for more advanced audio processing)
-- Even more robust error-state handling on stop()/hangup()/unexpected BYE received
+- Even more robust error-state handling on stop()/hangup()/unexpected BYE received/unexpected socket closure
 - CI/CD automated quality control tests
 
 ## 2.7.7+RFC

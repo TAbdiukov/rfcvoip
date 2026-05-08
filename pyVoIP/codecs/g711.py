@@ -4,12 +4,14 @@ from pyVoIP.codecs.base import CodecAvailability, RTPCodec
 
 
 class PCMUCodec(RTPCodec):
+    payload_type = "PCMU"
     name = "PCMU"
     description = "PCMU"
     rate = 8000
     channels = 1
     default_payload_type = 0
     priority_score = 700
+    required_bandwidth_bps = 64000
 
     @classmethod
     def availability(cls) -> CodecAvailability:
@@ -25,12 +27,14 @@ class PCMUCodec(RTPCodec):
 
 
 class PCMACodec(RTPCodec):
+    payload_type = "PCMA"
     name = "PCMA"
     description = "PCMA"
     rate = 8000
     channels = 1
     default_payload_type = 8
     priority_score = 650
+    required_bandwidth_bps = 64000
 
     @classmethod
     def availability(cls) -> CodecAvailability:
@@ -62,6 +66,7 @@ class _G711WidebandCoreCodec(RTPCodec):
     preferred_source_sample_rate = 16000
     source_sample_rate = 16000
     default_fmtp = ["mode-set=1"]
+    required_bandwidth_bps = 64000
     frame_duration_ms = 20
     core_sample_rate = 8000
     _mode_index = 1
@@ -150,6 +155,7 @@ class _G711WidebandCoreCodec(RTPCodec):
 
 
 class PCMUWBCodec(_G711WidebandCoreCodec):
+    payload_type = "PCMU-WB"
     name = "PCMU-WB"
     description = "PCMU-WB"
     default_payload_type = 112
@@ -163,6 +169,7 @@ class PCMUWBCodec(_G711WidebandCoreCodec):
 
 
 class PCMAWBCodec(_G711WidebandCoreCodec):
+    payload_type = "PCMA-WB"
     name = "PCMA-WB"
     description = "PCMA-WB"
     default_payload_type = 113
