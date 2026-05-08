@@ -1,18 +1,22 @@
 # This workflow will install Python dependencies, run tests and lint
 # For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
 
-name: Check pytest
+name: pytest in Docker
 
 on:
   push:
     branches:
       - "master"
-      - "development"
   pull_request:
 
 jobs:
   check-pytest:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Reference: https://github.com/orgs/community/discussions/26944#discussioncomment-10256620
+        # How to fix ANSI color codes w/ GH actions:
+        shell: 'script -q -e -c "export TERM=xterm-256color; bash --noprofile --norc -eo pipefail {0}"'
     strategy:
       matrix:
         python-version:

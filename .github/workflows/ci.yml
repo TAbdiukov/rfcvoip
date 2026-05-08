@@ -15,7 +15,11 @@ jobs:
   pytest:
     name: Pytest / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
-
+    defaults:
+      run:
+        # Reference: https://github.com/orgs/community/discussions/26944#discussioncomment-10256620
+        # How to fix ANSI color codes w/ GH actions:
+        shell: 'script -q -e -c "export TERM=xterm-256color; bash --noprofile --norc -eo pipefail {0}"'
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +56,11 @@ jobs:
   package:
     name: Build package
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Reference: https://github.com/orgs/community/discussions/26944#discussioncomment-10256620
+        # How to fix ANSI color codes w/ GH actions:
+        shell: 'script -q -e -c "export TERM=xterm-256color; bash --noprofile --norc -eo pipefail {0}"'
     needs: pytest
 
     steps:
