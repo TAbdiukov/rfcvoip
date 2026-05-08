@@ -214,6 +214,7 @@ python -m pytest -q
 
 ### Contributors
 
+* [TJ Porter](https://github.com/tayler6000) (original PyVoIP implementation)
+- [synodriver](https://github.com/synodriver) (pysilk, a python binding for silk-v3-decoder)
 - [Nabu Casa](https://www.nabucasa.com/)
 - [Home Assistant](https://www.home-assistant.io/)
-- [synodriver](https://github.com/synodriver) (pysilk)
