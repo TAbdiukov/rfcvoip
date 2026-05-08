@@ -1617,7 +1617,7 @@ class VoIPPhone:
             self.NSD = False
             raise
 
-     def stop(self, failed=False) -> None:
+    def stop(self, failed=False) -> None:
         self._status = PhoneStatus.DEREGISTERING
         try:
             for call_id in list(self.calls):
