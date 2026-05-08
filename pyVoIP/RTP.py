@@ -760,6 +760,7 @@ class RTPClient:
         self.NSD = True
         # Example: {0: PayloadType.PCMU, 101: PayloadType.EVENT}
         self.assoc = assoc
+        self.sendrecv = sendrecv
         self._codec_adapters: Dict[PayloadType, Any] = {}
         debug("Selecting negotiated audio codec for transmission")
         try:
@@ -870,6 +871,28 @@ class RTPClient:
         return self._codec_adapter(self.preference).source_frame_size(
             duration_ms
         )
+
+    def selected_codec_info(self) -> Dict[str, Any]:
+        """Return telemetry for the codec selected for this RTP client."""
+        info = codec_info(
+            self.preference,
+            payload_type=self.preference_payload_type,
+            media_type="audio",
+            source="active-call",
+            supported=True,
+        )
+        info["rtp"] = {
+            "local": {"ip": self.inIP, "port": self.inPort},
+            "remote": {"ip": self.outIP, "port": self.outPort},
+            "transmit_type": str(self.sendrecv),
+        }
+        info["public_audio_format"] = {
+            "sample_rate": self.audio_sample_rate,
+            "sample_width": self.audio_sample_width,
+            "channels": self.audio_channels,
+            "encoding": "unsigned-8bit-linear",
+        }
+        return info
 
     def _find_telephone_event_payload_type(self) -> Optional[int]:
         for payload_type, codec in self.assoc.items():

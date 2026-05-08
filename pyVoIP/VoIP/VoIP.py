@@ -434,6 +434,15 @@ class VoIPCall:
     def send_dtmf_sequence(self, digits: str) -> bool:
         return self.send_dtmf(digits)
 
+    def active_codecs(self) -> List[Dict[str, Any]]:
+        """Return codecs currently selected by this call's RTP client(s)."""
+        active = []
+        for client in self.RTPClients:
+            selected_codec_info = getattr(client, "selected_codec_info", None)
+            if callable(selected_codec_info):
+                active.append(selected_codec_info())
+        return active
+
     def remote_supported_codecs(self) -> List[Dict[str, Any]]:
         """Return codecs advertised by the remote endpoint's SDP."""
         if self.remote_sip_message is None:
@@ -442,6 +451,7 @@ class VoIPCall:
 
     def codec_support_report(self) -> Dict[str, Any]:
         """Compare the remote SDP codecs against PyVoIP support."""
+        active_codecs = self.active_codecs()
         if self.remote_sip_message is None:
             pyvoip_codecs = RTP.supported_codecs()
             return {
@@ -457,8 +467,11 @@ class VoIPCall:
                 "transmittable_audio": [],
                 "call_compatible": [],
                 "can_start_call": None,
+                "active_codecs": active_codecs,
             }
-        return self.remote_sip_message.codec_support_report()
+        report = self.remote_sip_message.codec_support_report()
+        report["active_codecs"] = active_codecs
+        return report
 
     def _finalize_ended_call(self) -> None:
         try:
