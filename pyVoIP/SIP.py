@@ -1785,18 +1785,60 @@ class SIPClient:
         data: bytes,
         target: Optional[Tuple[str, int]] = None,
     ) -> None:
+        if target is None:
+            target = self.signal_target()
+
         if self.connection is None:
             sock = getattr(self, "out", None) or getattr(self, "s", None)
             if sock is None:
                 raise RuntimeError("SIP client is not connected.")
 
-            if target is None:
-                target = self.signal_target()
-
-            sock.sendto(data, target)
+            try:
+                sock.sendto(data, target)
+            except OSError as ex:
+                fallback = self._udp_send_fallback_target(target)
+                if fallback is None:
+                    raise
+                debug(
+                    f"SIP UDP send to {target} failed: {ex}; "
+                    + f"retrying via {fallback}"
+                )
+                sock.sendto(data, fallback)
             return
 
-        self.connection.send(data, target or self.signal_target())
+        try:
+            self.connection.send(data, target)
+        except OSError as ex:
+            fallback = self._udp_send_fallback_target(target)
+            if fallback is None:
+                raise
+            debug(
+                f"SIP UDP send to {target} failed: {ex}; "
+                + f"retrying via {fallback}"
+            )
+            self.connection.send(data, fallback)
+
+    def _udp_send_fallback_target(
+        self,
+        target: Optional[Tuple[str, int]],
+    ) -> Optional[Tuple[str, int]]:
+        if target is None:
+            return None
+
+        try:
+            if self.signal_transport() != SIPTransport.UDP:
+                return None
+
+            fallback = self.signal_target()
+            if (str(target[0]), int(target[1])) == (
+                str(fallback[0]),
+                int(fallback[1]),
+            ):
+                return None
+
+            return fallback
+        except Exception:
+            return None
 
     def _recv_message_before(self, deadline: float) -> Optional[SIPMessage]:
         if self.connection is None:
@@ -2953,11 +2995,13 @@ class SIPClient:
         if not self.NSD:
             return
         self.NSD = False
-        if self.registerThread:
-            # Only run if registerThread exists
-            self.registerThread.cancel()
-            self.deregister()
-        self._close_sockets()
+        try:
+            if self.registerThread:
+                # Only run if registerThread exists
+                self.registerThread.cancel()
+                self.deregister()
+        finally:
+            self._close_sockets()
 
     def _close_sockets(self) -> None:
         if self.connection is not None:

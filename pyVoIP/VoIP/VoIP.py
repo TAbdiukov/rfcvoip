@@ -700,7 +700,19 @@ class VoIPCall:
 
         for x in self.RTPClients:
             x.stop()
-        self.sip.bye(self.request)
+        try:
+            self.sip.bye(self.request)
+        except (OSError, RuntimeError) as ex:
+            warnings.warn(
+                f"Failed to send SIP BYE for Call-ID={self.call_id}: {ex}. "
+                "Ending local call state anyway.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            debug(
+                f"Failed to send BYE for {self.call_id}: {ex}",
+                f"Call {self.call_id}: BYE send failed: {ex}",
+            )
         self.state = CallState.ENDED
         self._finalize_ended_call()
 
@@ -1605,17 +1617,38 @@ class VoIPPhone:
             self.NSD = False
             raise
 
-    def stop(self, failed=False) -> None:
+    
         self._status = PhoneStatus.DEREGISTERING
-        for x in self.calls.copy():
+        try:
+            for call_id in list(self.calls):
+                call = self.calls.get(call_id)
+                if call is None:
+                    continue
+
+                try:
+                    call.hangup()
+                except InvalidStateError:
+                    pass
+                except Exception as ex:
+                    debug(
+                        f"Error hanging up call during phone stop: {ex}",
+                        f"Call {call_id}: forced local cleanup during stop: {ex}",
+                    )
+                    for rtp in getattr(call, "RTPClients", ()):
+                        try:
+                            rtp.stop()
+                        except Exception:
+                            pass
+                    try:
+                        call.state = CallState.ENDED
+                        call._finalize_ended_call()
+                    except Exception:
+                        self.calls.pop(call_id, None)
+        finally:
             try:
-                self.calls[x].hangup()
-            except InvalidStateError:
-                pass
-        self.sip.stop()
-        self._status = PhoneStatus.INACTIVE
-        if failed:
-            self._status = PhoneStatus.FAILED
+                self.sip.stop()
+            finally:
+                self._status = PhoneStatus.FAILED if failed else PhoneStatus.INACTIVE
 
     def fatal(self) -> None:
         self.stop(failed=True)
