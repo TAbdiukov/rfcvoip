@@ -3,6 +3,11 @@
 ## 2.8.0+RFC
 
 - Packaging: Raise minimum supported Python version to 3.8 for stdlib `dataclasses` compatibility.
+- SIPTransport: TCP stream connection timeout
+- SDP: SDP bandwidth checks to reject constrained SILK offers
+- RTP: Cancel callback
+- SIP: Quit catching BaseException during register/deregister
+- RTP: Fix RTP silence blocking and gap fill
 - SIP: Fix dialog state handling for early media
 - RTP: Improve timestamp validation for reordered packets
 - SIP: Preserve outbound INVITE `From` tags across authenticated retries to keep dialog identity stable.

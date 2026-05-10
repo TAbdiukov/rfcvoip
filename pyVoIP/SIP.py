@@ -4061,7 +4061,7 @@ class SIPClient:
                     self.phone._status = PhoneStatus.INACTIVE
 
                 return deregistered
-            except BaseException as e:
+            except Exception as e:
                 debug(f"DEREGISTERATION ERROR: {e}")
                 if isinstance(e, RetryRequiredError):
                     attempts += 1
@@ -4135,7 +4135,7 @@ class SIPClient:
             self.__start_register_timer()
 
             return registered
-        except BaseException as e:
+        except Exception as e:
             debug(f"REGISTERATION ERROR: {e}")
             self.registerFailures += 1
             if self.registerFailures >= pyVoIP.REGISTER_FAILURE_THRESHOLD:

@@ -506,6 +506,7 @@ class SIPConnection:
         for family, socktype, proto, _canon, sockaddr in infos:
             sock = socket.socket(family, socktype, proto)
             try:
+                sock.settimeout(self.send_timeout)
                 sock.bind(
                     self._socket_address(
                         self._local_bind_host(family), self.local_port, family

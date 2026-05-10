@@ -619,6 +619,19 @@ class RTPPacketManager:
         self.log = {}
         self.rebuilding = False
 
+    def _available_locked(self) -> int:
+        bufferloc = self.buffer.tell()
+        self.buffer.seek(0, 2)
+        end = self.buffer.tell()
+        self.buffer.seek(bufferloc, 0)
+        return max(0, end - bufferloc)
+
+    def available(self) -> int:
+        while self.rebuilding:
+            time.sleep(0.01)
+        with self.bufferLock:
+            return self._available_locked()
+
     def read(self, length: int = 160) -> bytes:
         # This acts functionally as a lock while the buffer is being rebuilt.
         while self.rebuilding:
@@ -662,6 +675,10 @@ class RTPPacketManager:
                 rebuild_args = (reset, offset, data)
             else:
                 adjusted_offset = offset - self.offset
+                self.buffer.seek(0, 2)
+                buffer_end = self.buffer.tell()
+                if adjusted_offset > buffer_end:
+                    self.buffer.write(b"\x80" * (adjusted_offset - buffer_end))
                 self.buffer.seek(adjusted_offset, 0)
                 self.buffer.write(data)
                 self.buffer.seek(bufferloc, 0)
@@ -1150,11 +1167,9 @@ class RTPClient:
             length = self.audio_frame_size()
         if not blocking:
             return self.pmin.read(length)
-        packet = self.pmin.read(length)
-        while packet == (b"\x80" * length) and self.NSD:
+        while self.pmin.available() < length and self.NSD:
             time.sleep(0.01)
-            packet = self.pmin.read(length)
-        return packet
+        return self.pmin.read(length)
 
     def write(self, data: bytes) -> None:
         self.pmout.write(self.outOffset, data)

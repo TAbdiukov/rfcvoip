@@ -242,6 +242,7 @@ class Silk24000Codec(SilkCodec):
     default_payload_type = 114
     priority_score = 950
     bit_rate = 24000
+    required_bandwidth_bps = 24000
 
 
 class Silk16000Codec(SilkCodec):
@@ -252,6 +253,7 @@ class Silk16000Codec(SilkCodec):
     default_payload_type = 115
     priority_score = 940
     bit_rate = 20000
+    required_bandwidth_bps = 20000
 
 
 class Silk12000Codec(SilkCodec):
@@ -262,6 +264,7 @@ class Silk12000Codec(SilkCodec):
     default_payload_type = 116
     priority_score = 930
     bit_rate = 16000
+    required_bandwidth_bps = 16000
 
 
 class Silk8000Codec(SilkCodec):
@@ -272,3 +275,4 @@ class Silk8000Codec(SilkCodec):
     default_payload_type = 117
     priority_score = 920
     bit_rate = 12000
+    required_bandwidth_bps = 12000
