@@ -3,6 +3,12 @@
 ## 2.8.0+RFC
 
 - Packaging: Raise minimum supported Python version to 3.8 for stdlib `dataclasses` compatibility.
+- SIP: Preserve deregistration response handling during TCP/TLS shutdown by delaying NSD teardown until after deregister completes.
+- SIP: Parse unknown SIP response codes safely instead of crashing on unrecognized status values.
+- SIP: Reject unsupported digest auth algorithms and qop modes instead of generating invalid authentication headers.
+- SIP: Guard optional fatalCallback execution to avoid NoneType crashes during registration failure handling.
+- RTP: Normalize RTP transmit direction handling to always use TransmitType enums internally.
+- RTP: Honor recvonly/inactive SDP directions by suppressing outbound RTP audio transmission.
 - SIP: Fix digest auth parsing for quoted values containing commas such as `qop="auth,auth-int"`.
 - SIP: Correct SDP generation so media attributes are scoped to their corresponding `m=` sections.
 - SIP: Reject `SIPS+D2T` NAPTR records for plain `sip:` URI resolution.
@@ -16,6 +22,7 @@
 - Opus: Return codec-sized silence frames instead of hardcoded 160-byte payloads.
 - SILK: Return codec-sized silence frames instead of hardcoded 160-byte payloads.
 - Packaging: Correct `Documentation` project URL metadata typo.
+
 
 ## 2.7.9+RFC
 

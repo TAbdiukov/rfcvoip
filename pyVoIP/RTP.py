@@ -788,7 +788,16 @@ class RTPClient:
         self.NSD = True
         # Example: {0: PayloadType.PCMU, 101: PayloadType.EVENT}
         self.assoc = assoc
-        self.sendrecv = sendrecv
+        try:
+            self.sendrecv = (
+                sendrecv
+                if isinstance(sendrecv, TransmitType)
+                else TransmitType(str(sendrecv))
+            )
+        except ValueError as ex:
+            raise RTPParseError(
+                f"Unsupported RTP transmit type {sendrecv!r}."
+            ) from ex
         self._codec_adapters: Dict[PayloadType, Any] = {}
         debug("Selecting negotiated audio codec for transmission")
         try:
@@ -1165,6 +1174,10 @@ class RTPClient:
 
     def trans(self) -> None:
         while self.NSD:
+            if self.sendrecv in (TransmitType.RECVONLY, TransmitType.INACTIVE):
+                time.sleep(0.02)
+                continue
+
             with self._dtmf_lock:
                 pending_dtmf = self._pending_dtmf.popleft() if self._pending_dtmf else None
             if pending_dtmf is not None:

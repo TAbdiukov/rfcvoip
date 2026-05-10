@@ -583,6 +583,26 @@ class SIPStatus(Enum):
     REJECTED = 608, "Rejected"
 
 
+@dataclass(frozen=True)
+class SIPStatusCode:
+    value: int
+    phrase: str = ""
+    description: str = ""
+
+    def __int__(self) -> int:
+        return self.value
+
+    def __str__(self) -> str:
+        return f"{self.value} {self.phrase}".rstrip()
+
+
+def _sip_status_from_parts(code: int, phrase: str = ""):
+    try:
+        return SIPStatus(code)
+    except ValueError:
+        return SIPStatusCode(code, phrase or "Unknown")
+
+
 class SIPMessageType(IntEnum):
     def __new__(cls, value: int):
         obj = int.__new__(cls, value)
@@ -1171,11 +1191,31 @@ class SIPMessage:
 
         headers_raw = headers.split(b"\r\n")
         self.heading = headers_raw.pop(0)
-        self.version = str(self.heading.split(b" ")[0], "utf8")
+        heading_parts = self.heading.split(b" ")
+        if len(heading_parts) < 2:
+            raise SIPParseError(
+                "Malformed SIP response start line: "
+                + str(self.heading, "utf8", errors="replace")
+            )
+
+        self.version = str(heading_parts[0], "utf8", errors="replace")
         if self.version not in self.SIPCompatibleVersions:
             raise SIPParseError(f"SIP Version {self.version} not compatible.")
 
-        self.status = SIPStatus(int(self.heading.split(b" ")[1]))
+        try:
+            status_code = int(heading_parts[1])
+        except ValueError as ex:
+            raise SIPParseError(
+                "Malformed SIP response status code: "
+                + str(self.heading, "utf8", errors="replace")
+            ) from ex
+
+        status_phrase = str(
+            b" ".join(heading_parts[2:]),
+            "utf8",
+            errors="replace",
+        )
+        self.status = _sip_status_from_parts(status_code, status_phrase)
 
         self.parse_raw_header(headers_raw, self.parse_header)
         self._parse_message_body(body)
@@ -3025,13 +3065,13 @@ class SIPClient:
     def stop(self) -> None:
         if not self.NSD:
             return
-        self.NSD = False
         try:
             if self.registerThread:
                 # Only run if registerThread exists
                 self.registerThread.cancel()
                 self.deregister()
         finally:
+            self.NSD = False
             self._close_sockets()
 
     def _close_sockets(self) -> None:
@@ -3948,7 +3988,12 @@ class SIPClient:
         if not realm or not nonce:
             raise SIPParseError(f"Digest challenge missing realm/nonce: {auth}")
 
-        algorithm = auth.get("algorithm", "MD5")
+        algorithm = str(auth.get("algorithm", "MD5")).strip().strip('"') or "MD5"
+        if algorithm.upper() != "MD5":
+            raise SIPParseError(
+                f"Unsupported SIP digest algorithm {algorithm!r}."
+            )
+
         opaque = auth.get("opaque")
         qop_raw = auth.get("qop")
 
@@ -3966,7 +4011,11 @@ class SIPClient:
         if qop_raw:
             tokens = [t.strip() for t in qop_raw.split(",") if t.strip()]
             lowered = [t.lower() for t in tokens]
-            qop_token = "auth" if "auth" in lowered else tokens[0]
+            if "auth" not in lowered:
+                raise SIPParseError(
+                    f"Unsupported SIP digest qop {qop_raw!r}."
+                )
+            qop_token = "auth"
 
         if qop_token:
             nc = "00000001"
@@ -4077,7 +4126,8 @@ class SIPClient:
             if self.registerFailures >= pyVoIP.REGISTER_FAILURE_THRESHOLD:
                 debug("Too many registration failures, stopping.")
                 self.stop()
-                self.fatalCallback()
+                if self.fatalCallback is not None:
+                    self.fatalCallback()
                 return False
             self.__start_register_timer()
 
@@ -4087,7 +4137,8 @@ class SIPClient:
             self.registerFailures += 1
             if self.registerFailures >= pyVoIP.REGISTER_FAILURE_THRESHOLD:
                 self.stop()
-                self.fatalCallback()
+                if self.fatalCallback is not None:
+                    self.fatalCallback()
                 return False
             if isinstance(e, RetryRequiredError):
                 time.sleep(5)
