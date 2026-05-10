@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.8.0+RFC
+
+- Packaging: Raise minimum supported Python version to 3.8 for stdlib `dataclasses` compatibility.
+- SIP: Fix digest auth parsing for quoted values containing commas such as `qop="auth,auth-int"`.
+- SIP: Correct SDP generation so media attributes are scoped to their corresponding `m=` sections.
+- SIP: Reject `SIPS+D2T` NAPTR records for plain `sip:` URI resolution.
+- SIP: Support compact `l:` headers when framing SIP TCP/TLS messages.
+- RTP: Validate minimum RTP packet length before header parsing.
+- RTP: Properly parse and skip RTP header extensions before payload decoding.
+- RTP: Strip RTP padding bytes from payloads before codec processing.
+- RTP: Validate `telephone-event` payload length and DTMF event ranges.
+- VoIP: Fix unsigned 8-bit audio mixing for multi-stream RTP calls.
+- VoIP: Make RTP port allocation thread-safe and raise `NoPortsAvailableError` reliably.
+- Opus: Return codec-sized silence frames instead of hardcoded 160-byte payloads.
+- SILK: Return codec-sized silence frames instead of hardcoded 160-byte payloads.
+- Packaging: Correct `Documentation` project URL metadata typo.
+
 ## 2.7.9+RFC
 
 - Codecs are now auto-discovered
