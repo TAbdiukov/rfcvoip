@@ -32,7 +32,7 @@ setup(
     url="https://github.com/tayler6000/pyVoIP",
     project_urls={
         "Bug Tracker": "https://github.com/tayler6000/pyVoIP/issues",
-        "Documentaiton": "https://pyvoip.readthedocs.io/",
+        "Documentation": "https://pyvoip.readthedocs.io/",
     },
     extras_require={
         "opus": ["discord.py>=2.0"],
@@ -53,5 +53,5 @@ setup(
     ],
     packages=find_packages(exclude=("tests",)),
     package_data={"pyVoIP": ["py.typed"]},
-    python_requires=">=3.6",
+    python_requires=">=3.8",
 )

@@ -314,9 +314,12 @@ class SIPResolver:
             transport = self._NAPTR_SERVICE_TRANSPORT.get(service)
             if transport is None or flags != "s" or not replacement:
                 continue
-            if uri.scheme == "sips" and not service.startswith("SIPS+"):
+            if uri.scheme == "sips":
+                if not service.startswith("SIPS+"):
+                    continue
+            elif service.startswith("SIPS+"):
                 continue
-            if uri.scheme == "sip" and transport not in self.transport_preference:
+            elif transport not in self.transport_preference:
                 continue
             records.append(
                 (
@@ -607,7 +610,8 @@ class SIPConnection:
         ).split("\r\n")
         content_length = 0
         for line in headers[1:]:
-            if line.lower().startswith("content-length:"):
+            lower = line.lower()
+            if lower.startswith("content-length:") or lower.startswith("l:"):
                 try:
                     content_length = int(line.split(":", 1)[1].strip())
                 except ValueError:

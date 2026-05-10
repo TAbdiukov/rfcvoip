@@ -220,7 +220,7 @@ class SilkCodec(RTPCodec):
 
     def decode(self, payload: bytes) -> bytes:
         if not payload:
-            return b"\x80" * 160
+            return b"\x80" * self.source_frame_size()
 
         source = io.BytesIO(_pysilk_storage_input_from_rtp_payload(payload))
         decoded = io.BytesIO()

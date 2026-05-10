@@ -683,6 +683,9 @@ class RTPMessage:
         self.sequence = 0
         self.timestamp = 0
         self.SSRC = 0
+        self.CSRC = []
+        self.extension_profile = None
+        self.extension_payload = b""
 
         self.parse(data)
 
@@ -703,6 +706,11 @@ class RTPMessage:
         return data
 
     def parse(self, packet: bytes) -> None:
+        if len(packet) < 12:
+            raise RTPParseError(
+                f"RTP packet too short: expected at least 12 bytes, got {len(packet)}"
+            )
+
         byte = byte_to_bits(packet[0:1])
         self.version = int(byte[0:2], 2)
         if self.version not in self.RTPCompatibleVersions:
@@ -733,14 +741,34 @@ class RTPMessage:
         self.CSRC = []
 
         i = 12
+        if len(packet) < i + (self.CC * 4):
+            raise RTPParseError("RTP packet truncated in CSRC list.")
+
         for x in range(self.CC):
             self.CSRC.append(packet[i : i + 4])
             i += 4
 
         if self.extension:
-            pass
+            if len(packet) < i + 4:
+                raise RTPParseError("RTP packet truncated in extension header.")
+            self.extension_profile = add_bytes(packet[i : i + 2])
+            extension_length = add_bytes(packet[i + 2 : i + 4]) * 4
+            i += 4
+            if len(packet) < i + extension_length:
+                raise RTPParseError("RTP packet truncated in extension payload.")
+            self.extension_payload = packet[i : i + extension_length]
+            i += extension_length
 
-        self.payload = packet[i:]
+        payload = packet[i:]
+        if self.padding:
+            if not payload:
+                raise RTPParseError("RTP packet padding flag set without payload.")
+            padding_length = payload[-1]
+            if padding_length == 0 or padding_length > len(payload):
+                raise RTPParseError("RTP packet contains invalid padding.")
+            payload = payload[:-padding_length]
+
+        self.payload = payload
 
 
 class RTPClient:
@@ -1286,27 +1314,15 @@ class RTPClient:
         return self.parse_telephone_event(packet)
 
     def parse_telephone_event(self, packet: RTPMessage) -> None:
-        key = [
-            "0",
-            "1",
-            "2",
-            "3",
-            "4",
-            "5",
-            "6",
-            "7",
-            "8",
-            "9",
-            "*",
-            "#",
-            "A",
-            "B",
-            "C",
-            "D",
-        ]
-
         payload = packet.payload
-        event = key[payload[0]]
+        if len(payload) < 4:
+            raise RTPParseError("telephone-event payload too short.")
+        event_code = payload[0]
+        if event_code >= len(_DTMF_EVENT_TO_CHAR):
+            raise RTPParseError(
+                f"Unsupported telephone-event code {event_code}."
+            )
+        event = _DTMF_EVENT_TO_CHAR[event_code]
         """
         Commented out the following due to F841 (Unused variable).
         Might use at some point though, so I'm saving the logic.

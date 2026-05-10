@@ -69,6 +69,69 @@ class SIPRequestError(Exception):
 class RetryRequiredError(Exception):
     pass
 
+
+def _parse_digest_params(value: str) -> Dict[str, str]:
+    data = str(value or "").strip()
+    if data.lower().startswith("digest"):
+        data = data[len("Digest") :].lstrip()
+
+    params: Dict[str, str] = {}
+    index = 0
+    length = len(data)
+
+    while index < length:
+        while index < length and data[index] in " \t\r\n,":
+            index += 1
+        if index >= length:
+            break
+
+        key_start = index
+        while index < length and data[index] not in "=, \t\r\n":
+            index += 1
+        key = data[key_start:index].strip()
+
+        while index < length and data[index].isspace():
+            index += 1
+        if index >= length or data[index] != "=":
+            while index < length and data[index] != ",":
+                index += 1
+            continue
+
+        index += 1
+        while index < length and data[index].isspace():
+            index += 1
+
+        if index < length and data[index] == '"':
+            index += 1
+            chars = []
+            while index < length:
+                char = data[index]
+                if char == "\\" and index + 1 < length:
+                    chars.append(data[index + 1])
+                    index += 2
+                    continue
+                if char == '"':
+                    index += 1
+                    break
+                chars.append(char)
+                index += 1
+            parsed_value = "".join(chars)
+        else:
+            value_start = index
+            while index < length and data[index] != ",":
+                index += 1
+            parsed_value = data[value_start:index].strip()
+
+        if key:
+            params[key] = parsed_value
+
+        while index < length and data[index] != ",":
+            index += 1
+        if index < length and data[index] == ",":
+            index += 1
+
+    return params
+
 def _content_type_base(value: Any) -> str:
     """Return the normalized media type without parameters."""
     return str(value or "").split(";", 1)[0].strip().lower()
@@ -589,7 +652,6 @@ class SIPMessage:
         self.body_text = ""
         self._body_content_type = ""
         self.raw = data
-        self.auth_match = re.compile(r'(\w+)=("[^",]+"|[^ \t,]+)')
         self.parse(data)
 
     def summary(self) -> str:
@@ -736,15 +798,7 @@ class SIPMessage:
             "Proxy-Authenticate",
             "Proxy-Authorization",
         ):
-            # Common formats:
-            #   Digest realm="...", nonce="..."
-            # Some stacks omit the space after "Digest".
-            if data.lower().startswith("digest"):
-                data = data[len("Digest") :].lstrip()
-            row_data = self.auth_match.findall(data)
-            header_data = {}
-            for var, data in row_data:
-                header_data[var] = data.strip('"')
+            header_data = _parse_digest_params(data)
             self.headers[header] = header_data
             if header in ("WWW-Authenticate", "Proxy-Authenticate"):
                 self.authentication_challenges[header] = dict(header_data)
@@ -3402,8 +3456,7 @@ class SIPClient:
             body += f"m=audio {x} RTP/AVP"
             for m in ms[x]:
                 body += f" {m}"
-        body += "\r\n"
-        for x in ms:
+            body += "\r\n"
             for m in ms[x]:
                 codec = ms[x][m]
                 body += (
@@ -3413,9 +3466,9 @@ class SIPClient:
                 )
                 for fmtp in pyVoIP.RTP.fmtp_for_payload_type(m, codec):
                     body += f"a=fmtp:{m} {fmtp}\r\n"
-        body += "a=ptime:20\r\n"
-        body += "a=maxptime:150\r\n"
-        body += f"a={sendtype}\r\n"
+            body += "a=ptime:20\r\n"
+            body += "a=maxptime:150\r\n"
+            body += f"a={sendtype}\r\n"
 
         tag = self.tagLibrary[request.headers["Call-ID"]]
 
@@ -3482,8 +3535,7 @@ class SIPClient:
             body += f"m=audio {x} RTP/AVP"
             for m in ms[x]:
                 body += f" {m}"
-        body += "\r\n"
-        for x in ms:
+            body += "\r\n"
             for m in ms[x]:
                 codec = ms[x][m]
                 body += (
@@ -3493,9 +3545,9 @@ class SIPClient:
                 )
                 for fmtp in pyVoIP.RTP.fmtp_for_payload_type(m, codec):
                     body += f"a=fmtp:{m} {fmtp}\r\n"
-        body += "a=ptime:20\r\n"
-        body += "a=maxptime:150\r\n"
-        body += f"a={sendtype}\r\n"
+            body += "a=ptime:20\r\n"
+            body += "a=maxptime:150\r\n"
+            body += f"a={sendtype}\r\n"
 
         tag = self.gen_tag()
         self.tagLibrary[call_id] = tag

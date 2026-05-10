@@ -799,10 +799,10 @@ class VoIPCall:
             return self.RTPClients[0].read(length, blocking)
 
         data = [client.read(length, blocking) for client in self.RTPClients]
-        mixed = data[0]
+        mixed = audioop.bias(data[0], 1, -128)
         for frame in data[1:]:
-            mixed = audioop.add(mixed, frame, 1)
-        return mixed
+            mixed = audioop.add(mixed, audioop.bias(frame, 1, -128), 1)
+        return audioop.bias(mixed, 1, 128)
 
 class VoIPPhone:
     def __init__(
@@ -1717,38 +1717,38 @@ class VoIPPhone:
         return call
 
     def request_port(self, blocking=True) -> int:
-        ports_available = [
-            port
-            for port in range(self.rtpPortLow, self.rtpPortHigh + 1)
-            if port not in self.assignedPorts
-        ]
-        if len(ports_available) == 0:
+        while True:
+            with self.portsLock:
+                ports_available = [
+                    port
+                    for port in range(self.rtpPortLow, self.rtpPortHigh + 1)
+                    if port not in self.assignedPorts
+                ]
+                if ports_available:
+                    selection = random.choice(ports_available)
+                    self.assignedPorts.append(selection)
+                    return selection
+
             # If no ports are available attempt to cleanup any missed calls.
             self.release_ports()
-            ports_available = [
-                port
-                for port in range(self.rtpPortLow, self.rtpPortHigh + 1)
-                if (port not in self.assignedPorts)
-            ]
 
-        while self.NSD and blocking and len(ports_available) == 0:
-            ports_available = [
-                port
-                for port in range(self.rtpPortLow, self.rtpPortHigh + 1)
-                if (port not in self.assignedPorts)
-            ]
-            time.sleep(0.5)
-            self.release_ports()
+            with self.portsLock:
+                ports_available = [
+                    port
+                    for port in range(self.rtpPortLow, self.rtpPortHigh + 1)
+                    if port not in self.assignedPorts
+                ]
+                if ports_available:
+                    selection = random.choice(ports_available)
+                    self.assignedPorts.append(selection)
+                    return selection
 
-            if len(ports_available) == 0:
+            if not (self.NSD and blocking):
                 raise NoPortsAvailableError(
                     "No ports were available to be assigned"
                 )
 
-        selection = random.choice(ports_available)
-        self.assignedPorts.append(selection)
-
-        return selection
+            time.sleep(0.5)
 
     def release_ports(self, call: Optional[VoIPCall] = None) -> None:
         with self.portsLock:

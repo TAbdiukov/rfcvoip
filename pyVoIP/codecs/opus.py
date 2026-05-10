@@ -254,7 +254,7 @@ class OpusCodec(RTPCodec):
 
     def encode(self, payload: bytes) -> bytes:
         if not payload:
-            payload = b"\x80" * 160
+            payload = b"\x80" * self.source_frame_size()
 
         pcm16_48k = self._to_opus_pcm(payload)
         frame_size = len(pcm16_48k) // 2
@@ -274,7 +274,7 @@ class OpusCodec(RTPCodec):
 
     def decode(self, payload: bytes) -> bytes:
         if not payload:
-            return b"\x80" * 160
+            return b"\x80" * self.source_frame_size()
 
         packet = (ctypes.c_ubyte * len(payload)).from_buffer_copy(payload)
         pcm = (ctypes.c_int16 * (self.max_frame_size * self.channels))()
