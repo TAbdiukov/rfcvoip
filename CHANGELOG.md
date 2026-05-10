@@ -3,6 +3,12 @@
 ## 2.8.0+RFC
 
 - Packaging: Raise minimum supported Python version to 3.8 for stdlib `dataclasses` compatibility.
+- SIP: Preserve outbound INVITE `From` tags across authenticated retries to keep dialog identity stable.
+- SIP: Support full SIP URI and `user@domain` targets for outbound INVITE calls.
+- SIP: Handle inbound CANCEL for ringing calls by ending local call state and replying `487 Request Terminated` to the original INVITE.
+- SDP: Attach `rtpmap` and `fmtp` attributes to the current media section instead of matching payload IDs globally.
+- SDP: Preserve attribute values containing additional colons by splitting SDP attributes only once.
+- RTP: Ignore disabled SDP media streams with port `0` during codec compatibility checks and RTP client setup.
 - SIP: Preserve deregistration response handling during TCP/TLS shutdown by delaying NSD teardown until after deregister completes.
 - SIP: Parse unknown SIP response codes safely instead of crashing on unrecognized status values.
 - SIP: Reject unsupported digest auth algorithms and qop modes instead of generating invalid authentication headers.

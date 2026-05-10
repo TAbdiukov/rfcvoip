@@ -974,6 +974,8 @@ class VoIPPhone:
                 self._callback_MSG_Invite(request)
             elif request.method == "BYE":
                 self._callback_MSG_Bye(request)
+            elif request.method == "CANCEL":
+                self._callback_MSG_Cancel(request)
         else:
             # Only treat responses for INVITE as call-control.
             cseq = request.headers.get("CSeq", {})
@@ -1482,6 +1484,30 @@ class VoIPPhone:
         if call_id not in self.calls:
             return
         self.calls[call_id].bye()
+
+    def _callback_MSG_Cancel(self, request: SIP.SIPMessage) -> None:
+        call_id = request.headers["Call-ID"]
+        debug(
+            request.summary(),
+            f"Inbound CANCEL call_id={call_id}",
+        )
+
+        call = self.calls.get(call_id)
+        if call is None or call.state != CallState.RINGING:
+            return
+
+        for rtp in call.RTPClients:
+            try:
+                rtp.stop()
+            except Exception:
+                pass
+
+        response = self.sip.gen_response(
+            call.request, SIP.SIPStatus.REQUEST_TERMINATED
+        )
+        self.sip.send_response(call.request, response)
+        call.state = CallState.ENDED
+        call._finalize_ended_call()
 
     def _callback_RESP_OK(self, request: SIP.SIPMessage) -> None:
         debug("OK recieved")

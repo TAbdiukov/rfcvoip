@@ -980,7 +980,7 @@ class SIPMessage:
                 # k=<method>
                 # k=<method>:<encryption key>
                 if ":" in data:
-                    d = data.split(":")
+                    d = data.split(":", 1)
                     self.body[header] = {"method": d[0], "key": d[1]}
                 else:
                     self.body[header] = {"method": data}
@@ -1024,9 +1024,7 @@ class SIPMessage:
                     self.body["a"] = {}
 
                 if ":" in data:
-                    d = data.split(":")
-                    attribute = d[0]
-                    value = d[1]
+                    attribute, value = data.split(":", 1)
                 else:
                     attribute = data
                     value = None
@@ -1034,46 +1032,46 @@ class SIPMessage:
                 if value is not None:
                     if attribute == "rtpmap":
                         # a=rtpmap:<payload type> <encoding name>/<clock rate> [/<encoding parameters>] # noqa: E501
-                        v = re.split(" |/", value)
-
-                        index = None
-                        for idx, t in enumerate(self.body.get("m", [])):
-                            if v[0] in t.get("methods", []):
-                                index = idx
-                                break
-                        if index is None:
-                            # Can't attach to a media section; keep as session-level info.
-                            self.body["a"][f"rtpmap:{v[0]}"] = value
+                        parts = value.split(None, 1)
+                        if len(parts) != 2:
+                            self.body["a"][f"rtpmap:{value}"] = value
                             return
 
-                        if len(v) == 4:
-                            encoding = v[3]
-                        else:
-                            encoding = None
+                        payload_id = parts[0]
+                        codec_parts = parts[1].split("/")
+                        media_sections = self.body.get("m", [])
+                        media = media_sections[-1] if media_sections else None
 
-                        self.body["m"][index]["attributes"].setdefault(v[0], {})
-                        self.body["m"][index]["attributes"][v[0]]["rtpmap"] = {
-                            "id": v[0],
-                            "name": v[1],
-                            "frequency": v[2],
+                        if media is None or payload_id not in media.get("methods", []):
+                            # Can't attach to a media section; keep as session-level info.
+                            self.body["a"][f"rtpmap:{payload_id}"] = value
+                            return
+
+                        encoding = codec_parts[2] if len(codec_parts) > 2 else None
+
+                        media["attributes"].setdefault(payload_id, {})
+                        media["attributes"][payload_id]["rtpmap"] = {
+                            "id": payload_id,
+                            "name": codec_parts[0],
+                            "frequency": codec_parts[1] if len(codec_parts) > 1 else "",
                             "encoding": encoding,
                         }
 
                     elif attribute == "fmtp":
                         # a=fmtp:<format> <format specific parameters>
-                        d = value.split(" ")
-                        index = None
-                        for idx, t in enumerate(self.body.get("m", [])):
-                            if d[0] in t.get("methods", []):
-                                index = idx
-                                break
-                        if index is None:
-                            self.body["a"][f"fmtp:{d[0]}"] = " ".join(d[1:])
+                        d = value.split(None, 1)
+                        payload_id = d[0] if d else ""
+                        settings = d[1].split() if len(d) > 1 else []
+                        media_sections = self.body.get("m", [])
+                        media = media_sections[-1] if media_sections else None
+
+                        if media is None or payload_id not in media.get("methods", []):
+                            self.body["a"][f"fmtp:{payload_id}"] = " ".join(settings)
                             return
-                        self.body["m"][index]["attributes"].setdefault(d[0], {})
-                        self.body["m"][index]["attributes"][d[0]]["fmtp"] = {
-                            "id": d[0],
-                            "settings": d[1:],
+                        media["attributes"].setdefault(payload_id, {})
+                        media["attributes"][payload_id]["fmtp"] = {
+                            "id": payload_id,
+                            "settings": settings,
                         }
                     else:
                         self.body["a"][attribute] = value
@@ -3589,16 +3587,18 @@ class SIPClient:
             body += "a=maxptime:150\r\n"
             body += f"a={sendtype}\r\n"
 
-        tag = self.gen_tag()
-        self.tagLibrary[call_id] = tag
+        tag = self.tagLibrary.get(call_id)
+        if tag is None:
+            tag = self.gen_tag()
+            self.tagLibrary[call_id] = tag
 
-        remote_uri = self._remote_user_uri(number)
+        remote_uri = self._normalize_request_target(number)
         invRequest = f"INVITE {remote_uri} SIP/2.0\r\n"
         invRequest += self._via_header(branch=branch, rport=True)
         invRequest += "Max-Forwards: 70\r\n"
         invRequest += self._contact_header()
         invRequest += f"To: <{remote_uri}>\r\n"
-        invRequest += f"From: <sip:{self.username}@{self.myIP}>;tag={tag}\r\n"
+        invRequest += f"From: <{self._registrar_uri(user=self.username)}>;tag={tag}\r\n"
         invRequest += f"Call-ID: {call_id}\r\n"
         invRequest += f"CSeq: {self.inviteCounter.next()} INVITE\r\n"
         invRequest += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
@@ -3858,7 +3858,7 @@ class SIPClient:
                     ):
                         header_name = "Proxy-Authorization"
 
-                    digest_uri = self._remote_user_uri(number)
+                    digest_uri = self._normalize_request_target(number)
                     auth_line = self._build_digest_auth_header(
                         response,
                         header_name=header_name,
