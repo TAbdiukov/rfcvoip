@@ -564,19 +564,18 @@ class VoIPCall:
             if i["type"] == "video":
                 continue
             assoc = {}
-            p = None
             for x in i["methods"]:
                 try:
-                    p = _payload_type_from_media_method(i, x)
-                    assoc[int(x)] = p
+                    assoc[int(x)] = _payload_type_from_media_method(i, x)
                 except (KeyError, ValueError):
-                    if p:
-                        raise RTP.RTPParseError(
-                            f"RTP Payload type {p} not found."
-                        )
-                    raise RTP.RTPParseError(
-                        "RTP Payload type could not be derived from SDP."
+                    warnings.warn(
+                        f"RTP Payload type {x} could not be derived from SDP.",
+                        stacklevel=2,
                     )
+                    continue
+
+            if not assoc:
+                continue
 
             codecs = {}
             has_transmittable_codec = False
@@ -1589,7 +1588,39 @@ class VoIPPhone:
             )
             return
 
-        self.calls[call_id].answered(request)
+        try:
+            self.calls[call_id].answered(request)
+        except RTP.RTPParseError as ex:
+            debug(
+                request.summary(),
+                "Ending call after OK because RTP negotiation failed "
+                + f"call_id={call_id}: {ex}",
+            )
+            self._send_ack(request)
+            try:
+                self.sip.bye(request)
+            except Exception as bye_ex:
+                debug(
+                    f"Failed to send BYE after RTP negotiation failure: {bye_ex}",
+                    f"Failed to send BYE for Call-ID={call_id}: {bye_ex}",
+                )
+
+            call = self.calls[call_id]
+            for rtp in call.RTPClients:
+                try:
+                    rtp.stop()
+                except Exception:
+                    pass
+            call.state = CallState.ENDED
+            call._finalize_ended_call()
+            warnings.warn(
+                "Remote SDP could not be negotiated for RTP. "
+                + f"CallState set to CallState.ENDED. Call-ID={call_id}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
+
         debug("Answered")
         self._send_ack(request)
 

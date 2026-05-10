@@ -123,7 +123,7 @@ def _parse_digest_params(value: str) -> Dict[str, str]:
             parsed_value = data[value_start:index].strip()
 
         if key:
-            params[key] = parsed_value
+            params[key.lower()] = parsed_value
 
         while index < length and data[index] != ",":
             index += 1
@@ -775,15 +775,18 @@ class SIPMessage:
                         _via[x] = None
                 self.headers["Via"].append(_via)
         elif header == "From" or header == "To":
-            info = data.split(";tag=")
+            info = re.split(r";tag=", data, maxsplit=1, flags=re.IGNORECASE)
             tag = ""
             if len(info) >= 2:
-                tag = info[1]
-            raw = info[0]
-            # fix issue 41 part 1
-            contact = re.split(r"<?sip:", raw)
-            contact[0] = contact[0].strip('"').strip("'")
-            address = contact[1].strip(">")
+                tag = info[1].split(";", 1)[0]
+            raw = info[0].strip()
+
+            contact = re.search(r"<?sips?:([^>\s]+)>?", raw, flags=re.IGNORECASE)
+            if contact is None:
+                raise SIPParseError(f"Malformed {header} header: {data!r}")
+
+            caller = raw[: contact.start()].strip().strip('"').strip("'")
+            address = contact.group(1).strip().rstrip(">")
             if len(address.split("@")) == 2:
                 number = address.split("@")[0]
                 host = address.split("@")[1]
@@ -796,7 +799,7 @@ class SIPMessage:
                 "tag": tag,
                 "address": address,
                 "number": number,
-                "caller": contact[0],
+                "caller": caller,
                 "host": host,
             }
         elif header == "CSeq":

@@ -3,6 +3,8 @@
 ## 2.8.0+RFC
 
 - Packaging: Raise minimum supported Python version to 3.8 for stdlib `dataclasses` compatibility.
+- SIP: Fixed dialog state handling for early media
+- RTP: Improved timestamp validation for reordered packets
 - SIP: Preserve outbound INVITE `From` tags across authenticated retries to keep dialog identity stable.
 - SIP: Support full SIP URI and `user@domain` targets for outbound INVITE calls.
 - SIP: Handle inbound CANCEL for ringing calls by ending local call state and replying `487 Request Terminated` to the original INVITE.
