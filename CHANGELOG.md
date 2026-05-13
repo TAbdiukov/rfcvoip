@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.8.2+RFC
+
+- Codec: Implement per-instance codec ordering. 
+
 ## 2.8.1+RFC
 
 - RTP/SIPTransport: Fix plain `sip:` RFC3263 fallback resolution incorrectly considering SIPS/TLS SRV records for non-secure SIP URIs

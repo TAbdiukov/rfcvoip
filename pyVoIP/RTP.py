@@ -301,7 +301,10 @@ def codec_availability(
     return availability_report()
 
 
-def codec_priority_score(codec: PayloadType) -> int:
+def codec_priority_score(
+    codec: PayloadType,
+    priority_scores: Optional[Dict[Any, int]] = None,
+) -> int:
     """Return the local preference score for ``codec``.
 
     Larger scores are preferred when building local SDP offers and when
@@ -309,6 +312,22 @@ def codec_priority_score(codec: PayloadType) -> int:
     from SDP payload numbers so deployments can tune codec preference without
     changing the wire-level payload mapping.
     """
+    if priority_scores is not None:
+        for key in (
+            codec,
+            getattr(codec, "name", None),
+            str(codec),
+            getattr(codec, "description", None),
+            getattr(codec, "value", None),
+        ):
+            if key is None:
+                continue
+            try:
+                if key in priority_scores:
+                    return int(priority_scores[key])
+            except (TypeError, ValueError):
+                continue
+
     try:
         from pyVoIP.codecs import codec_priority_score as _priority_score
 
@@ -338,7 +357,8 @@ def reset_codec_priorities() -> None:
 
 
 def prioritize_payload_type_map(
-    assoc: Dict[int, PayloadType]
+    assoc: Dict[int, PayloadType],
+    priority_scores: Optional[Dict[Any, int]] = None,
 ) -> Dict[int, PayloadType]:
     """Return ``assoc`` ordered by PyVoIP codec priority.
 
@@ -347,7 +367,13 @@ def prioritize_payload_type_map(
     """
     indexed = list(enumerate(assoc.items()))
     indexed.sort(
-        key=lambda item: (-codec_priority_score(item[1][1]), item[0])
+        key=lambda item: (
+            -codec_priority_score(
+                item[1][1],
+                priority_scores=priority_scores,
+            ),
+            item[0],
+        )
     )
     return {payload_type: codec for _idx, (payload_type, codec) in indexed}
 
@@ -403,9 +429,17 @@ def fmtp_for_payload_type(payload_type: int, codec: PayloadType) -> List[str]:
         return []
 
 
-def is_transmittable_audio_codec(codec: PayloadType) -> bool:
+def is_transmittable_audio_codec(
+    codec: PayloadType,
+    enabled_codecs: Optional[Any] = None,
+) -> bool:
     """Return whether PyVoIP can encode ``codec`` as the main audio stream."""
-    if codec not in getattr(pyVoIP, "RTPCompatibleCodecs", ()):  # pragma: no branch
+    compatible_codecs = (
+        getattr(pyVoIP, "RTPCompatibleCodecs", ())
+        if enabled_codecs is None
+        else enabled_codecs
+    )
+    if codec not in compatible_codecs:  # pragma: no branch
         return False
 
     try:
@@ -417,7 +451,9 @@ def is_transmittable_audio_codec(codec: PayloadType) -> bool:
 
 
 def select_transmittable_audio_codec(
-    assoc: Dict[int, PayloadType]
+    assoc: Dict[int, PayloadType],
+    priority_scores: Optional[Dict[Any, int]] = None,
+    enabled_codecs: Optional[Any] = None,
 ) -> Tuple[int, PayloadType]:
     """Select the negotiated payload number and codec used for RTP audio.
 
@@ -435,7 +471,10 @@ def select_transmittable_audio_codec(
             rejected.append(f"{payload_type}:{codec} (invalid payload number)")
             continue
 
-        if is_transmittable_audio_codec(codec):
+        if is_transmittable_audio_codec(
+            codec,
+            enabled_codecs=enabled_codecs,
+        ):
             candidates.append((index, payload_number, codec))
             continue
 
@@ -446,7 +485,13 @@ def select_transmittable_audio_codec(
     if candidates:
         _index, payload_number, codec = sorted(
             candidates,
-            key=lambda item: (-codec_priority_score(item[2]), item[0]),
+            key=lambda item: (
+                -codec_priority_score(
+                    item[2],
+                    priority_scores=priority_scores,
+                ),
+                item[0],
+            ),
         )[0]
         return payload_number, codec
 
@@ -532,12 +577,19 @@ def codec_info(
     fmtp: Optional[List[str]] = None,
     source: str = "pyvoip",
     supported: Optional[bool] = None,
+    priority_scores: Optional[Dict[Any, int]] = None,
+    enabled_codecs: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Return a serializable description of an RTP codec."""
     availability = _codec_availability_details(codec)
     preferred_payload_type = default_payload_type(codec)
     fmtp_list = list(fmtp or [])
     fmtp_supported = codec_fmtp_supported(codec, fmtp_list)
+    compatible_codecs = (
+        getattr(pyVoIP, "RTPCompatibleCodecs", [])
+        if enabled_codecs is None
+        else enabled_codecs
+    )
 
     if payload_type is None:
         payload_type = preferred_payload_type
@@ -550,7 +602,7 @@ def codec_info(
 
     if supported is None:
         supported = (
-            codec in getattr(pyVoIP, "RTPCompatibleCodecs", [])
+            codec in compatible_codecs
             and bool(availability.get("available", True))
             and fmtp_supported
         )
@@ -567,8 +619,14 @@ def codec_info(
         "name": str(codec),
         "description": codec.description,
         "payload_kind": payload_type_media_kind(codec),
-        "can_transmit_audio": is_transmittable_audio_codec(codec),
-        "priority_score": codec_priority_score(codec),
+        "can_transmit_audio": is_transmittable_audio_codec(
+            codec,
+            enabled_codecs=compatible_codecs,
+        ),
+        "priority_score": codec_priority_score(
+            codec,
+            priority_scores=priority_scores,
+        ),
         "rate": codec.rate,
         "channels": codec.channel,
         "preferred_source_sample_rate": availability.get(
@@ -592,18 +650,52 @@ def codec_info(
         "source": source,
     }
 
-def supported_codecs(include_unavailable: bool = False) -> List[Dict[str, Any]]:
+
+def _prioritize_payload_types(
+    payload_types: List[PayloadType],
+    priority_scores: Optional[Dict[Any, int]] = None,
+) -> List[PayloadType]:
+    indexed = list(enumerate(payload_types))
+    indexed.sort(
+        key=lambda item: (
+            -codec_priority_score(
+                item[1],
+                priority_scores=priority_scores,
+            ),
+            item[0],
+        )
+    )
+    return [payload_type for _idx, payload_type in indexed]
+
+
+def supported_codecs(
+    include_unavailable: bool = False,
+    priority_scores: Optional[Dict[Any, int]] = None,
+    enabled_codecs: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
     """Return codecs supported by this PyVoIP build/configuration."""
     if include_unavailable:
         from pyVoIP.codecs import known_payload_types
 
         codecs = known_payload_types(include_events=True)
     else:
-        codecs = getattr(pyVoIP, "RTPCompatibleCodecs", [])
+        codecs = (
+            getattr(pyVoIP, "RTPCompatibleCodecs", [])
+            if enabled_codecs is None
+            else list(enabled_codecs)
+        )
 
     return [
-        codec_info(codec, payload_type=default_payload_type(codec))
-        for codec in codecs
+        codec_info(
+            codec,
+            payload_type=default_payload_type(codec),
+            priority_scores=priority_scores,
+            enabled_codecs=enabled_codecs,
+        )
+        for codec in _prioritize_payload_types(
+            list(codecs),
+            priority_scores=priority_scores,
+        )
     ]
 
 
@@ -825,6 +917,8 @@ class RTPClient:
         audio_sample_rate: Optional[int] = None,
         audio_sample_width: int = 1,
         audio_channels: int = 1,
+        codec_priority_scores: Optional[Dict[Any, int]] = None,
+        enabled_codecs: Optional[Any] = None,
     ):
         self.NSD = True
         # Example: {0: PayloadType.PCMU, 101: PayloadType.EVENT}
@@ -840,12 +934,20 @@ class RTPClient:
                 f"Unsupported RTP transmit type {sendrecv!r}."
             ) from ex
         self._codec_adapters: Dict[PayloadType, Any] = {}
+        self.codec_priority_scores = dict(codec_priority_scores or {})
+        self.enabled_codecs = (
+            None if enabled_codecs is None else tuple(enabled_codecs)
+        )
         debug("Selecting negotiated audio codec for transmission")
         try:
             (
                 self.preference_payload_type,
                 self.preference,
-            ) = select_transmittable_audio_codec(assoc)
+            ) = select_transmittable_audio_codec(
+                assoc,
+                priority_scores=self.codec_priority_scores,
+                enabled_codecs=self.enabled_codecs,
+            )
         except RTPParseError:
             debug(
                 "No transmittable audio codec negotiated from assoc="
@@ -958,6 +1060,8 @@ class RTPClient:
             media_type="audio",
             source="active-call",
             supported=True,
+            priority_scores=self.codec_priority_scores,
+            enabled_codecs=self.enabled_codecs,
         )
         info["rtp"] = {
             "local": {"ip": self.inIP, "port": self.inPort},
