@@ -204,11 +204,8 @@ class VoIPCall:
                     raise RTP.RTPParseError(
                         "Unable to assign ports for RTP."
                     ) from ex
-                if connections != 1 or port_count != 1:
-                    raise RTP.RTPParseError(
-                        "PyVoIP supports exactly one RTP connection per "
-                        "media section."
-                    )
+                if connections <= 0 or port_count != connections:
+                    raise RTP.RTPParseError("Unable to assign ports for RTP.")
 
             for i in request.body.get("m", []):
                 if i.get("type") != "audio":
@@ -366,11 +363,8 @@ class VoIPCall:
             return
 
         connections = _media_connections(request, media or {})
-        if len(connections) != 1:
-            raise RTP.RTPParseError(
-                "PyVoIP supports exactly one RTP connection per audio "
-                "media section."
-            )
+        if not connections:
+            return
 
         phone = getattr(self, "phone", None)
         audio_sample_rate = getattr(phone, "audio_sample_rate", None)
@@ -1423,7 +1417,7 @@ class VoIPPhone:
                 port_count = int(media.get("port_count", 1))
             except (TypeError, ValueError):
                 return False
-            if connections != 1 or port_count != 1:
+            if connections <= 0 or port_count != connections:
                 return False
         return True
 
