@@ -835,7 +835,7 @@ class VoIPPhone:
     def __init__(
         self,
         server: str,
-        port: int,
+        port: Optional[int],
         username: str,
         password: str,
         myIP="0.0.0.0",
@@ -900,8 +900,7 @@ class VoIPPhone:
         if self.codec_priorities:
             for codec, score in self.codec_priorities.items():
                 pyVoIP.set_codec_priority(codec, score)
-        else:
-            pyVoIP.refresh_supported_codecs()
+        pyVoIP.refresh_supported_codecs()
 
         # "recvonly", "sendrecv", "sendonly", "inactive"
         self.sendmode = "sendrecv"

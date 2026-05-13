@@ -664,7 +664,7 @@ class SIPMessage:
         # header, while ``authentication_challenges`` preserves per-challenge
         # state so WWW-Authenticate and Proxy-Authenticate can coexist.
         self.authentication: Dict[str, str] = {}
-        self.authentication_challenges: Dict[str, Dict[str, str]] = {}
+        self.authentication_challenges: Dict[str, List[Dict[str, str]]] = {}
         # Which header populated ``self.authentication`` (WWW-Authenticate,
         # Proxy-Authenticate, Authorization, Proxy-Authorization).
         self.authentication_header: Optional[str] = None
@@ -828,9 +828,17 @@ class SIPMessage:
             "Proxy-Authorization",
         ):
             header_data = _parse_digest_params(data)
-            self.headers[header] = header_data
+            existing = self.headers.get(header)
+            if isinstance(existing, list):
+                existing.append(header_data)
+            elif isinstance(existing, dict):
+                self.headers[header] = [existing, header_data]
+            else:
+                self.headers[header] = header_data
             if header in ("WWW-Authenticate", "Proxy-Authenticate"):
-                self.authentication_challenges[header] = dict(header_data)
+                self.authentication_challenges.setdefault(header, []).append(
+                    dict(header_data)
+                )
             self.authentication = header_data
             self.authentication_header = header
         else:
@@ -1132,12 +1140,29 @@ class SIPMessage:
                 headers["Via"].append(value)
                 continue
 
+            if name in ("WWW-Authenticate", "Proxy-Authenticate"):
+                existing = headers.get(name)
+                if existing is None:
+                    headers[name] = value
+                elif isinstance(existing, list):
+                    existing.append(value)
+                else:
+                    headers[name] = [existing, value]
+                continue
+
             # Preserve current behavior for most duplicate non-Via headers.
             if name not in headers:
                 headers[name] = value
 
         for key, val in headers.items():
-            handle(key, val)
+            if isinstance(val, list) and key in (
+                "WWW-Authenticate",
+                "Proxy-Authenticate",
+            ):
+                for item in val:
+                    handle(key, item)
+            else:
+                handle(key, val)
 
     @staticmethod
     def parse_raw_body(
@@ -4075,10 +4100,27 @@ class SIPClient:
         challenges = getattr(message, "authentication_challenges", {})
         if isinstance(challenges, dict):
             auth = challenges.get(challenge_header)
-            if isinstance(auth, dict) and auth:
+            if isinstance(auth, list):
+                for challenge in auth:
+                    if (
+                        isinstance(challenge, dict)
+                        and challenge.get("realm")
+                        and challenge.get("nonce")
+                        and str(challenge.get("algorithm", "MD5")).upper()
+                        == "MD5"
+                    ):
+                        return challenge
+                for challenge in auth:
+                    if isinstance(challenge, dict) and challenge:
+                        return challenge
+            elif isinstance(auth, dict) and auth:
                 return auth
 
         auth = message.headers.get(challenge_header)
+        if isinstance(auth, list):
+            for challenge in auth:
+                if isinstance(challenge, dict) and challenge:
+                    return challenge
         if isinstance(auth, dict) and auth:
             return auth
 

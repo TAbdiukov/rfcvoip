@@ -3,6 +3,8 @@
 ## 2.8.1+RFC
 
 - RTP/SIPTransport: Fix plain `sip:` RFC3263 fallback resolution incorrectly considering SIPS/TLS SRV records for non-secure SIP URIs
+- RTP: Make RTP packet manager rebuilding lock-safe
+- SIP: Preserve repeated auth headers and pick usable digest challenge
 - SIP: Preserve `sips:` for subscription targets
 - SIP: Fix `Via` header parsing when only a single `Via` header is present
 - SIP: Fix SDP `Content-Length` generation to use UTF-8 byte length instead of Python string length

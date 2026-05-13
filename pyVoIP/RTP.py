@@ -647,17 +647,32 @@ class RTPPacketManager:
 
     def rebuild(self, reset: bool, offset: int = 0, data: bytes = b"") -> None:
         self.rebuilding = True
-        if reset:
-            self.log = {}
-            self.log[offset] = data
-            self.buffer = io.BytesIO(data)
-        else:
-            bufferloc = self.buffer.tell()
-            self.buffer = io.BytesIO()
-            for pkt, payload in sorted(list(self.log.items())):
-                self.write(pkt, payload)
-            self.buffer.seek(bufferloc, 0)
-        self.rebuilding = False
+        try:
+            with self.bufferLock:
+                if reset:
+                    self.log = {offset: data}
+                    self.buffer = io.BytesIO(data)
+                    return
+
+                bufferloc = self.buffer.tell()
+                old_log = sorted(list(self.log.items()))
+                self.buffer = io.BytesIO()
+                old_offset = self.offset
+
+                for pkt, payload in old_log:
+                    adjusted_offset = pkt - old_offset
+                    if adjusted_offset < 0:
+                        continue
+                    self.buffer.seek(0, 2)
+                    buffer_end = self.buffer.tell()
+                    if adjusted_offset > buffer_end:
+                        self.buffer.write(b"\x80" * (adjusted_offset - buffer_end))
+                    self.buffer.seek(adjusted_offset, 0)
+                    self.buffer.write(payload)
+
+                self.buffer.seek(bufferloc, 0)
+        finally:
+            self.rebuilding = False
 
     def write(self, offset: int, data: bytes) -> None:
         rebuild_args = None
