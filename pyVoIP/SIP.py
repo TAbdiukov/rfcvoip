@@ -1665,6 +1665,7 @@ class SIPClient:
         self.callID = Counter()
         self.sessID = Counter()
         self.optionsCounter = Counter()
+        self.register_call_id: Optional[str] = None
 
         self.urnUUID = self.gen_urn_uuid()
 
@@ -2387,12 +2388,7 @@ class SIPClient:
             from_line += f";tag={request.headers['From']['tag']}"
         response += f"From: {from_line}\r\n"
 
-        to_line = request.headers["To"]["raw"]
-        if request.headers["To"]["tag"]:
-            to_line += f";tag={request.headers['To']['tag']}"
-        else:
-            to_line += f";tag={self.gen_tag()}"
-        response += f"To: {to_line}\r\n"
+        response += f"To: {self._to_header_with_local_tag(request)}\r\n"
 
         response += f"Call-ID: {request.headers['Call-ID']}\r\n"
         response += (
@@ -2403,6 +2399,18 @@ class SIPClient:
         response += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
         response += "Content-Length: 0\r\n\r\n"
         return response
+
+    def _to_header_with_local_tag(self, request: SIPMessage) -> str:
+        to_line = request.headers["To"]["raw"]
+        if request.headers["To"]["tag"]:
+            return f"{to_line};tag={request.headers['To']['tag']}"
+
+        call_id = request.headers.get("Call-ID")
+        local_tag = self.tagLibrary.get(call_id)
+        if local_tag:
+            return f"{to_line};tag={local_tag}"
+
+        return f"{to_line};tag={self.gen_tag()}"
 
     @staticmethod
     def _parse_subscription_state(value: str) -> Dict[str, Any]:
@@ -3170,6 +3178,11 @@ class SIPClient:
         hhash = hash.hexdigest()
         return f"{hhash[0:32]}@{self.myIP}:{self.myPort}"
 
+    def _get_register_call_id(self) -> str:
+        if self.register_call_id is None:
+            self.register_call_id = self.gen_call_id()
+        return self.register_call_id
+
     def lastCallID(self) -> str:
         warnings.warn(
             "lastCallID is deprecated due to PEP8 compliance. "
@@ -3325,7 +3338,7 @@ class SIPClient:
             f'To: "{self.username}" '
             + f"<{self._registrar_uri(user=self.username)}>\r\n"
         )
-        regRequest += f"Call-ID: {self.gen_call_id()}\r\n"
+        regRequest += f"Call-ID: {self._get_register_call_id()}\r\n"
         regRequest += f"CSeq: {self.registerCounter.next()} REGISTER\r\n"
         regRequest += self._contact_header(include_instance=True)
         regRequest += f'Allow: {(", ".join(pyVoIP.SIPCompatibleMethods))}\r\n'
@@ -3446,10 +3459,7 @@ class SIPClient:
             f"From: {request.headers['From']['raw']};tag="
             + f"{request.headers['From']['tag']}\r\n"
         )
-        response += (
-            f"To: {request.headers['To']['raw']};tag="
-            + f"{self.gen_tag()}\r\n"
-        )
+        response += f"To: {self._to_header_with_local_tag(request)}\r\n"
         response += f"Call-ID: {request.headers['Call-ID']}\r\n"
         response += (
             f"CSeq: {request.headers['CSeq']['check']} "
@@ -3884,7 +3894,12 @@ class SIPClient:
                     self.parse_message(response)
                     continue
 
-                if response.headers.get("Call-ID") != call_id:
+                cseq = response.headers.get("CSeq", {})
+                cseq_method = cseq.get("method") if isinstance(cseq, dict) else None
+                if (
+                    response.headers.get("Call-ID") != call_id
+                    or cseq_method != "INVITE"
+                ):
                     # Not our transaction, process normally.
                     self.parse_message(response)
                     continue
@@ -3928,6 +3943,11 @@ class SIPClient:
                             else "dialing"
                         ),
                     )
+                    # SIPClient.invite() consumes this response before
+                    # VoIPPhone.call() has inserted the call into self.calls.
+                    # Queue it so the phone can apply the provisional state
+                    # immediately after creating the VoIPCall.
+                    self.pending_invite_responses[call_id] = response
 
                     return SIPMessage(invite.encode("utf8")), call_id, sess_id
 

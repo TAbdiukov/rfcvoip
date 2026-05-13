@@ -3,6 +3,15 @@
 ## 2.8.0+RFC
 
 - Packaging: Raise minimum supported Python version to 3.8 for stdlib `dataclasses` compatibility.
+- RTP: make RTP buffer rebuild deterministic
+- RTP: Reject invalid RTP payload types instead of masking them
+- RTP: Fix RTPPacketManager.read() does not advance over padded silence
+- VoIP: preserve consumed outbound provisional INVITE responses
+- VoIP: Fix theoretical _add_codec_to_offer() forever loop
+- SIP: Fix outbound INVITE response matching to validate CSeq method alongside Call-ID
+- SIP: Fix inconsistent To-tag generation across responses within the same INVITE dialog
+- VoIP: Fix stop() leaking ringing/dialing calls and assigned RTP ports during shutdown
+- SIP: Improve REGISTER interoperability by reusing a stable Call-ID across refreshes and deregistration
 - RTP: Prune RTP packet history to reduce long-call memory growth
 - SIP: More robust header parsing
 - SIP: Preserve UDP source address and honor `rport`

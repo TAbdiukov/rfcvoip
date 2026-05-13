@@ -640,7 +640,9 @@ class RTPPacketManager:
         with self.bufferLock:
             packet = self.buffer.read(length)
             if len(packet) < length:
-                packet = packet + (b"\x80" * (length - len(packet)))
+                missing = length - len(packet)
+                self.buffer.seek(missing, 1)
+                packet = packet + (b"\x80" * missing)
         return packet
 
     def rebuild(self, reset: bool, offset: int = 0, data: bytes = b"") -> None:
@@ -652,8 +654,8 @@ class RTPPacketManager:
         else:
             bufferloc = self.buffer.tell()
             self.buffer = io.BytesIO()
-            for pkt in self.log:
-                self.write(pkt, self.log[pkt])
+            for pkt, payload in sorted(list(self.log.items())):
+                self.write(pkt, payload)
             self.buffer.seek(bufferloc, 0)
         self.rebuilding = False
 
@@ -972,6 +974,18 @@ class RTPClient:
         marker: bool,
         timestamp: int,
     ) -> bytes:
+        try:
+            payload_type = int(payload_type)
+        except (TypeError, ValueError) as ex:
+            raise RTPParseError(
+                f"RTP payload type must be an integer, got {payload_type!r}."
+            ) from ex
+
+        if payload_type < 0 or payload_type > 127:
+            raise RTPParseError(
+                f"RTP payload type must be between 0 and 127, got {payload_type}."
+            )
+
         packet = b"\x80"
         packet += (((0x80 if marker else 0x00) | (payload_type & 0x7F))).to_bytes(1, 'big')
         packet += (self.outSequence & 0xFFFF).to_bytes(2, 'big')

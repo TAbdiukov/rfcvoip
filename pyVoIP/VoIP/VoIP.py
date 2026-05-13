@@ -1120,7 +1120,13 @@ class VoIPPhone:
             except Exception:
                 payload_type = 96
 
+        seen_payload_types = set()
         while payload_type in offer_codecs:
+            if payload_type in seen_payload_types:
+                raise RTP.RTPParseError(
+                    "No RTP payload numbers are available for SDP offer."
+                )
+            seen_payload_types.add(payload_type)
             payload_type += 1
             if payload_type > 127:
                 payload_type = 96
@@ -1696,9 +1702,26 @@ class VoIPPhone:
                     continue
 
                 try:
-                    call.hangup()
+                    if call.state == CallState.ANSWERED:
+                        call.hangup()
+                    elif call.state in (CallState.DIALING, CallState.RINGING):
+                        if (
+                            call.state == CallState.RINGING
+                            and call.remote_sip_message is not None
+                        ):
+                            call.deny()
+                        else:
+                            call.cancel()
+                    else:
+                        call._finalize_ended_call()
                 except InvalidStateError:
-                    pass
+                    for rtp in getattr(call, "RTPClients", ()):
+                        try:
+                            rtp.stop()
+                        except Exception:
+                            pass
+                    call.state = CallState.ENDED
+                    call._finalize_ended_call()
                 except Exception as ex:
                     debug(
                         f"Error hanging up call during phone stop: {ex}",
@@ -1765,7 +1788,7 @@ class VoIPPhone:
         if pending_response is not None:
             debug(
                 pending_response.summary(),
-                "Applying queued final INVITE response "
+                "Applying queued INVITE response "
                 + f"call_id={call_id} status={int(pending_response.status)} "
                 + f"{pending_response.status.phrase}",
             )
