@@ -3,6 +3,20 @@
 ## 2.8.2+RFC
 
 - Codec: Implement per-instance codec ordering. 
+- VoIP: Fix media-level SDP `c=` handling
+- VoIP: Fix potential RTP port leak in `VoIPPhone.call()`
+- VoIP: Handle malformed `200 OK` ingestion
+- SIP: Fix a shutdown race in `SIPClient.recv`
+- SIP: More robust parsing in `parse_sip_message()`
+- SIP: Prevent malformed `a=rtpmap` lines from throwing an index error during parsing
+- SIP: SDP payload resolution prefer `rtpmap` mappings over static RTP payload numbers.
+- SIP Preserved media-level SDP direction attributes on their owning `m=` sections.
+- RTP: Harden RTP packet buffering against huge timestamp gaps that could cause excessive memory allocation.
+
+Suggested test file name:
+
+`tests/test_sip_rtp_negotiation_regressions.py`
+
 
 ## 2.8.1+RFC
 

@@ -769,13 +769,15 @@ class RTPPacketManager:
     def write(self, offset: int, data: bytes) -> None:
         rebuild_args = None
         with self.bufferLock:
+            newest = max(max(self.log) if self.log else offset, offset)
+            cutoff = newest - self.max_log_span
+            if offset < cutoff:
+                return
+
             self.log[offset] = data
-            if self.log:
-                newest = max(self.log)
-                cutoff = newest - self.max_log_span
-                for logged_offset in list(self.log):
-                    if logged_offset < cutoff:
-                        del self.log[logged_offset]
+            for logged_offset in list(self.log):
+                if logged_offset < cutoff:
+                    del self.log[logged_offset]
             bufferloc = self.buffer.tell()
             if offset < self.offset:
                 """
@@ -791,6 +793,13 @@ class RTPPacketManager:
                 rebuild_args = (reset, offset, data)
             else:
                 adjusted_offset = offset - self.offset
+                if adjusted_offset > self.max_log_span:
+                    self.offset = offset
+                    self.log = {offset: data}
+                    self.buffer = io.BytesIO(data)
+                    self.buffer.seek(0, 0)
+                    return
+
                 self.buffer.seek(0, 2)
                 buffer_end = self.buffer.tell()
                 if adjusted_offset > buffer_end:

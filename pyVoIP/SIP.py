@@ -904,7 +904,11 @@ class SIPMessage:
                 # c=<nettype> <addrtype> <connection-address>
                 if "c" not in self.body:
                     self.body["c"] = []
-                d = data.split(" ")
+                d = data.split()
+                if len(d) < 3:
+                    raise SIPParseError(f"Malformed SDP connection line: c={data!r}")
+
+                connection = None
                 # TTL Data and Multicast addresses may be specified.
                 # For IPv4 its listed as addr/ttl/number of addresses.
                 # c=IN IP4 224.2.1.1/127/3 means:
@@ -916,46 +920,48 @@ class SIPMessage:
                 # for multicast addresses.
                 if "/" in d[2]:
                     if d[1] == "IP6":
-                        self.body[header].append(
-                            {
-                                "network_type": d[0],
-                                "address_type": d[1],
-                                "address": d[2].split("/")[0],
-                                "ttl": None,
-                                "address_count": int(d[2].split("/")[1]),
-                            }
-                        )
+                        connection = {
+                            "network_type": d[0],
+                            "address_type": d[1],
+                            "address": d[2].split("/")[0],
+                            "ttl": None,
+                            "address_count": int(d[2].split("/")[1]),
+                        }
                     else:
                         address_data = d[2].split("/")
                         if len(address_data) == 2:
-                            self.body[header].append(
-                                {
-                                    "network_type": d[0],
-                                    "address_type": d[1],
-                                    "address": address_data[0],
-                                    "ttl": int(address_data[1]),
-                                    "address_count": 1,
-                                }
-                            )
+                            connection = {
+                                "network_type": d[0],
+                                "address_type": d[1],
+                                "address": address_data[0],
+                                "ttl": int(address_data[1]),
+                                "address_count": 1,
+                            }
                         else:
-                            self.body[header].append(
-                                {
-                                    "network_type": d[0],
-                                    "address_type": d[1],
-                                    "address": address_data[0],
-                                    "ttl": int(address_data[1]),
-                                    "address_count": int(address_data[2]),
-                                }
-                            )
+                            connection = {
+                                "network_type": d[0],
+                                "address_type": d[1],
+                                "address": address_data[0],
+                                "ttl": int(address_data[1]),
+                                "address_count": int(address_data[2]),
+                            }
                 else:
-                    self.body[header].append(
-                        {
-                            "network_type": d[0],
-                            "address_type": d[1],
-                            "address": d[2],
-                            "ttl": None,
-                            "address_count": 1,
-                        }
+                    connection = {
+                        "network_type": d[0],
+                        "address_type": d[1],
+                        "address": d[2],
+                        "ttl": None,
+                        "address_count": 1,
+                    }
+
+                self.body[header].append(connection)
+                if self.body.get("m"):
+                    self.body["m"][-1].setdefault("connections", []).append(
+                        connection
+                    )
+                else:
+                    self.body.setdefault("session_connections", []).append(
+                        connection
                     )
             elif header == "b":
                 # SDP 5.8 Bandwidth
@@ -1035,6 +1041,7 @@ class SIPMessage:
                         "protocol": self._parse_sdp_rtp_protocol(d[2]),
                         "methods": methods,
                         "bandwidth": [],
+                        "connections": [],
                         "attributes": {},
                     }
                 )
@@ -1063,6 +1070,9 @@ class SIPMessage:
 
                         payload_id = parts[0]
                         codec_parts = parts[1].split("/")
+                        if len(codec_parts) < 2:
+                            self.body["a"][f"rtpmap:{payload_id}"] = value
+                            return
                         media_sections = self.body.get("m", [])
                         media = media_sections[-1] if media_sections else None
 
@@ -1106,9 +1116,12 @@ class SIPMessage:
                         or attribute == "sendonly"
                         or attribute == "inactive"
                     ):
-                        self.body["a"]["transmit_type"] = (
-                            pyVoIP.RTP.TransmitType(attribute)
-                        )
+                        transmit_type = pyVoIP.RTP.TransmitType(attribute)
+                        media_sections = self.body.get("m", [])
+                        if media_sections:
+                            media_sections[-1]["transmit_type"] = transmit_type
+                        else:
+                            self.body["a"]["transmit_type"] = transmit_type
             else:
                 self.body[header] = data
 
@@ -1288,7 +1301,11 @@ class SIPMessage:
         if self.version not in self.SIPCompatibleVersions:
             raise SIPParseError(f"SIP Version {self.version} not compatible.")
 
-        self.method = str(self.heading.split(b" ")[0], "utf8")
+        self.method = str(
+            self.heading.split(b" ")[0],
+            "utf8",
+            errors="replace",
+        )
 
         self.parse_raw_header(headers_raw, self.parse_header)
         self._parse_message_body(body)
@@ -2989,8 +3006,12 @@ class SIPClient:
                 break
 
     def recv(self) -> None:
+        connection = self.connection
+        if connection is None:
+            return
+
         try:
-            raw = self.connection.recv_raw_message()
+            raw = connection.recv_raw_message()
         except BlockingIOError:
             # Re-raise so recv_loop() can release locks and continue
             raise
@@ -3099,7 +3120,9 @@ class SIPClient:
                     "Received SIP response but no callCallback is set: "
                     + str(message.heading, "utf8", errors="replace"),
                 )
-            self.s.setblocking(True)
+            sock = getattr(self, "s", None)
+            if sock is not None:
+                sock.setblocking(True)
             return
         elif message.method == "INVITE":
             if self.callCallback is None:

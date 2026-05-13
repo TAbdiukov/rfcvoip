@@ -38,24 +38,33 @@ def _payload_type_from_media_method(
     media: Dict[str, Any],
     method: Any,
 ) -> RTP.PayloadType:
+    attributes = media.get("attributes", {}).get(str(method), {})
+    rtpmap_error = None
+
+    if isinstance(attributes, dict):
+        rtpmap = attributes.get("rtpmap", {})
+        if isinstance(rtpmap, dict) and rtpmap:
+            try:
+                return RTP.payload_type_from_name(
+                    str(rtpmap.get("name") or ""),
+                    rate=rtpmap.get("frequency"),
+                    channels=rtpmap.get("encoding"),
+                )
+            except ValueError as ex:
+                rtpmap_error = ex
+
     try:
         return RTP.PayloadType(int(method))
     except (TypeError, ValueError):
         pass
 
-    attributes = media.get("attributes", {}).get(str(method), {})
     if not isinstance(attributes, dict):
         raise KeyError(method)
 
-    rtpmap = attributes.get("rtpmap", {})
-    if not isinstance(rtpmap, dict):
-        raise KeyError("rtpmap")
+    if rtpmap_error is not None:
+        raise rtpmap_error
 
-    return RTP.payload_type_from_name(
-        str(rtpmap.get("name") or ""),
-        rate=rtpmap.get("frequency"),
-        channels=rtpmap.get("encoding"),
-    )
+    raise KeyError("rtpmap")
 
 
 def _media_uses_supported_rtp_profile(media: Dict[str, Any]) -> bool:
@@ -70,6 +79,36 @@ def _media_port_is_enabled(media: Dict[str, Any]) -> bool:
         return int(media.get("port", 0)) > 0
     except (TypeError, ValueError):
         return False
+
+
+def _media_connections(
+    request: SIP.SIPMessage,
+    media: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    connections = media.get("connections")
+    if not connections:
+        connections = request.body.get(
+            "session_connections",
+            request.body.get("c", []),
+        )
+    return [
+        connection
+        for connection in connections
+        if isinstance(connection, dict)
+    ]
+
+
+def _media_connection_count(
+    request: SIP.SIPMessage,
+    media: Dict[str, Any],
+) -> int:
+    count = 0
+    for connection in _media_connections(request, media):
+        try:
+            count += int(connection.get("address_count", 1))
+        except (TypeError, ValueError):
+            count += 1
+    return count
 
 
 class InvalidRangeError(Exception):
@@ -134,18 +173,22 @@ class VoIPCall:
         if callstate == CallState.RINGING:
             audio = []
             video = []
-            for x in self.request.body["c"]:
-                self.connections += x["address_count"]
-            for x in self.request.body["m"]:
+            for x in self.request.body.get("m", []):
                 if x["type"] == "audio":
                     if (
                         not _media_uses_supported_rtp_profile(x)
                         or not _media_port_is_enabled(x)
                     ):
                         continue
+                    self.connections += _media_connection_count(
+                        self.request, x
+                    )
                     self.audioPorts += x["port_count"]
                     audio.append(x)
                 elif x["type"] == "video":
+                    self.connections += _media_connection_count(
+                        self.request, x
+                    )
                     self.videoPorts += x["port_count"]
                     video.append(x)
                 else:
@@ -153,24 +196,15 @@ class VoIPCall:
                         f"Unknown media description: {x['type']}", stacklevel=2
                     )
 
-            # Ports Adjusted is used in case of multiple m tags.
-            if len(audio) > 0:
-                audioPortsAdj = self.audioPorts / len(audio)
-            else:
-                audioPortsAdj = 0
-            if len(video) > 0:
-                videoPortsAdj = self.videoPorts / len(video)
-            else:
-                videoPortsAdj = 0
+            for media in audio + video:
+                connections = _media_connection_count(self.request, media)
+                if (
+                    connections <= 0
+                    or int(media.get("port_count", 1)) != connections
+                ):
+                    raise RTP.RTPParseError("Unable to assign ports for RTP.")
 
-            if not (
-                (audioPortsAdj == self.connections or self.audioPorts == 0)
-                and (videoPortsAdj == self.connections or self.videoPorts == 0)
-            ):
-                raise RTP.RTPParseError("Unable to assign ports for RTP.")
-                return
-
-            for i in request.body["m"]:
+            for i in request.body.get("m", []):
                 if i.get("type") != "audio":
                     continue
                 if (
@@ -257,7 +291,7 @@ class VoIPCall:
                 port = self.phone.request_port()
                 self.assignedPorts[port] = codecs
                 self.create_rtp_clients(
-                    codecs, self.myIP, port, request, i["port"]
+                    codecs, self.myIP, port, request, i["port"], media=i
                 )
 
             if len(self.assignedPorts) == 0:
@@ -298,6 +332,7 @@ class VoIPCall:
         port: int,
         request: SIP.SIPMessage,
         baseport: int,
+        media: Optional[Dict[str, Any]] = None,
     ) -> None:
         debug(
             f"Creating RTP client(s) for {self.call_id}",
@@ -319,7 +354,8 @@ class VoIPCall:
             )
             return
 
-        if not request.body.get("c"):
+        connections = _media_connections(request, media or {})
+        if not connections:
             return
 
         phone = getattr(self, "phone", None)
@@ -344,7 +380,7 @@ class VoIPCall:
                 audio_channels=audio_channels,
             )
 
-        remote_ip = request.body["c"][0]["address"]
+        remote_ip = connections[0]["address"]
         c = RTP.RTPClient(
             codecs,
             ip,
@@ -497,6 +533,14 @@ class VoIPCall:
         except Exception:
             pass
 
+        # Prevent delayed __del__ cleanup from releasing a port that has
+        # already been returned to the pool and possibly re-assigned to a
+        # later call.
+        try:
+            self.assignedPorts.clear()
+        except Exception:
+            pass
+
         if self.call_id in self.phone.calls:
             del self.phone.calls[self.call_id]
 
@@ -545,10 +589,11 @@ class VoIPCall:
                 or not _media_port_is_enabled(i)
             ):
                 continue
-            for ii, client in zip(
-                range(len(request.body["c"])), self.RTPClients
+            connections = _media_connections(request, i)
+            for ii, (connection, client) in enumerate(
+                zip(connections, self.RTPClients)
             ):
-                client.outIP = request.body["c"][ii]["address"]
+                client.outIP = connection["address"]
                 client.outPort = i["port"] + ii
 
     def answer(self) -> None:
@@ -632,7 +677,7 @@ class VoIPCall:
             codecs = RTP.prioritize_payload_type_map(codecs)
 
             self.create_rtp_clients(
-                codecs, self.myIP, self.port, request, i["port"]
+                codecs, self.myIP, self.port, request, i["port"], media=i
             )
 
         for x in self.RTPClients:
@@ -1322,12 +1367,6 @@ class VoIPPhone:
         return codecs
 
     def _has_assignable_audio_ports(self, request: SIP.SIPMessage) -> bool:
-        connections = 0
-        for connection in request.body.get("c", []):
-            connections += connection.get("address_count", 1)
-
-        audio_media = []
-        audio_ports = 0
         for media in request.body.get("m", []):
             if media.get("type") != "audio":
                 continue
@@ -1336,17 +1375,13 @@ class VoIPPhone:
                 or not _media_port_is_enabled(media)
             ):
                 continue
-            audio_media.append(media)
-            audio_ports += media.get("port_count", 1)
-
-        if not audio_media:
-            return True
-
-        if connections == 0:
-            return False
-
-        audio_ports_adj = audio_ports / len(audio_media)
-        return audio_ports_adj == connections
+            connections = _media_connection_count(request, media)
+            if (
+                connections <= 0
+                or int(media.get("port_count", 1)) != connections
+            ):
+                return False
+        return True
 
 
     def _has_compatible_audio_offer(self, request: SIP.SIPMessage) -> bool:
@@ -1389,12 +1424,22 @@ class VoIPPhone:
         self, request: SIP.SIPMessage
     ) -> bool:
         local_address_type = SIP.SIPClient._sdp_address_type(self.myIP)
-        for connection in request.body.get("c", []):
-            remote_address_type = str(
-                connection.get("address_type", "")
-            ).upper()
-            if remote_address_type != local_address_type:
-                return False
+        checked = False
+        for media in request.body.get("m", []):
+            for connection in _media_connections(request, media):
+                checked = True
+                remote_address_type = str(
+                    connection.get("address_type", "")
+                ).upper()
+                if remote_address_type != local_address_type:
+                    return False
+        if not checked:
+            for connection in request.body.get("c", []):
+                remote_address_type = str(
+                    connection.get("address_type", "")
+                ).upper()
+                if remote_address_type != local_address_type:
+                    return False
         return True
 
     def _callback_MSG_Invite(self, request: SIP.SIPMessage) -> None:
@@ -1780,12 +1825,13 @@ class VoIPPhone:
         self.stop(failed=True)
 
     def call(self, number: str) -> VoIPCall:
-        port = self.request_port()
-        medias = {}
-        medias[port] = self._default_audio_offer()
         call_id: Optional[str] = None
         self._outbound_call_creation_depth += 1
         try:
+            port = self.request_port()
+            medias = {}
+            medias[port] = self._default_audio_offer()
+
             request, call_id, sess_id = self.sip.invite(
                 number, medias, RTP.TransmitType.SENDRECV
             )
