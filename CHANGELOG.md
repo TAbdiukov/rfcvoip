@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.8.1+RFC
+
+- RTP/SIPTransport: Fix plain `sip:` RFC3263 fallback resolution incorrectly considering SIPS/TLS SRV records for non-secure SIP URIs
+- SIP: Fix `Via` header parsing when only a single `Via` header is present
+- SIP: Fix SDP `Content-Length` generation to use UTF-8 byte length instead of Python string length
+- VoIP: Ignore disabled SDP media sections (`m=` port `0`) during codec negotiation and RTP setup
+- VoIP: Restrict RTP negotiation/setup to supported RTP/AVP media profiles only
+- VoIP: Prevent RTP clients from being created for rejected or inactive SDP audio streams
+- VoIP: Improve SDP media filtering consistency across inbound call handling, renegotiation, and answered-call processing
+
 ## 2.8.0+RFC
 
 - Packaging: Raise minimum supported Python version to 3.8 for stdlib `dataclasses` compatibility.

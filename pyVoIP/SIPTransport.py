@@ -287,11 +287,16 @@ class SIPResolver:
         if naptr is not None:
             return naptr
 
-        transports = (
-            [SIPTransport.TLS]
-            if uri.scheme == "sips"
-            else list(self.transport_preference)
-        )
+        if uri.scheme == "sips":
+            transports = [SIPTransport.TLS]
+        else:
+            # Plain sip: URI fallback should only use SIP services. Explicit
+            # transport=tls and sips: resolution are handled before this point.
+            transports = [
+                transport
+                for transport in self.transport_preference
+                if transport != SIPTransport.TLS
+            ]
         for transport in transports:
             srv = self._resolve_srv_for_transport(
                 uri.host, transport, uri, source="srv-fallback"

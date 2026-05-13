@@ -747,7 +747,8 @@ class SIPMessage:
 
     def parse_header(self, header: str, data: str) -> None:
         if header == "Via":
-            for d in data:
+            values = data if isinstance(data, list) else [data]
+            for d in values:
                 pieces = d.split(";")
                 sent_by = pieces[0].strip().split()
                 if len(sent_by) < 2:
@@ -3591,6 +3592,7 @@ class SIPClient:
             body += "a=maxptime:150\r\n"
             body += f"a={sendtype}\r\n"
 
+        body_bytes = body.encode("utf8")
         tag = self.tagLibrary[request.headers["Call-ID"]]
 
         regRequest = "SIP/2.0 200 OK\r\n"
@@ -3610,7 +3612,7 @@ class SIPClient:
         regRequest += self._gen_supported_header()
         regRequest += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
         regRequest += "Content-Type: application/sdp\r\n"
-        regRequest += f"Content-Length: {len(body)}\r\n\r\n"
+        regRequest += f"Content-Length: {len(body_bytes)}\r\n\r\n"
         regRequest += body
 
         return regRequest
@@ -3670,6 +3672,7 @@ class SIPClient:
             body += "a=maxptime:150\r\n"
             body += f"a={sendtype}\r\n"
 
+        body_bytes = body.encode("utf8")
         tag = self.tagLibrary.get(call_id)
         if tag is None:
             tag = self.gen_tag()
@@ -3687,7 +3690,7 @@ class SIPClient:
         invRequest += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
         invRequest += "Content-Type: application/sdp\r\n"
         invRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
-        invRequest += f"Content-Length: {len(body)}\r\n\r\n"
+        invRequest += f"Content-Length: {len(body_bytes)}\r\n\r\n"
         invRequest += body
 
         return invRequest

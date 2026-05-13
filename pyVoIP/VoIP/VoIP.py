@@ -58,6 +58,18 @@ def _payload_type_from_media_method(
     )
 
 
+def _media_uses_supported_rtp_profile(media: Dict[str, Any]) -> bool:
+    protocol = media.get("protocol")
+    return protocol in (RTP.RTPProtocol.AVP, RTP.RTPProtocol.AVP.value)
+
+
+def _media_port_is_enabled(media: Dict[str, Any]) -> bool:
+    try:
+        return int(media.get("port", 0)) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 class InvalidRangeError(Exception):
     pass
 
@@ -124,8 +136,10 @@ class VoIPCall:
                 self.connections += x["address_count"]
             for x in self.request.body["m"]:
                 if x["type"] == "audio":
-                    pr = x.get("protocol")
-                    if pr and pr != RTP.RTPProtocol.AVP:
+                    if (
+                        not _media_uses_supported_rtp_profile(x)
+                        or not _media_port_is_enabled(x)
+                    ):
                         continue
                     self.audioPorts += x["port_count"]
                     audio.append(x)
@@ -155,10 +169,12 @@ class VoIPCall:
                 return
 
             for i in request.body["m"]:
-                if i["type"] == "video":
+                if i.get("type") != "audio":
                     continue
-                pr = i.get("protocol")
-                if pr and pr != RTP.RTPProtocol.AVP:
+                if (
+                    not _media_uses_supported_rtp_profile(i)
+                    or not _media_port_is_enabled(i)
+                ):
                     continue
                 assoc = {}
                 e = False
@@ -520,7 +536,12 @@ class VoIPCall:
         )
         self.sip.send_response(request, message)
         for i in request.body["m"]:
-            if i["type"] == "video":
+            if i.get("type") != "audio":
+                continue
+            if (
+                not _media_uses_supported_rtp_profile(i)
+                or not _media_port_is_enabled(i)
+            ):
                 continue
             for ii, client in zip(
                 range(len(request.body["c"])), self.RTPClients
@@ -561,7 +582,12 @@ class VoIPCall:
 
         self.remote_sip_message = request
         for i in request.body["m"]:
-            if i["type"] == "video":
+            if i.get("type") != "audio":
+                continue
+            if (
+                not _media_uses_supported_rtp_profile(i)
+                or not _media_port_is_enabled(i)
+            ):
                 continue
             assoc = {}
             for x in i["methods"]:
@@ -1302,9 +1328,12 @@ class VoIPPhone:
         audio_media = []
         audio_ports = 0
         for media in request.body.get("m", []):
-            if media.get("protocol") != RTP.RTPProtocol.AVP:
-                continue
             if media.get("type") != "audio":
+                continue
+            if (
+                not _media_uses_supported_rtp_profile(media)
+                or not _media_port_is_enabled(media)
+            ):
                 continue
             audio_media.append(media)
             audio_ports += media.get("port_count", 1)
@@ -1323,7 +1352,10 @@ class VoIPPhone:
         for media in request.body.get("m", []):
             if media.get("type") != "audio":
                 continue
-            if media.get("protocol") != RTP.RTPProtocol.AVP:
+            if (
+                not _media_uses_supported_rtp_profile(media)
+                or not _media_port_is_enabled(media)
+            ):
                 continue
 
             for method in media.get("methods", []):
