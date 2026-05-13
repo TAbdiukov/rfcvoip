@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.8.3+RFC
+
+- RTP: accept `telephone-event` regardless of advertised clock rate
+- VoIP: fail RTP negotiation clearly instead of creating answered calls with no media
+- VoIP: release only the port reserved by a failed outbound call setup
+- SIP: send raw SIP-version error responses back to the packet source
+
 ## 2.8.2+RFC
 
 - Codec: Implement per-instance codec ordering. 
@@ -25,7 +32,7 @@
 - SIP: More robust parsing in `parse_sip_message()`
 - SIP: Prevent malformed `a=rtpmap` lines from throwing an index error during parsing
 - SIP: SDP payload resolution prefer `rtpmap` mappings over static RTP payload numbers.
-- SIP Preserved media-level SDP direction attributes on their owning `m=` sections.
+- SIP: Preserved media-level SDP direction attributes on their owning `m=` sections.
 
 ## 2.8.1+RFC
 

@@ -3030,7 +3030,11 @@ class SIPClient:
             if "SIP Version" in str(e):
                 try:
                     resp = self._gen_sip_version_not_supported_raw(raw)
-                    self.send_raw(resp.encode("utf8"), self.signal_target())
+                    target = (
+                        getattr(connection, "last_recv_address", None)
+                        or self.signal_target()
+                    )
+                    self.send_raw(resp.encode("utf8"), target)
                 except Exception as ex:
                     debug(f"Failed sending 505 response: {ex}")
             else:

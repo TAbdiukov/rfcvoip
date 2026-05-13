@@ -198,11 +198,17 @@ class VoIPCall:
 
             for media in audio + video:
                 connections = _media_connection_count(self.request, media)
-                if (
-                    connections <= 0
-                    or int(media.get("port_count", 1)) != connections
-                ):
-                    raise RTP.RTPParseError("Unable to assign ports for RTP.")
+                try:
+                    port_count = int(media.get("port_count", 1))
+                except (TypeError, ValueError) as ex:
+                    raise RTP.RTPParseError(
+                        "Unable to assign ports for RTP."
+                    ) from ex
+                if connections != 1 or port_count != 1:
+                    raise RTP.RTPParseError(
+                        "PyVoIP supports exactly one RTP connection per "
+                        "media section."
+                    )
 
             for i in request.body.get("m", []):
                 if i.get("type") != "audio":
@@ -360,8 +366,11 @@ class VoIPCall:
             return
 
         connections = _media_connections(request, media or {})
-        if not connections:
-            return
+        if len(connections) != 1:
+            raise RTP.RTPParseError(
+                "PyVoIP supports exactly one RTP connection per audio "
+                "media section."
+            )
 
         phone = getattr(self, "phone", None)
         audio_sample_rate = getattr(phone, "audio_sample_rate", None)
@@ -697,6 +706,9 @@ class VoIPCall:
             self.create_rtp_clients(
                 codecs, self.myIP, self.port, request, i["port"], media=i
             )
+
+        if not self.RTPClients:
+            raise RTP.RTPParseError("No RTP clients were created.")
 
         for x in self.RTPClients:
             x.start()
@@ -1407,10 +1419,11 @@ class VoIPPhone:
             ):
                 continue
             connections = _media_connection_count(request, media)
-            if (
-                connections <= 0
-                or int(media.get("port_count", 1)) != connections
-            ):
+            try:
+                port_count = int(media.get("port_count", 1))
+            except (TypeError, ValueError):
+                return False
+            if connections != 1 or port_count != 1:
                 return False
         return True
 
@@ -1857,6 +1870,7 @@ class VoIPPhone:
 
     def call(self, number: str) -> VoIPCall:
         call_id: Optional[str] = None
+        port: Optional[int] = None
         self._outbound_call_creation_depth += 1
         try:
             port = self.request_port()
@@ -1881,7 +1895,12 @@ class VoIPPhone:
         except Exception:
             if call_id is not None:
                 self.sip.pop_pending_invite_response(call_id)
-            self.release_ports()
+            if port is not None and (
+                call_id is None or call_id not in self.calls
+            ):
+                with self.portsLock:
+                    if port in self.assignedPorts:
+                        self.assignedPorts.remove(port)
             raise
         finally:
             self._outbound_call_creation_depth -= 1
