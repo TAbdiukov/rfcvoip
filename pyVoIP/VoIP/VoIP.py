@@ -1677,6 +1677,38 @@ class VoIPPhone:
             )
             return
 
+        if not self._has_assignable_audio_ports(request):
+            debug(
+                request.summary(),
+                "Ending call after OK with unassignable RTP audio connection "
+                + f"data call_id={call_id}",
+            )
+            self._send_ack(request)
+            try:
+                self.sip.bye(request)
+            except Exception as ex:
+                debug(
+                    f"Failed to send BYE after RTP connection mismatch: {ex}",
+                    f"Failed to send BYE for Call-ID={call_id}: {ex}",
+                )
+
+            call = self.calls[call_id]
+            for rtp in call.RTPClients:
+                try:
+                    rtp.stop()
+                except Exception:
+                    pass
+            call.state = CallState.ENDED
+            call._finalize_ended_call()
+            warnings.warn(
+                "Remote SDP does not contain exactly one assignable RTP "
+                + "audio connection. CallState set to CallState.ENDED. "
+                + f"Call-ID={call_id}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
+
         if not self._has_compatible_audio_offer(request):
             debug(
                 request.summary(),

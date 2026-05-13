@@ -5,6 +5,7 @@
 - RTP: accept `telephone-event` regardless of advertised clock rate
 - VoIP: fail RTP negotiation clearly instead of creating answered calls with no media
 - VoIP: release only the port reserved by a failed outbound call setup
+- VoIP: reject outbound answers with unusable RTP connection data before marking the call answered
 - SIP: send raw SIP-version error responses back to the packet source
 
 ## 2.8.2+RFC
