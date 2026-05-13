@@ -28,9 +28,11 @@ class SIPTransport(Enum):
         # RFC 3261 treats SIPS as secure.  transport=tcp on a sips: URI is a
         # reliable transport selector; the first hop is still TLS-over-TCP.
         if scheme == "sips":
+            if raw in ("", "tcp", "tls", "tls-over-tcp"):
+                return cls.TLS
             if raw == "udp":
                 raise ValueError("SIPS URIs cannot use UDP transport.")
-            return cls.TLS
+            raise ValueError(f"Unsupported SIPS transport {value!r}.")
 
         if raw in ("", "udp"):
             return cls.UDP
@@ -451,7 +453,6 @@ class SIPConnection:
             self.socket = self._open_udp_socket()
         else:
             self.socket = self._open_stream_socket()
-        self.socket.setblocking(True)
 
     def close(self) -> None:
         if self.socket is None:
@@ -606,7 +607,15 @@ class SIPConnection:
             self.socket.settimeout(old_timeout)
         return None
 
+    def _discard_stream_keepalive_prefix(self) -> None:
+        # SIP over TCP/TLS peers commonly send CRLF keepalives.  They are not
+        # SIP messages and must not be left in front of the next framed
+        # request/response.
+        while self._stream_buffer.startswith(b"\r\n"):
+            self._stream_buffer = self._stream_buffer[2:]
+
     def _stream_has_message(self) -> bool:
+        self._discard_stream_keepalive_prefix()
         needed = self._stream_message_length()
         return needed is not None and len(self._stream_buffer) >= needed
 
@@ -630,6 +639,7 @@ class SIPConnection:
 
     def _recv_stream_message(self) -> bytes:
         assert self.socket is not None
+        self._discard_stream_keepalive_prefix()
         message = self._pop_stream_message()
         if message is not None:
             return message
@@ -639,11 +649,13 @@ class SIPConnection:
             if not chunk:
                 raise OSError("SIP stream socket closed")
             self._stream_buffer += chunk
+            self._discard_stream_keepalive_prefix()
             message = self._pop_stream_message()
             if message is not None:
                 return message
 
     def _pop_stream_message(self) -> Optional[bytes]:
+        self._discard_stream_keepalive_prefix()
         needed = self._stream_message_length()
         if needed is None or len(self._stream_buffer) < needed:
             return None

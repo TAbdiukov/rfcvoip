@@ -12,9 +12,10 @@ def acquired_lock_and_unblocked_socket(lock: "Lock", socket: "socket"):
     non-blocking, and then blocking once the Lock is released.
 
     Lock will release and socket will become blocking even during exceptions"""
+    timeout = socket.gettimeout()
     try:
         with lock:
             socket.setblocking(False)
             yield
     finally:
-        socket.setblocking(True)
+        socket.settimeout(timeout)

@@ -547,7 +547,7 @@ def payload_type_from_name(
         ]
         if rate_matches:
             matches = rate_matches
-        elif len(matches) > 1:
+        else:
             raise ValueError(
                 f"RTP Payload type {name!r}/{desired_rate} not found."
             )

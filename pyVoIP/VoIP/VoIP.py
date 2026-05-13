@@ -286,7 +286,12 @@ class VoIPCall:
                 if not codecs:
                     continue
 
-                codecs = RTP.prioritize_payload_type_map(codecs)
+                codecs = RTP.prioritize_payload_type_map(
+                    codecs,
+                    priority_scores=getattr(
+                        self.phone, "codec_priorities", None
+                    ),
+                )
 
                 port = self.phone.request_port()
                 self.assignedPorts[port] = codecs
@@ -379,6 +384,9 @@ class VoIPCall:
                 audio_sample_width=audio_sample_width,
                 audio_channels=audio_channels,
             )
+
+        if getattr(phone, "codec_priorities", None):
+            rtp_kwargs["codec_priority_scores"] = phone.codec_priorities
 
         remote_ip = connections[0]["address"]
         c = RTP.RTPClient(
@@ -674,7 +682,10 @@ class VoIPCall:
             if not has_transmittable_codec:
                 continue
 
-            codecs = RTP.prioritize_payload_type_map(codecs)
+            codecs = RTP.prioritize_payload_type_map(
+                codecs,
+                priority_scores=getattr(self.phone, "codec_priorities", None),
+            )
 
             self.create_rtp_clients(
                 codecs, self.myIP, self.port, request, i["port"], media=i
@@ -942,9 +953,6 @@ class VoIPPhone:
         self.audio_channels = 1
         self.callCallback = callCallback
         self._status = PhoneStatus.INACTIVE
-        if self.codec_priorities:
-            for codec, score in self.codec_priorities.items():
-                pyVoIP.set_codec_priority(codec, score)
         pyVoIP.refresh_supported_codecs()
 
         # "recvonly", "sendrecv", "sendonly", "inactive"
@@ -1162,7 +1170,7 @@ class VoIPPhone:
         }
 
     def supported_codecs(self) -> List[Dict[str, Any]]:
-        return RTP.supported_codecs()
+        return RTP.supported_codecs(priority_scores=self.codec_priorities)
 
     def codec_availability(self, refresh: bool = False) -> List[Dict[str, Any]]:
         return pyVoIP.codec_availability(refresh=refresh)
@@ -1171,14 +1179,29 @@ class VoIPPhone:
         return pyVoIP.refresh_supported_codecs()
 
     def set_codec_priority(self, codec: RTP.PayloadType, score: int) -> List[RTP.PayloadType]:
-        return pyVoIP.set_codec_priority(codec, score)
+        self.codec_priorities[codec] = int(score)
+        return self._prioritized_enabled_codecs()
 
     def reset_codec_priorities(self) -> List[RTP.PayloadType]:
-        return pyVoIP.reset_codec_priorities()
+        self.codec_priorities.clear()
+        return self._prioritized_enabled_codecs()
 
     def local_supported_codecs(self) -> List[Dict[str, Any]]:
         """Return codecs supported by this PyVoIP build/configuration."""
         return self.supported_codecs()
+
+    def _prioritized_enabled_codecs(self) -> List[RTP.PayloadType]:
+        indexed = list(enumerate(pyVoIP.RTPCompatibleCodecs))
+        indexed.sort(
+            key=lambda item: (
+                -RTP.codec_priority_score(
+                    item[1],
+                    priority_scores=self.codec_priorities,
+                ),
+                item[0],
+            )
+        )
+        return [codec for _index, codec in indexed]
 
     def _add_codec_to_offer(
         self,
@@ -1213,7 +1236,7 @@ class VoIPPhone:
         would be advertised by VoIPPhone.call().
         """
         offer_codecs: Dict[int, RTP.PayloadType] = {}
-        for codec in pyVoIP.RTPCompatibleCodecs:
+        for codec in self._prioritized_enabled_codecs():
             if RTP.is_transmittable_audio_codec(codec):
                 self._add_codec_to_offer(offer_codecs, codec)
 
@@ -1228,6 +1251,7 @@ class VoIPPhone:
                 media_type="audio",
                 source="local-offer",
                 supported=codec in pyVoIP.RTPCompatibleCodecs,
+                priority_scores=self.codec_priorities,
             )
             info["protocol"] = RTP.RTPProtocol.AVP.value
             info["protocol_supported"] = True
@@ -1353,7 +1377,7 @@ class VoIPPhone:
     def _default_audio_offer(self) -> Dict[int, RTP.PayloadType]:
         codecs: Dict[int, RTP.PayloadType] = {}
 
-        for codec in pyVoIP.RTPCompatibleCodecs:
+        for codec in self._prioritized_enabled_codecs():
             if not RTP.is_transmittable_audio_codec(codec):
                 continue
             self._add_codec_to_offer(codecs, codec)

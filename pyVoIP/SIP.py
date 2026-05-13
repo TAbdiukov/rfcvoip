@@ -304,17 +304,20 @@ class SIPSubscription:
 class Counter:
     def __init__(self, start: int = 1):
         self.x = start
+        self._lock = Lock()
 
     def count(self) -> int:
-        x = self.x
-        self.x += 1
-        return x
+        with self._lock:
+            x = self.x
+            self.x += 1
+            return x
 
     def next(self) -> int:
         return self.count()
 
     def current(self) -> int:
-        return self.x
+        with self._lock:
+            return self.x
 
 
 class SIPStatus(Enum):
@@ -1022,7 +1025,9 @@ class SIPMessage:
                 # addresses in SDP 5.7 c=
                 if "m" not in self.body:
                     self.body["m"] = []
-                d = data.split(" ")
+                d = data.split()
+                if len(d) < 4:
+                    raise SIPParseError(f"Malformed SDP media line: m={data!r}")
 
                 if "/" in d[1]:
                     ports_raw = d[1].split("/")
@@ -3151,10 +3156,10 @@ class SIPClient:
                 )
                 self._send_request_response(message, response)
                 return
-            if self.callCallback is not None:
-                self.callCallback(message)
             response = self.gen_ok(message)
             self._send_request_response(message, response)
+            if self.callCallback is not None:
+                self.callCallback(message)
         elif message.method == "OPTIONS":
             # Common keep-alive / capability probe. Reply 200 OK.
             response = self.gen_ok(message)
@@ -3519,7 +3524,7 @@ class SIPClient:
             f"CSeq: {request.headers['CSeq']['check']} "
             + f"{request.headers['CSeq']['method']}\r\n"
         )
-        response += f"Contact: {request.headers['Contact']}\r\n"
+        response += self._contact_header()
         response += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
         response += self._gen_supported_header()
         response += 'Warning: 399 GS "Unable to accept call"\r\n'

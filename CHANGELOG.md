@@ -3,16 +3,26 @@
 ## 2.8.2+RFC
 
 - Codec: Implement per-instance codec ordering. 
+- util/SIPTransport: Preserve original socket timeout state when temporarily switching sockets to non-blocking mode
+- RTP: Reject SDP codec name lookups with mismatched RTP clock rates
+- RTP: Harden RTP packet buffering against huge timestamp gaps that could cause excessive memory allocation.
+- VoIP/RTP: Apply per-phone codec priorities consistently during SDP offer generation and RTP codec negotiation
+- VoIP: Make codec priority overrides instance-local instead of mutating global process state
+- VoIP: Include per-phone codec priority scores in supported/local codec reporting
 - VoIP: Fix media-level SDP `c=` handling
 - VoIP: Fix potential RTP port leak in `VoIPPhone.call()`
 - VoIP: Handle malformed `200 OK` ingestion
+- SIP: Fix bug where `sips:` accepts invalid `transport=` values as TLS
+- SIP: Harden SDP `m=` parsing against extra spaces and malformed lines
+- SIP: Handle CRLF keepalives
+- SIP: Make Counter increments/current reads thread-safe with locking
+- SIP: Reply 200 OK to CANCEL before invoking call teardown callbacks
+- SIP: Use local Contact header in 486 Busy Here responses instead of echoing remote Contact
 - SIP: Fix a shutdown race in `SIPClient.recv`
 - SIP: More robust parsing in `parse_sip_message()`
 - SIP: Prevent malformed `a=rtpmap` lines from throwing an index error during parsing
 - SIP: SDP payload resolution prefer `rtpmap` mappings over static RTP payload numbers.
 - SIP Preserved media-level SDP direction attributes on their owning `m=` sections.
-- RTP: Harden RTP packet buffering against huge timestamp gaps that could cause excessive memory allocation.
-
 
 ## 2.8.1+RFC
 
