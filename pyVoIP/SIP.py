@@ -803,18 +803,23 @@ class SIPMessage:
                 "host": host,
             }
         elif header == "CSeq":
+            parts = data.split()
+            if len(parts) < 2:
+                raise SIPParseError(f"Malformed CSeq header: {data!r}")
             self.headers[header] = {
-                "check": data.split(" ")[0],
-                "method": data.split(" ")[1],
+                "check": parts[0],
+                "method": parts[1],
             }
         elif header == "Allow":
-            self.headers[header] = data.split(", ")
+            self.headers[header] = [
+                item.strip() for item in data.split(",") if item.strip()
+            ]
         elif header == "Supported":
             self.headers[header] = [
                 item.strip() for item in data.split(",") if item.strip()
             ]
         elif header == "Content-Length":
-            self.headers[header] = int(data)
+            self.headers[header] = int(data.strip())
         elif header in (
             "WWW-Authenticate",
             "Authorization",
@@ -838,6 +843,13 @@ class SIPMessage:
             stacklevel=2,
         )
         return self.parse_body(header, data)
+
+    @staticmethod
+    def _parse_sdp_rtp_protocol(protocol: str):
+        try:
+            return pyVoIP.RTP.RTPProtocol(protocol)
+        except ValueError:
+            return protocol
 
     def parse_body(self, header: str, data: str) -> None:
         body_content_type = self._body_content_type or _content_type_base(self.headers.get("Content-Type"))
@@ -1011,7 +1023,7 @@ class SIPMessage:
                         "type": d[0],
                         "port": int(port),
                         "port_count": count,
-                        "protocol": pyVoIP.RTP.RTPProtocol(d[2]),
+                        "protocol": self._parse_sdp_rtp_protocol(d[2]),
                         "methods": methods,
                         "bandwidth": [],
                         "attributes": {},
@@ -1517,7 +1529,9 @@ def sip_supported_codecs(
     return codecs
 
 def _codec_name_key(codec: Dict[str, Any]) -> str:
-    return str(codec.get("name") or "").lower()
+    name = str(codec.get("name") or "").lower()
+    rate = codec.get("rate")
+    return f"{name}/{rate}" if rate not in (None, "") else name
 
 def codec_support_report(
     message: SIPMessage,
@@ -1702,7 +1716,25 @@ class SIPClient:
 
     def response_target(self, request: SIPMessage) -> Tuple[str, int]:
         try:
-            sender_address, sender_port = request.headers["Via"][0]["address"]
+            via = request.headers["Via"][0]
+            source_address = getattr(request, "source_address", None)
+
+            if isinstance(via, dict) and "rport" in via:
+                source_host = source_address[0] if source_address else None
+                source_port = source_address[1] if source_address else None
+                sender_address = (
+                    via.get("received")
+                    or source_host
+                    or via["address"][0]
+                )
+                sender_port = (
+                    via.get("rport")
+                    or source_port
+                    or via["address"][1]
+                )
+                return str(sender_address), int(sender_port)
+
+            sender_address, sender_port = via["address"]
             return sender_address, int(sender_port)
         except Exception:
             return self.signal_target()
@@ -1920,13 +1952,51 @@ class SIPClient:
             if not ready[0]:
                 return None
 
-            return SIPMessage(sock.recv(8192))
+            return self._message_from_raw(sock.recv(8192))
 
         raw = self.connection.recv_raw_message_before(
             deadline,
             running=lambda: self.NSD,
         )
-        return SIPMessage(raw) if raw is not None else None
+        return self._message_from_raw(raw) if raw is not None else None
+
+    def _message_from_raw(self, raw: bytes) -> SIPMessage:
+        message = SIPMessage(raw)
+        source_address = None
+        if self.connection is not None:
+            source_address = getattr(self.connection, "last_recv_address", None)
+
+        if source_address is not None:
+            setattr(message, "source_address", source_address)
+            if message.type == SIPMessageType.MESSAGE:
+                self._apply_rport_received(message, source_address)
+
+        return message
+
+    @staticmethod
+    def _apply_rport_received(
+        message: SIPMessage,
+        source_address: Tuple[str, int],
+    ) -> None:
+        try:
+            via = message.headers["Via"][0]
+        except (KeyError, IndexError, TypeError):
+            return
+
+        if not isinstance(via, dict):
+            return
+
+        source_host, source_port = source_address
+        if "rport" in via and via.get("rport") is None:
+            via["rport"] = str(source_port)
+
+        try:
+            sent_host = str(via.get("address", ("", ""))[0])
+        except Exception:
+            sent_host = ""
+
+        if sent_host and sent_host != str(source_host):
+            via.setdefault("received", str(source_host))
 
     def send_response(self, request: SIPMessage, response: str) -> None:
         self._send_request_response(request, response)
@@ -2890,7 +2960,7 @@ class SIPClient:
             return
 
         try:
-            message = SIPMessage(raw)
+            message = self._message_from_raw(raw)
         except SIPParseError as e:
             if "SIP Version" in str(e):
                 try:
@@ -3810,6 +3880,10 @@ class SIPClient:
 
                 last_response = response
 
+                if response.type == SIPMessageType.MESSAGE:
+                    self.parse_message(response)
+                    continue
+
                 if response.headers.get("Call-ID") != call_id:
                     # Not our transaction, process normally.
                     self.parse_message(response)
@@ -3832,8 +3906,19 @@ class SIPClient:
                     + f"status={status_code} {response.status.phrase}",
                 )
 
-                # Any 1xx response is "call progressing". Return control.
-                if 100 <= status_code < 200:
+                # 100 Trying is transaction progress only. Keep waiting so a
+                # later 401/407 challenge can still be handled in this method.
+                if 100 <= status_code < 180:
+                    self._set_last_invite_debug(
+                        event="invite-provisional",
+                        status="dialing",
+                    )
+                    continue
+
+                # 18x/199 responses are visible call progress. Return control
+                # so VoIPPhone.call() can create the call object; later final
+                # responses are then handled by the receive loop.
+                if 180 <= status_code < 200:
                     self._set_last_invite_debug(
                         event="invite-provisional",
                         status=(

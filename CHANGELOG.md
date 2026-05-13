@@ -3,6 +3,15 @@
 ## 2.8.0+RFC
 
 - Packaging: Raise minimum supported Python version to 3.8 for stdlib `dataclasses` compatibility.
+- RTP: Prune RTP packet history to reduce long-call memory growth
+- SIP: More robust header parsing
+- SIP: Preserve UDP source address and honor `rport`
+- SIP: Continue waiting after 100 Trying so INVITE auth challenges can be handled.
+- SIP: Preserve unsupported SDP RTP profiles instead of failing message parsing.
+- SIP: Route in-flight SIP requests while waiting for INVITE responses.
+- SIP: Distinguish codec report entries by name and rate.
+- VoIP: Remove duplicate CANCEL dispatch and handler definition.
+- VoIP: Harden dead-call cleanup against missing thread lookup entries.
 - SIPTransport: TCP stream connection timeout
 - SDP: SDP bandwidth checks to reject constrained SILK offers
 - RTP: Cancel callback

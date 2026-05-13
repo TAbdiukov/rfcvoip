@@ -617,6 +617,7 @@ class RTPPacketManager:
         self.buffer = io.BytesIO()
         self.bufferLock = threading.Lock()
         self.log = {}
+        self.max_log_span = 200000
         self.rebuilding = False
 
     def _available_locked(self) -> int:
@@ -660,6 +661,12 @@ class RTPPacketManager:
         rebuild_args = None
         with self.bufferLock:
             self.log[offset] = data
+            if self.log:
+                newest = max(self.log)
+                cutoff = newest - self.max_log_span
+                for logged_offset in list(self.log):
+                    if logged_offset < cutoff:
+                        del self.log[logged_offset]
             bufferloc = self.buffer.tell()
             if offset < self.offset:
                 """

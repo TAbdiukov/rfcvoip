@@ -433,6 +433,7 @@ class SIPConnection:
         self.tls_server_name = tls_server_name
         self.send_timeout = send_timeout
         self.socket: Optional[socket.socket] = None
+        self.last_recv_address: Optional[Tuple[str, int]] = None
         self._stream_buffer = b""
         self._send_lock = Lock()
 
@@ -565,7 +566,9 @@ class SIPConnection:
         if self.socket is None:
             raise RuntimeError("SIP connection is not open.")
         if self.target.transport == SIPTransport.UDP:
-            return self.socket.recv(8192)
+            data, address = self.socket.recvfrom(8192)
+            self.last_recv_address = (str(address[0]), int(address[1]))
+            return data
         return self._recv_stream_message()
 
     def recv_raw_message_before(
