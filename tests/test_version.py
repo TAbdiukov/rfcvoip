@@ -6,7 +6,7 @@ import pyVoIP
 def test_version_info_is_derived_from___version__():
     expected = tuple(
         int(part) if part.isdigit() else part
-        for part in pyVoIP.__version__.split(".")
+        for part in pyVoIP.__version__.split("+", 1)[0].split(".")
     )
     assert pyVoIP.version_info == expected
 
