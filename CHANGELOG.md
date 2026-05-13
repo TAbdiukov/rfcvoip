@@ -3,10 +3,15 @@
 ## 2.8.3+RFC
 
 - RTP: accept `telephone-event` regardless of advertised clock rate
+- RTP: reject SDP channel mismatches while still allowing Opus /2
 - VoIP: fail RTP negotiation clearly instead of creating answered calls with no media
 - VoIP: release only the port reserved by a failed outbound call setup
 - VoIP: reject outbound answers with unusable RTP connection data before marking the call answered
+- VoIP: honor remote SDP direction when creating RTP clients
 - SIP: send raw SIP-version error responses back to the packet source
+- SIP: Ignore SIP keepalive packets during transaction waits and receive loop
+- SIP: fix local BYE CSeq for inbound calls
+- Misc: normalize version_info
 
 ## 2.8.2+RFC
 

@@ -81,6 +81,50 @@ def _media_port_is_enabled(media: Dict[str, Any]) -> bool:
         return False
 
 
+def _transmit_type_from_value(
+    value: Any,
+    default: RTP.TransmitType = RTP.TransmitType.SENDRECV,
+) -> RTP.TransmitType:
+    if isinstance(value, RTP.TransmitType):
+        return value
+    try:
+        return RTP.TransmitType(str(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _media_transmit_type(
+    media: Dict[str, Any],
+    default: RTP.TransmitType = RTP.TransmitType.SENDRECV,
+) -> RTP.TransmitType:
+    return _transmit_type_from_value(media.get("transmit_type"), default)
+
+
+def _negotiate_local_transmit_type(
+    remote_type: RTP.TransmitType,
+    desired_type: RTP.TransmitType,
+) -> RTP.TransmitType:
+    remote_type = _transmit_type_from_value(remote_type)
+    desired_type = _transmit_type_from_value(desired_type)
+
+    can_send = (
+        desired_type in (RTP.TransmitType.SENDRECV, RTP.TransmitType.SENDONLY)
+        and remote_type in (RTP.TransmitType.SENDRECV, RTP.TransmitType.RECVONLY)
+    )
+    can_recv = (
+        desired_type in (RTP.TransmitType.SENDRECV, RTP.TransmitType.RECVONLY)
+        and remote_type in (RTP.TransmitType.SENDRECV, RTP.TransmitType.SENDONLY)
+    )
+
+    if can_send and can_recv:
+        return RTP.TransmitType.SENDRECV
+    if can_send:
+        return RTP.TransmitType.SENDONLY
+    if can_recv:
+        return RTP.TransmitType.RECVONLY
+    return RTP.TransmitType.INACTIVE
+
+
 def _media_connections(
     request: SIP.SIPMessage,
     media: Dict[str, Any],
@@ -207,6 +251,7 @@ class VoIPCall:
                 if connections <= 0 or port_count != connections:
                     raise RTP.RTPParseError("Unable to assign ports for RTP.")
 
+            desired_sendmode = _transmit_type_from_value(sendmode)
             for i in request.body.get("m", []):
                 if i.get("type") != "audio":
                     continue
@@ -295,6 +340,14 @@ class VoIPCall:
                         self.phone, "codec_priorities", None
                     ),
                 )
+
+                negotiated_sendmode = _negotiate_local_transmit_type(
+                    _media_transmit_type(i),
+                    desired_sendmode,
+                )
+                if negotiated_sendmode == RTP.TransmitType.INACTIVE:
+                    continue
+                self.sendmode = negotiated_sendmode
 
                 port = self.phone.request_port()
                 self.assignedPorts[port] = codecs
@@ -595,6 +648,24 @@ class VoIPCall:
         for x in self.RTPClients:
             m[x.inPort] = x.assoc
 
+        desired_sendmode = _transmit_type_from_value(self.sendmode)
+        for i in request.body.get("m", []):
+            if i.get("type") != "audio":
+                continue
+            if (
+                not _media_uses_supported_rtp_profile(i)
+                or not _media_port_is_enabled(i)
+            ):
+                continue
+            self.sendmode = _negotiate_local_transmit_type(
+                _media_transmit_type(i),
+                desired_sendmode,
+            )
+            break
+
+        for x in self.RTPClients:
+            x.sendrecv = self.sendmode
+
         message = self.sip.gen_answer(
             request, self.session_id, m, self.sendmode
         )
@@ -646,6 +717,7 @@ class VoIPCall:
         )
 
         self.remote_sip_message = request
+        desired_sendmode = _transmit_type_from_value(self.sendmode)
         for i in request.body["m"]:
             if i.get("type") != "audio":
                 continue
@@ -696,6 +768,14 @@ class VoIPCall:
                 codecs,
                 priority_scores=getattr(self.phone, "codec_priorities", None),
             )
+
+            negotiated_sendmode = _negotiate_local_transmit_type(
+                _media_transmit_type(i),
+                desired_sendmode,
+            )
+            if negotiated_sendmode == RTP.TransmitType.INACTIVE:
+                continue
+            self.sendmode = negotiated_sendmode
 
             self.create_rtp_clients(
                 codecs, self.myIP, self.port, request, i["port"], media=i

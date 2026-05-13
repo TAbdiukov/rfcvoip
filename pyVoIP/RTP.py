@@ -499,6 +499,24 @@ def select_transmittable_audio_codec(
     raise RTPParseError("No transmittable audio codec negotiated" + detail)
 
 
+def _rtpmap_channel_count(codec: PayloadType) -> int:
+    try:
+        from pyVoIP.codecs import codec_class
+
+        cls = codec_class(codec)
+        channels = (
+            getattr(cls, "rtpmap_channels", None)
+            if cls is not None
+            else None
+        )
+        if channels not in (None, 0, ""):
+            return int(channels)
+    except Exception:
+        pass
+
+    return int(getattr(codec, "channel", 0) or 0)
+
+
 def payload_type_from_name(
     name: str,
     rate: Optional[Union[int, str]] = None,
@@ -556,11 +574,11 @@ def payload_type_from_name(
         channel_matches = [
             codec
             for codec in matches
-            if int(getattr(codec, "channel", 0)) == desired_channels
+            if _rtpmap_channel_count(codec) == desired_channels
         ]
         if channel_matches:
             matches = channel_matches
-        elif len(matches) > 1:
+        else:
             raise ValueError(
                 f"RTP Payload type {name!r} with {desired_channels} "
                 + "channels not found."

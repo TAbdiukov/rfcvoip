@@ -1991,23 +1991,39 @@ class SIPClient:
             return None
 
     def _recv_message_before(self, deadline: float) -> Optional[SIPMessage]:
-        if self.connection is None:
-            sock = getattr(self, "s", None)
-            if sock is None:
-                return None
+        while time.monotonic() < deadline:
+            if self.connection is None:
+                sock = getattr(self, "s", None)
+                if sock is None:
+                    return None
 
-            remaining = max(0.0, deadline - time.monotonic())
-            ready = select.select([sock], [], [], remaining)
-            if not ready[0]:
-                return None
+                remaining = max(0.0, deadline - time.monotonic())
+                ready = select.select([sock], [], [], remaining)
+                if not ready[0]:
+                    return None
+                raw = sock.recv(8192)
+            else:
+                raw = self.connection.recv_raw_message_before(
+                    deadline,
+                    running=lambda: self.NSD,
+                )
+                if raw is None:
+                    return None
 
-            return self._message_from_raw(sock.recv(8192))
+            if self._is_keepalive_packet(raw):
+                continue
 
-        raw = self.connection.recv_raw_message_before(
-            deadline,
-            running=lambda: self.NSD,
-        )
-        return self._message_from_raw(raw) if raw is not None else None
+            try:
+                return self._message_from_raw(raw)
+            except SIPParseError as ex:
+                debug(f"Ignoring malformed SIP packet while waiting: {ex}")
+                continue
+
+        return None
+
+    @staticmethod
+    def _is_keepalive_packet(raw: bytes) -> bool:
+        return raw.strip(b"\x00\r\n\t ") == b""
 
     def _message_from_raw(self, raw: bytes) -> SIPMessage:
         message = SIPMessage(raw)
@@ -3021,7 +3037,7 @@ class SIPClient:
             # Re-raise so recv_loop() can release locks and continue
             raise
 
-        if raw == b"\x00\x00\x00\x00":
+        if self._is_keepalive_packet(raw):
             return
 
         try:
@@ -3816,7 +3832,12 @@ class SIPClient:
             )
             byeRequest += f"From: {toH};tag={tag}\r\n"
         byeRequest += f"Call-ID: {request.headers['Call-ID']}\r\n"
-        cseq = int(request.headers["CSeq"]["check"]) + 1
+        cseq = self.byeCounter.next()
+        if request.headers["From"]["tag"] == tag:
+            try:
+                cseq = max(cseq, int(request.headers["CSeq"]["check"]) + 1)
+            except (KeyError, TypeError, ValueError):
+                pass
         byeRequest += f"CSeq: {cseq} BYE\r\n"
         byeRequest += "Max-Forwards: 70\r\n"
         byeRequest += self._contact_header()
