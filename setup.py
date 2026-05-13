@@ -51,7 +51,7 @@ setup(
         "Topic :: Communications :: Internet Phone",
         "Topic :: Communications :: Telephony",
     ],
-    packages=find_packages(exclude=("tests",)),
+    packages=find_packages(exclude=("tests", "tests.*")),
     package_data={"pyVoIP": ["py.typed"]},
     python_requires=">=3.8",
 )

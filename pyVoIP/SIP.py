@@ -2096,9 +2096,14 @@ class SIPClient:
             return target
 
         if "@" in target:
-            return f"sip:{target}"
+            return f"{self.server_scheme}:{target}"
 
-        return self._format_sip_uri(self.server_host, self.server_port, user=target)
+        return self._format_sip_uri(
+            self.server_host,
+            self.server_port,
+            user=target,
+            scheme=self.server_scheme,
+        )
 
     def _normalize_request_target(self, target: str) -> str:
         """Return a SIP/SIPS request URI for pre-dialog requests.
