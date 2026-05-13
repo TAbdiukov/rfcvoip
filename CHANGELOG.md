@@ -13,10 +13,6 @@
 - SIP Preserved media-level SDP direction attributes on their owning `m=` sections.
 - RTP: Harden RTP packet buffering against huge timestamp gaps that could cause excessive memory allocation.
 
-Suggested test file name:
-
-`tests/test_sip_rtp_negotiation_regressions.py`
-
 
 ## 2.8.1+RFC
 
