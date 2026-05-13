@@ -3881,15 +3881,26 @@ class SIPClient:
                     always_include_port=True,
                 )
             )
+            rendered_params = {"type", "transport", "address"}
             if "branch" in h_via.keys():
                 v_line += f';branch={h_via["branch"]}'
+                rendered_params.add("branch")
             if "rport" in h_via.keys():
                 if h_via["rport"] is not None:
                     v_line += f';rport={h_via["rport"]}'
                 else:
                     v_line += ";rport"
+                rendered_params.add("rport")
             if "received" in h_via.keys():
                 v_line += f';received={h_via["received"]}'
+                rendered_params.add("received")
+            for key, value in h_via.items():
+                if key in rendered_params:
+                    continue
+                if value is None:
+                    v_line += f";{key}"
+                else:
+                    v_line += f";{key}={value}"
             v_line += "\r\n"
             via += v_line
         return via

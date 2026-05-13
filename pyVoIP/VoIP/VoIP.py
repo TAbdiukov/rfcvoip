@@ -541,6 +541,13 @@ class VoIPCall:
         except Exception:
             pass
 
+        try:
+            session_id = int(self.session_id)
+            if session_id in self.phone.session_ids:
+                self.phone.session_ids.remove(session_id)
+        except Exception:
+            pass
+
         # Prevent delayed __del__ cleanup from releasing a port that has
         # already been returned to the pool and possibly re-assigned to a
         # later call.

@@ -540,7 +540,11 @@ class SIPConnection:
             raise RuntimeError("SIP connection is not open.")
         with self._send_lock:
             if self.target.transport == SIPTransport.UDP:
-                self.socket.sendto(data, target or (self.target.host, self.target.port))
+                host, port = target or (self.target.host, self.target.port)
+                self.socket.sendto(
+                    data,
+                    self._socket_address(host, int(port), self.socket.family),
+                )
             else:
                 self._send_stream(data)
 

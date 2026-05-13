@@ -4,9 +4,11 @@
 
 - Codec: Implement per-instance codec ordering. 
 - util/SIPTransport: Preserve original socket timeout state when temporarily switching sockets to non-blocking mode
+- SIPTransport: IPv6-safe UDP send addresses in `SIPConnection`
 - RTP: Reject SDP codec name lookups with mismatched RTP clock rates
 - RTP: Harden RTP packet buffering against huge timestamp gaps that could cause excessive memory allocation.
 - VoIP/RTP: Apply per-phone codec priorities consistently during SDP offer generation and RTP codec negotiation
+- VoIP: Release incoming call session ids on finalization
 - VoIP: Make codec priority overrides instance-local instead of mutating global process state
 - VoIP: Include per-phone codec priority scores in supported/local codec reporting
 - VoIP: Fix media-level SDP `c=` handling
@@ -15,6 +17,7 @@
 - SIP: Fix bug where `sips:` accepts invalid `transport=` values as TLS
 - SIP: Harden SDP `m=` parsing against extra spaces and malformed lines
 - SIP: Handle CRLF keepalives
+- SIP: Preserve extra `Via` parameters in responses
 - SIP: Make Counter increments/current reads thread-safe with locking
 - SIP: Reply 200 OK to CANCEL before invoking call teardown callbacks
 - SIP: Use local Contact header in 486 Busy Here responses instead of echoing remote Contact
