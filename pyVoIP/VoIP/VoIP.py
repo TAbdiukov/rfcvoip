@@ -60,6 +60,8 @@ def _payload_type_from_media_method(
 
 def _media_uses_supported_rtp_profile(media: Dict[str, Any]) -> bool:
     protocol = media.get("protocol")
+    if protocol is None:
+        return True
     return protocol in (RTP.RTPProtocol.AVP, RTP.RTPProtocol.AVP.value)
 
 
