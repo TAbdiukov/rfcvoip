@@ -310,17 +310,17 @@ class VoIPCall:
                     self.audioPorts += x["port_count"]
                     audio.append(x)
                 elif x["type"] == "video":
-                    self.connections += _media_connection_count(
-                        self.request, x
-                    )
-                    self.videoPorts += x["port_count"]
+                    try:
+                        self.videoPorts += int(x.get("port_count", 1))
+                    except (TypeError, ValueError):
+                        self.videoPorts += 0
                     video.append(x)
                 else:
                     warnings.warn(
                         f"Unknown media description: {x['type']}", stacklevel=2
                     )
 
-            for media in audio + video:
+            for media in audio:
                 connections = _media_connection_count(self.request, media)
                 try:
                     port_count = int(media.get("port_count", 1))
@@ -589,19 +589,33 @@ class VoIPCall:
             )
 
         request_ports = getattr(self.phone, "request_ports", None)
-        if callable(request_ports):
-            raw_ports = request_ports(count)
-            if isinstance(raw_ports, int):
-                ports = [raw_ports]
+        try:
+            if callable(request_ports):
+                try:
+                    raw_ports = request_ports(count, blocking=False)
+                except TypeError:
+                    raw_ports = request_ports(count)
+                if isinstance(raw_ports, int):
+                    ports = [raw_ports]
+                else:
+                    ports = [int(port) for port in raw_ports]
             else:
-                ports = [int(port) for port in raw_ports]
-        else:
-            request_port = getattr(self.phone, "request_port", None)
-            if not callable(request_port):
-                raise RTP.RTPParseError(
-                    "Phone object cannot allocate RTP ports."
-                )
-            ports = [int(request_port()) for _ in range(count)]
+                request_port = getattr(self.phone, "request_port", None)
+                if not callable(request_port):
+                    raise RTP.RTPParseError(
+                        "Phone object cannot allocate RTP ports."
+                    )
+                try:
+                    ports = [
+                        int(request_port(blocking=False))
+                        for _ in range(count)
+                    ]
+                except TypeError:
+                    ports = [int(request_port()) for _ in range(count)]
+        except NoPortsAvailableError as ex:
+            raise RTP.RTPParseError(
+                "No local RTP ports available for incoming call."
+            ) from ex
 
         if len(ports) != count:
             raise RTP.RTPParseError(
@@ -653,10 +667,15 @@ class VoIPCall:
                         and first_port in assigned_ports
                         else set()
                     )
-                    reserve_ports(
-                        local_ports,
-                        allow_existing=allow_existing,
-                    )
+                    try:
+                        reserve_ports(
+                            local_ports,
+                            allow_existing=allow_existing,
+                        )
+                    except NoPortsAvailableError as ex:
+                        raise RTP.RTPParseError(
+                            "No local RTP ports available for RTP media."
+                        ) from ex
 
         if len(set(local_ports)) != len(local_ports):
             raise RTP.RTPParseError("Local RTP ports must be unique.")

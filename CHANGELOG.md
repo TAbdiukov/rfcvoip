@@ -12,6 +12,13 @@
 - SIP: Report non-auth REGISTER failures as SIP request errors instead of credential errors.
 - VoIP: Fix phone shutdown state by clearing `VoIPPhone.NSD` when `stop()` completes.
 - VoIP: Scope RTP address-family validation to enabled audio media sections only.
+- VoIP: Reject inbound calls cleanly when no RTP ports are available instead of blocking SIP receive handling
+- VoIP: Treat unsupported video SDP as non-fatal during audio call negotiation
+- VoIP: Restrict RTP port allocation validation to negotiated audio media sections
+- VoIP: Convert RTP port reservation failures into RTP negotiation errors for proper SIP rejection handling
+- VoIP: Preserve contiguous RTP port validation while avoiding receive-loop deadlocks
+- RTP/VoIP: Improve robustness of RTP media setup error propagation during inbound negotiation
+- RTP: Clamp invalid transmit delay reduction values to prevent negative sleep intervals
 
 
 ## 2.8.4+RFC

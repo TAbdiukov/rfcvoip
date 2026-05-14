@@ -1400,8 +1400,11 @@ class RTPClient:
 
     @property
     def trans_delay_reduction(self) -> float:
-        reduction = pyVoIP.TRANSMIT_DELAY_REDUCTION + 1
-        return reduction if reduction else 1.0
+        try:
+            reduction = float(pyVoIP.TRANSMIT_DELAY_REDUCTION) + 1.0
+        except (TypeError, ValueError):
+            return 1.0
+        return reduction if reduction > 0 else 1.0
 
     def parsePacket(self, packet: bytes) -> None:
         warnings.warn(
