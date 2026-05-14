@@ -133,10 +133,10 @@ def _media_connections(
 ) -> List[Dict[str, Any]]:
     connections = media.get("connections")
     if not connections:
-        connections = request.body.get(
-            "session_connections",
-            request.body.get("c", []),
-        )
+        # Only session-level c= lines are inherited by media sections.
+        # request.body["c"] is an aggregate of all c= lines, including
+        # media-level lines from other media sections.
+        connections = request.body.get("session_connections", [])
     return [
         connection
         for connection in connections

@@ -2125,6 +2125,7 @@ class SIPClient:
             user=user,
             transport=transport,
             scheme=self.server_scheme,
+            always_include_port=self.server_uri.explicit_port,
         )
 
     def _remote_user_uri(self, user: str) -> str:
@@ -2133,6 +2134,7 @@ class SIPClient:
             self.server_uri_port,
             user=user,
             scheme=self.server_scheme,
+            always_include_port=self.server_uri.explicit_port,
         )
 
     def _via_header(
@@ -2407,12 +2409,7 @@ class SIPClient:
         if "@" in target:
             return f"{self.server_scheme}:{target}"
 
-        return self._format_sip_uri(
-            self.server_host,
-            self.server_port,
-            user=target,
-            scheme=self.server_scheme,
-        )
+        return self._remote_user_uri(target)
 
     def _normalize_request_target(self, target: str) -> str:
         """Return a SIP/SIPS request URI for pre-dialog requests.

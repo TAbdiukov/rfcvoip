@@ -39,6 +39,9 @@
 - SIP: Normalize bracketed IPv6 SDP addresses before address-family detection
 - VoIP: Improve ACK generation for late or queued INVITE final responses
 - VoIP: Preserve ACK routing correctness for unmatched outbound INVITE responses
+- VoIP: Fix SDP media sections inheriting connection lines from unrelated media sections.
+- RTP: Add guard against starting an RTP client twice and clean up sockets on start failure.
+- SIP: Preserve explicitly configured registrar/user URI ports, including explicit `:5060`.
 
 ## 2.8.6+RFC
 

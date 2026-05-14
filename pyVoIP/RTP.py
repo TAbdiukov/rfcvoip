@@ -1321,13 +1321,25 @@ class RTPClient:
         return True
 
     def start(self) -> None:
+        if self.NSD:
+            raise RuntimeError("Attempted to start already started RTPClient")
+
+        sin = socket.socket(self._socket_family, socket.SOCK_DGRAM)
+        try:
+            sin.bind(self._socket_address(self.inIP, self.inPort))
+            sin.setblocking(False)
+        except Exception:
+            sin.close()
+            raise
+
         with self._socket_lock:
-            self.sin = socket.socket(self._socket_family, socket.SOCK_DGRAM)
+            if self.NSD:
+                sin.close()
+                raise RuntimeError("Attempted to start already started RTPClient")
+            self.sin = sin
             # Some systems just reply to the port they receive from instead of
             # listening to the SDP.
             self.sout = self.sin
-            self.sin.bind(self._socket_address(self.inIP, self.inPort))
-            self.sin.setblocking(False)
 
         self.NSD = True
         r = Thread(target=self.recv, name="RTP Receiver", daemon=True)
