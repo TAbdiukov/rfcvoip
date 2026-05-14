@@ -5,6 +5,14 @@ from enum import Enum, IntEnum
 from threading import Event, Lock, RLock, Thread
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 from pyVoIP.util import acquired_lock_and_unblocked_socket
+from pyVoIP.SIPAuth import (
+    SIPAuthError,
+    build_digest_auth_header,
+    choose_digest_challenge,
+    compute_digest_response,
+    parse_digest_params as _parse_digest_params,
+    redact_sensitive_sip_headers as _redact_sensitive_sip_headers,
+)
 from pyVoIP.SIPTransport import (
     ResolvedSIPTarget,
     SIPConnection,
@@ -69,80 +77,6 @@ class SIPRequestError(Exception):
 
 class RetryRequiredError(Exception):
     pass
-
-
-def _parse_digest_params(value: str) -> Dict[str, str]:
-    data = str(value or "").strip()
-    if data.lower().startswith("digest"):
-        data = data[len("Digest") :].lstrip()
-
-    params: Dict[str, str] = {}
-    index = 0
-    length = len(data)
-
-    while index < length:
-        while index < length and data[index] in " \t\r\n,":
-            index += 1
-        if index >= length:
-            break
-
-        key_start = index
-        while index < length and data[index] not in "=, \t\r\n":
-            index += 1
-        key = data[key_start:index].strip()
-
-        while index < length and data[index].isspace():
-            index += 1
-        if index >= length or data[index] != "=":
-            while index < length and data[index] != ",":
-                index += 1
-            continue
-
-        index += 1
-        while index < length and data[index].isspace():
-            index += 1
-
-        if index < length and data[index] == '"':
-            index += 1
-            chars = []
-            while index < length:
-                char = data[index]
-                if char == "\\" and index + 1 < length:
-                    chars.append(data[index + 1])
-                    index += 2
-                    continue
-                if char == '"':
-                    index += 1
-                    break
-                chars.append(char)
-                index += 1
-            parsed_value = "".join(chars)
-        else:
-            value_start = index
-            while index < length and data[index] != ",":
-                index += 1
-            parsed_value = data[value_start:index].strip()
-
-        if key:
-            params[key.lower()] = parsed_value
-
-        while index < length and data[index] != ",":
-            index += 1
-        if index < length and data[index] == ",":
-            index += 1
-
-    return params
-
-
-def _redact_sensitive_sip_headers(message: str) -> str:
-    redacted = []
-    for line in str(message or "").splitlines():
-        header = line.split(":", 1)[0].strip().lower()
-        if header in ("authorization", "proxy-authorization"):
-            redacted.append(line.split(":", 1)[0] + ": <redacted>")
-        else:
-            redacted.append(line)
-    return "\n".join(redacted)
 
 
 def _content_type_base(value: Any) -> str:
@@ -3688,24 +3622,18 @@ class SIPClient:
 
         challenge_header = self._authorization_challenge_header(header_name)
         auth = self._select_auth_challenge(request, challenge_header)
-
-        realm = auth["realm"]
-        user = self._auth_user_for_header(header_name)
-
-        HA1 = user + ":" + realm + ":" + self.password
-        HA1 = hashlib.md5(HA1.encode("utf8")).hexdigest()
-        HA2 = (
-            ""
-            + request.headers["CSeq"]["method"]
-            + ":"
-            + self._registrar_uri()
-        )
-        HA2 = hashlib.md5(HA2.encode("utf8")).hexdigest()
-        nonce = auth["nonce"]
-        response = (HA1 + ":" + nonce + ":" + HA2).encode("utf8")
-        response = hashlib.md5(response).hexdigest().encode("utf8")
-
-        return response
+        legacy_auth = dict(auth)
+        legacy_auth.pop("qop", None)
+        try:
+            return compute_digest_response(
+                legacy_auth,
+                username=self._auth_user_for_header(header_name),
+                password=self.password,
+                method=request.headers["CSeq"]["method"],
+                uri=self._registrar_uri(),
+            ).encode("utf8")
+        except SIPAuthError as ex:
+            raise SIPParseError(str(ex)) from ex
 
     def genBranch(self, length=32) -> str:
         """
@@ -4521,35 +4449,39 @@ class SIPClient:
         message: SIPMessage,
         challenge_header: str,
     ) -> Dict[str, str]:
+        candidates: List[Dict[str, str]] = []
         challenges = getattr(message, "authentication_challenges", {})
         if isinstance(challenges, dict):
             auth = challenges.get(challenge_header)
             if isinstance(auth, list):
-                for challenge in auth:
-                    if (
-                        isinstance(challenge, dict)
-                        and challenge.get("realm")
-                        and challenge.get("nonce")
-                        and str(challenge.get("algorithm", "MD5")).upper()
-                        == "MD5"
-                    ):
-                        return challenge
-                for challenge in auth:
-                    if isinstance(challenge, dict) and challenge:
-                        return challenge
+                candidates.extend(
+                    challenge
+                    for challenge in auth
+                    if isinstance(challenge, dict) and challenge
+                )
             elif isinstance(auth, dict) and auth:
-                return auth
+                candidates.append(auth)
 
         auth = message.headers.get(challenge_header)
         if isinstance(auth, list):
-            for challenge in auth:
-                if isinstance(challenge, dict) and challenge:
-                    return challenge
+            candidates.extend(
+                challenge
+                for challenge in auth
+                if isinstance(challenge, dict) and challenge
+            )
         if isinstance(auth, dict) and auth:
-            return auth
+            candidates.append(auth)
 
         if getattr(message, "authentication_header", None) == challenge_header:
-            return message.authentication
+            if message.authentication:
+                candidates.append(message.authentication)
+
+        selected = choose_digest_challenge(candidates)
+        if selected is not None:
+            return selected
+
+        if candidates:
+            return candidates[0]
 
         # Preserve existing fallback behavior for older SIPMessage-like
         # objects and unusual responses with only one parsed auth header.
@@ -4565,61 +4497,20 @@ class SIPClient:
     ) -> str:
         challenge_header = self._authorization_challenge_header(header_name)
         auth = self._select_auth_challenge(challenge, challenge_header)
-        realm = auth.get("realm")
-        nonce = auth.get("nonce")
-        if not realm or not nonce:
-            raise SIPParseError(f"Digest challenge missing realm/nonce: {auth}")
-
-        algorithm = str(auth.get("algorithm", "MD5")).strip().strip('"') or "MD5"
-        if algorithm.upper() != "MD5":
-            raise SIPParseError(
-                f"Unsupported SIP digest algorithm {algorithm!r}."
-            )
-
-        opaque = auth.get("opaque")
-        qop_raw = auth.get("qop")
-
-        def md5_hex(s: str) -> str:
-            return hashlib.md5(s.encode("utf8")).hexdigest()
-
         auth_user = self._auth_user_for_header(
             header_name or challenge.authentication_header
         )
-
-        ha1 = md5_hex(f"{auth_user}:{realm}:{self.password}")
-        ha2 = md5_hex(f"{method}:{uri}")
-
-        qop_token: Optional[str] = None
-        if qop_raw:
-            tokens = [t.strip() for t in qop_raw.split(",") if t.strip()]
-            lowered = [t.lower() for t in tokens]
-            if "auth" not in lowered:
-                raise SIPParseError(
-                    f"Unsupported SIP digest qop {qop_raw!r}."
-                )
-            qop_token = "auth"
-
-        if qop_token:
-            nc = "00000001"
-            cnonce = uuid.uuid4().hex
-            response = md5_hex(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop_token}:{ha2}")
-        else:
-            nc = None
-            cnonce = None
-            response = md5_hex(f"{ha1}:{nonce}:{ha2}")
-
-        header = (
-            f'{header_name}: Digest username="{auth_user}",'
-            f'realm="{realm}",nonce="{nonce}",uri="{uri}",response="{response}"'
-        )
-        if opaque:
-            header += f',opaque="{opaque}"'
-        if algorithm:
-            header += f",algorithm={algorithm}"
-        if qop_token and nc and cnonce:
-            header += f',qop={qop_token},nc={nc},cnonce="{cnonce}"'
-        header += "\r\n"
-        return header
+        try:
+            return build_digest_auth_header(
+                auth,
+                header_name=header_name,
+                username=auth_user,
+                password=self.password,
+                method=method,
+                uri=uri,
+            )
+        except SIPAuthError as ex:
+            raise SIPParseError(str(ex)) from ex
 
     def bye(self, request: SIPMessage) -> None:
         message = self.gen_bye(request)

@@ -5,6 +5,13 @@
 - Race-proof hardened thread-safety bounded concurrency
 - Replace Timer-based workers with Thread-based execution while preserving delayed registration refresh behavior.
 - SIP: Implement a response builder with method-specific body/header additions
+- SIPAuth: Modularize SIP digest authentication into dedicated helpers for easier maintenance and reuse.
+- SIPAuth: Add RFC 7616 digest authentication support for `SHA-256`, `SHA-256-sess`, `SHA-512-256`, and `SHA-512-256-sess` while preserving MD5 compatibility.
+- SIPAuth: Negotiate the strongest mutually supported digest algorithm with preference ordering `SHA-512-256` > `SHA-256` > `MD5`.
+- SIPAuth: Add reusable nonce generation, nonce validation, digest response computation, and server-side verification helpers.
+- SIPAuth: Support stored H(A1) credential hashes for both plain and `-sess` digest algorithms.
+- SIPAuth: Add digest authentication tests covering RFC 7616 vectors, nonce validation, strongest-algorithm selection, and session-algorithm verification.
+
 
 ## 2.8.5+RFC
 
