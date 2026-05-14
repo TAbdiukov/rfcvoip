@@ -7,7 +7,6 @@
 - VoIP: Require at least one assignable audio section before accepting an offer.
 - RTP: Fix packet buffer reset so `offset` is updated with rebuilt data.
 - RTP: Fix client lifecycle so `NSD` starts false and only becomes true after socket bind succeeds.
-- RTP: Fix jitter-buffer bug
 - SIPAuth: Add support for `MD5-sess` digest authentication.
 - SIP: Add helper to extract request body bytes for digest hashing.
 - SIP: Fix SUBSCRIBE response matching to require matching Call-ID, CSeq number, and method.
