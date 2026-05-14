@@ -557,7 +557,7 @@ class SIPStatus(Enum):
     )
     UNKNOWN_RESOURCE_PRIORITY = (
         417,
-        "Unkown Resource-Priority",
+        "Unknown Resource-Priority",
         "There was a resource-priority option tag, "
         + "but no Resource-Priority header",
     )
@@ -573,7 +573,7 @@ class SIPStatus(Enum):
         + "listed in the Supported header.",
     )
     SESSION_INTERVAL_TOO_SMALL = 422, "Session Interval Too Small"
-    SESSION_INTERVAL_TOO_BRIEF = 423, "Session Interval Too Breif"
+    SESSION_INTERVAL_TOO_BRIEF = 423, "Session Interval Too Brief"
     BAD_LOCATION_INFORMATION = 424, "Bad Location Information"
     USE_IDENTITY_HEADER = (
         428,
