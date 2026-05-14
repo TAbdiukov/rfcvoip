@@ -543,7 +543,7 @@ class SIPStatus(Enum):
         "Unsupported URI Scheme",
         "Cannot satisfy request",
     )
-    UNKOWN_RESOURCE_PRIORITY = (
+    UNKNOWN_RESOURCE_PRIORITY = (
         417,
         "Unkown Resource-Priority",
         "There was a resource-priority option tag, "
@@ -1211,7 +1211,13 @@ class SIPMessage:
                             "settings": settings,
                         }
                     else:
-                        self.body["a"][attribute] = value
+                        media_sections = self.body.get("m", [])
+                        if media_sections:
+                            media_sections[-1].setdefault("attributes", {})[
+                                attribute
+                            ] = value
+                        else:
+                            self.body["a"][attribute] = value
                 else:
                     if (
                         attribute == "recvonly"
@@ -1225,6 +1231,14 @@ class SIPMessage:
                             media_sections[-1]["transmit_type"] = transmit_type
                         else:
                             self.body["a"]["transmit_type"] = transmit_type
+                    else:
+                        media_sections = self.body.get("m", [])
+                        if media_sections:
+                            media_sections[-1].setdefault("attributes", {})[
+                                attribute
+                            ] = True
+                        else:
+                            self.body["a"][attribute] = True
             else:
                 self.body[header] = data
 
@@ -4413,7 +4427,7 @@ class SIPClient:
                         retries=retries,
                     )
                     debug(
-                        invite,
+                        _redact_sensitive_sip_headers(invite),
                         "INVITE authentication retry "
                         + f"call_id={call_id} retries={retries} "
                         + f"status={status_code} {response.status.phrase}",
@@ -4565,14 +4579,14 @@ class SIPClient:
                 with self.recvLock:
                     deregistered = self.__deregister()
                 if not deregistered:
-                    debug("DEREGISTERATION FAILED")
+                    debug("DEREGISTRATION FAILED")
                     return False
                 else:
                     self.phone._status = PhoneStatus.INACTIVE
 
                 return deregistered
             except Exception as e:
-                debug(f"DEREGISTERATION ERROR: {e}")
+                debug(f"DEREGISTRATION ERROR: {e}")
                 if isinstance(e, RetryRequiredError):
                     attempts += 1
                     if attempts < max_attempts:
@@ -4630,7 +4644,7 @@ class SIPClient:
             with self.recvLock:
                 registered = self.__register()
             if not registered:
-                debug("REGISTERATION FAILED")
+                debug("REGISTRATION FAILED")
                 self.registerFailures += 1
             else:
                 self.phone._status = PhoneStatus.REGISTERED
@@ -4646,7 +4660,7 @@ class SIPClient:
 
             return registered
         except Exception as e:
-            debug(f"REGISTERATION ERROR: {e}")
+            debug(f"REGISTRATION ERROR: {e}")
             self.registerFailures += 1
             if self.registerFailures >= pyVoIP.REGISTER_FAILURE_THRESHOLD:
                 self.stop()

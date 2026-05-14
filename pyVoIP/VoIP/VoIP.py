@@ -22,6 +22,7 @@ __all__ = [
 ]
 
 debug = pyVoIP.debug
+_VALID_DTMF_DIGITS = frozenset("0123456789*#ABCD")
 
 
 def _media_fmtp_settings(media: Dict[str, Any], method: Any) -> List[str]:
@@ -813,7 +814,9 @@ class VoIPCall:
 
     def send_dtmf(self, digits: str) -> bool:
         digits = "".join(ch for ch in str(digits or "").upper() if not ch.isspace())
-        if not digits:
+        if not digits or any(
+            digit not in _VALID_DTMF_DIGITS for digit in digits
+        ):
             return False
 
         sent = False
@@ -1871,6 +1874,7 @@ class VoIPPhone:
         return codecs
 
     def _has_assignable_audio_ports(self, request: SIP.SIPMessage) -> bool:
+        found_audio = False
         for media in request.body.get("m", []):
             if media.get("type") != "audio":
                 continue
@@ -1879,6 +1883,7 @@ class VoIPPhone:
                 or not _media_port_is_enabled(media)
             ):
                 continue
+            found_audio = True
             try:
                 connections = _media_connection_count(request, media)
             except RTP.RTPParseError:
@@ -1889,7 +1894,7 @@ class VoIPPhone:
                 return False
             if connections <= 0 or port_count != connections:
                 return False
-        return True
+        return found_audio
 
 
     def _has_compatible_audio_offer(self, request: SIP.SIPMessage) -> bool:

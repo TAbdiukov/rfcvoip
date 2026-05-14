@@ -3,8 +3,11 @@
 ## 2.8.7+RFC
 
 - VoIP: Treat any SIP `2xx` INVITE response as success, not only `200 OK`.
+- VoIP: Pre-validate DTMF sequences before enqueueing partial sends.
+- VoIP: Require at least one assignable audio section before accepting an offer.
 - RTP: Fix packet buffer reset so `offset` is updated with rebuilt data.
 - RTP: Fix client lifecycle so `NSD` starts false and only becomes true after socket bind succeeds.
+- RTP: Fix jitter-buffer bug
 - SIPAuth: Add support for `MD5-sess` digest authentication.
 - SIP: Add helper to extract request body bytes for digest hashing.
 - SIP: Fix SUBSCRIBE response matching to require matching Call-ID, CSeq number, and method.
@@ -12,7 +15,10 @@
 - SIP: Limit auth-header insertion to the first `Content-Length` occurrence.
 - SIP: Extend digest auth builder to accept request body bytes.
 - SIP: Do not generate request `Via` headers with response-only `received` / filled `rport`
+- SIP: Redact authenticated INVITE retry logs.
+- SIP: Store generic SDP `a=` attributes on the active media section.
 - Codec: Make module discovery deterministic
+- Misc: Spelling mistakes
 
 ## 2.8.6+RFC
 
