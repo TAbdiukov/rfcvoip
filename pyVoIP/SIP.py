@@ -2720,26 +2720,57 @@ class SIPClient:
     def _gen_supported_header() -> str:
         return "Supported:\r\n"
 
-    def gen_response(self, request: SIPMessage, status: SIPStatus) -> str:
-        response = f"SIP/2.0 {int(status)} {status.phrase}\r\n"
-        response += self._gen_response_via_header(request)
+    def _build_response(
+        self,
+        request: SIPMessage,
+        status: Any,
+        *,
+        to_header: Optional[str] = None,
+        body: str = "",
+        content_type: Optional[str] = None,
+        contact: bool = False,
+        contact_header: Optional[str] = None,
+        supported: bool = False,
+        warning: Optional[str] = None,
+        extra_headers: Optional[List[str]] = None,
+    ) -> str:
+        body_bytes = body.encode("utf8")
 
         from_line = request.headers["From"]["raw"]
         if request.headers["From"]["tag"]:
             from_line += f";tag={request.headers['From']['tag']}"
+
+        response = f"SIP/2.0 {int(status)} {status.phrase}\r\n"
+        response += self._gen_response_via_header(request)
         response += f"From: {from_line}\r\n"
-
-        response += f"To: {self._to_header_with_local_tag(request)}\r\n"
-
+        response += f"To: {to_header or self._to_header_with_local_tag(request)}\r\n"
         response += f"Call-ID: {request.headers['Call-ID']}\r\n"
         response += (
             f"CSeq: {request.headers['CSeq']['check']} "
             + f"{request.headers['CSeq']['method']}\r\n"
         )
+        if contact_header is not None:
+            response += f"Contact: {contact_header}\r\n"
+        elif contact:
+            response += self._contact_header()
         response += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        if supported:
+            response += self._gen_supported_header()
+        if warning is not None:
+            response += f"Warning: {warning}\r\n"
         response += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
-        response += "Content-Length: 0\r\n\r\n"
+        for header in extra_headers or []:
+            response += header
+            if not header.endswith("\r\n"):
+                response += "\r\n"
+        if content_type is not None:
+            response += f"Content-Type: {content_type}\r\n"
+        response += f"Content-Length: {len(body_bytes)}\r\n\r\n"
+        response += body
         return response
+
+    def gen_response(self, request: SIPMessage, status: SIPStatus) -> str:
+        return self._build_response(request, status)
 
     def _to_header_with_local_tag(self, request: SIPMessage) -> str:
         to_line = request.headers["To"]["raw"]
@@ -3629,29 +3660,14 @@ class SIPClient:
         return self.gen_sip_version_not_supported(request)
 
     def gen_sip_version_not_supported(self, request: SIPMessage) -> str:
-        response = "SIP/2.0 505 SIP Version Not Supported\r\n"
-        response += self._gen_response_via_header(request)
-        response += (
-            f"From: {request.headers['From']['raw']};tag="
-            + f"{request.headers['From']['tag']}\r\n"
+        return self._build_response(
+            request,
+            SIPStatus.SIP_VERSION_NOT_SUPPORTED,
+            to_header=f"{request.headers['To']['raw']};tag={self.gen_tag()}",
+            contact_header=str(request.headers["Contact"]),
+            supported=True,
+            warning='399 GS "Unable to accept call"',
         )
-        response += (
-            f"To: {request.headers['To']['raw']};tag="
-            + f"{self.gen_tag()}\r\n"
-        )
-        response += f"Call-ID: {request.headers['Call-ID']}\r\n"
-        response += (
-            f"CSeq: {request.headers['CSeq']['check']} "
-            + f"{request.headers['CSeq']['method']}\r\n"
-        )
-        response += f"Contact: {request.headers['Contact']}\r\n"
-        response += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
-        response += self._gen_supported_header()
-        response += 'Warning: 399 GS "Unable to accept call"\r\n'
-        response += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
-        response += "Content-Length: 0\r\n\r\n"
-
-        return response
 
     def genAuthorization(self, request: SIPMessage) -> bytes:
         warnings.warn(
@@ -3855,26 +3871,13 @@ class SIPClient:
         return self.gen_busy(request)
 
     def gen_busy(self, request: SIPMessage) -> str:
-        response = "SIP/2.0 486 Busy Here\r\n"
-        response += self._gen_response_via_header(request)
-        response += (
-            f"From: {request.headers['From']['raw']};tag="
-            + f"{request.headers['From']['tag']}\r\n"
+        return self._build_response(
+            request,
+            SIPStatus.BUSY_HERE,
+            contact=True,
+            supported=True,
+            warning='399 GS "Unable to accept call"',
         )
-        response += f"To: {self._to_header_with_local_tag(request)}\r\n"
-        response += f"Call-ID: {request.headers['Call-ID']}\r\n"
-        response += (
-            f"CSeq: {request.headers['CSeq']['check']} "
-            + f"{request.headers['CSeq']['method']}\r\n"
-        )
-        response += self._contact_header()
-        response += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
-        response += self._gen_supported_header()
-        response += 'Warning: 399 GS "Unable to accept call"\r\n'
-        response += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
-        response += "Content-Length: 0\r\n\r\n"
-
-        return response
 
     def genOk(self, request: SIPMessage) -> str:
         warnings.warn(
@@ -3886,28 +3889,16 @@ class SIPClient:
         return self.gen_ok(request)
 
     def gen_ok(self, request: SIPMessage) -> str:
-        okResponse = "SIP/2.0 200 OK\r\n"
-        okResponse += self._gen_response_via_header(request)
-        okResponse += (
-            f"From: {request.headers['From']['raw']};tag="
-            + f"{request.headers['From']['tag']}\r\n"
-        )
         to_line = request.headers["To"]["raw"]
         if request.headers["To"]["tag"]:
             to_line += f";tag={request.headers['To']['tag']}"
         else:
             to_line += f";tag={self.gen_tag()}"
-        okResponse += f"To: {to_line}\r\n"
-        okResponse += f"Call-ID: {request.headers['Call-ID']}\r\n"
-        okResponse += (
-            f"CSeq: {request.headers['CSeq']['check']} "
-            + f"{request.headers['CSeq']['method']}\r\n"
+        return self._build_response(
+            request,
+            SIPStatus.OK,
+            to_header=to_line,
         )
-        okResponse += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
-        okResponse += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
-        okResponse += "Content-Length: 0\r\n\r\n"
-
-        return okResponse
 
     @staticmethod
     def _options_accepts_sdp(request: SIPMessage) -> bool:
@@ -3957,38 +3948,22 @@ class SIPClient:
             and callable(getattr(self.phone, "_default_audio_offer", None))
             else ""
         )
-        body_bytes = body.encode("utf8")
-
-        response = "SIP/2.0 200 OK\r\n"
-        response += self._gen_response_via_header(request)
-        response += (
-            f"From: {request.headers['From']['raw']};tag="
-            + f"{request.headers['From']['tag']}\r\n"
-        )
 
         to_line = request.headers["To"]["raw"]
         if request.headers["To"]["tag"]:
             to_line += f";tag={request.headers['To']['tag']}"
         else:
             to_line += f";tag={self.gen_tag()}"
-        response += f"To: {to_line}\r\n"
-
-        response += f"Call-ID: {request.headers['Call-ID']}\r\n"
-        response += (
-            f"CSeq: {request.headers['CSeq']['check']} "
-            + f"{request.headers['CSeq']['method']}\r\n"
+        return self._build_response(
+            request,
+            SIPStatus.OK,
+            to_header=to_line,
+            contact=True,
+            supported=True,
+            extra_headers=["Accept: application/sdp"],
+            content_type="application/sdp" if body else None,
+            body=body,
         )
-        response += self._contact_header()
-        response += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
-        response += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
-        response += "Accept: application/sdp\r\n"
-        response += self._gen_supported_header()
-        if body:
-            response += "Content-Type: application/sdp\r\n"
-        response += f"Content-Length: {len(body_bytes)}\r\n\r\n"
-        response += body
-
-        return response
 
     def genRinging(self, request: SIPMessage) -> str:
         warnings.warn(
@@ -4001,27 +3976,14 @@ class SIPClient:
 
     def gen_ringing(self, request: SIPMessage) -> str:
         tag = self.gen_tag()
-        regRequest = "SIP/2.0 180 Ringing\r\n"
-        regRequest += self._gen_response_via_header(request)
-        regRequest += (
-            f"From: {request.headers['From']['raw']};tag="
-            + f"{request.headers['From']['tag']}\r\n"
-        )
-        regRequest += f"To: {request.headers['To']['raw']};tag={tag}\r\n"
-        regRequest += f"Call-ID: {request.headers['Call-ID']}\r\n"
-        regRequest += (
-            f"CSeq: {request.headers['CSeq']['check']} "
-            + f"{request.headers['CSeq']['method']}\r\n"
-        )
-        regRequest += self._contact_header()
-        regRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
-        regRequest += self._gen_supported_header()
-        regRequest += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
-        regRequest += "Content-Length: 0\r\n\r\n"
-
         self.tagLibrary[request.headers["Call-ID"]] = tag
-
-        return regRequest
+        return self._build_response(
+            request,
+            SIPStatus.RINGING,
+            to_header=f"{request.headers['To']['raw']};tag={tag}",
+            contact=True,
+            supported=True,
+        )
 
     def genAnswer(
         self,
@@ -4078,30 +4040,16 @@ class SIPClient:
             body += "a=maxptime:150\r\n"
             body += f"a={sendtype}\r\n"
 
-        body_bytes = body.encode("utf8")
         tag = self.tagLibrary[request.headers["Call-ID"]]
-
-        regRequest = "SIP/2.0 200 OK\r\n"
-        regRequest += self._gen_response_via_header(request)
-        regRequest += (
-            f"From: {request.headers['From']['raw']};tag="
-            + f"{request.headers['From']['tag']}\r\n"
+        return self._build_response(
+            request,
+            SIPStatus.OK,
+            to_header=f"{request.headers['To']['raw']};tag={tag}",
+            contact=True,
+            supported=True,
+            content_type="application/sdp",
+            body=body,
         )
-        regRequest += f"To: {request.headers['To']['raw']};tag={tag}\r\n"
-        regRequest += f"Call-ID: {request.headers['Call-ID']}\r\n"
-        regRequest += (
-            f"CSeq: {request.headers['CSeq']['check']} "
-            + f"{request.headers['CSeq']['method']}\r\n"
-        )
-        regRequest += self._contact_header()
-        regRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
-        regRequest += self._gen_supported_header()
-        regRequest += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
-        regRequest += "Content-Type: application/sdp\r\n"
-        regRequest += f"Content-Length: {len(body_bytes)}\r\n\r\n"
-        regRequest += body
-
-        return regRequest
 
     def genInvite(
         self,

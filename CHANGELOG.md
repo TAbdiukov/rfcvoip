@@ -4,6 +4,7 @@
 
 - Race-proof hardened thread-safety bounded concurrency
 - Replace Timer-based workers with Thread-based execution while preserving delayed registration refresh behavior.
+- SIP: Implement a response builder with method-specific body/header additions
 
 ## 2.8.5+RFC
 
