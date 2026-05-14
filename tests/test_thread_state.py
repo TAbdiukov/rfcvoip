@@ -81,11 +81,11 @@ def test_rtp_client_nsd_is_event_backed_but_public_name_is_preserved():
         RTP.TransmitType.SENDRECV,
     )
 
-    assert client.NSD is True
-    client.NSD = False
     assert client.NSD is False
     client.NSD = True
     assert client.NSD is True
+    client.NSD = False
+    assert client.NSD is False
 
 
 def test_pending_invite_response_helpers_survive_parallel_writes():
