@@ -87,7 +87,6 @@ def test_rtp_client_nsd_is_event_backed_but_public_name_is_preserved():
     client.NSD = False
     assert client.NSD is False
 
-
 def test_pending_invite_response_helpers_survive_parallel_writes():
     phone = VoIPPhone(
         "127.0.0.1",
