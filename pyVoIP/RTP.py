@@ -947,6 +947,8 @@ class RTPClient:
         codec_priority_scores: Optional[Dict[Any, int]] = None,
         enabled_codecs: Optional[Any] = None,
     ):
+        self._running = threading.Event()
+        self._socket_lock = threading.RLock()
         self.NSD = True
         # Example: {0: PayloadType.PCMU, 101: PayloadType.EVENT}
         self.assoc = assoc
@@ -1149,17 +1151,22 @@ class RTPClient:
         timestamp: int,
     ) -> None:
         packet = self._build_rtp_packet(payload_type, payload, marker=marker, timestamp=timestamp)
+        with self._socket_lock:
+            sout = getattr(self, "sout", None)
+        if sout is None or not self.NSD:
+            return
         try:
-            self.sout.sendto(
+            sout.sendto(
                 packet,
                 self._socket_address(self.outIP, self.outPort),
             )
         except OSError:
-            warnings.warn(
-                "RTP Packet failed to send!",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+            if self.NSD:
+                warnings.warn(
+                    "RTP Packet failed to send!",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
         self.outSequence = (self.outSequence + 1) & 0xFFFF
 
     def _build_telephone_event_payload(
@@ -1224,6 +1231,17 @@ class RTPClient:
         with self._dtmf_lock:
             self._pending_dtmf.append(code)
         return True
+
+    @property
+    def NSD(self) -> bool:
+        return self._running.is_set()
+
+    @NSD.setter
+    def NSD(self, running: bool) -> None:
+        if running:
+            self._running.set()
+        else:
+            self._running.clear()
 
     def transmit_dtmf(
         self,
@@ -1299,12 +1317,14 @@ class RTPClient:
         return True
 
     def start(self) -> None:
-        self.sin = socket.socket(self._socket_family, socket.SOCK_DGRAM)
-        # Some systems just reply to the port they receive from instead of
-        # listening to the SDP.
-        self.sout = self.sin
-        self.sin.bind(self._socket_address(self.inIP, self.inPort))
-        self.sin.setblocking(False)
+        self.NSD = True
+        with self._socket_lock:
+            self.sin = socket.socket(self._socket_family, socket.SOCK_DGRAM)
+            # Some systems just reply to the port they receive from instead of
+            # listening to the SDP.
+            self.sout = self.sin
+            self.sin.bind(self._socket_address(self.inIP, self.inPort))
+            self.sin.setblocking(False)
 
         r = Timer(0, self.recv)
         r.name = "RTP Receiver"
@@ -1317,8 +1337,11 @@ class RTPClient:
 
     def stop(self) -> None:
         self.NSD = False
-        sin = getattr(self, "sin", None)
-        sout = getattr(self, "sout", None)
+        with self._socket_lock:
+            sin = getattr(self, "sin", None)
+            sout = getattr(self, "sout", None)
+            self.sin = None
+            self.sout = None
 
         if sin is not None:
             sin.close()
@@ -1345,7 +1368,11 @@ class RTPClient:
     def recv(self) -> None:
         while self.NSD:
             try:
-                packet = self.sin.recv(8192)
+                sin = getattr(self, "sin", None)
+                if sin is None:
+                    time.sleep(0.01)
+                    continue
+                packet = sin.recv(8192)
                 self.parse_packet(packet)
             except BlockingIOError:
                 time.sleep(0.01)

@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from email import policy
 from email.parser import BytesParser
 from enum import Enum, IntEnum
-from threading import Timer, Lock
+from threading import Timer, Lock, RLock
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 from pyVoIP.util import acquired_lock_and_unblocked_socket
 from pyVoIP.SIPTransport import (
@@ -1967,6 +1967,9 @@ class SIPClient:
         self.registerThread: Optional[Timer] = None
         self.registerFailures = 0
         self.recvLock = Lock()
+        self._pending_invite_lock = RLock()
+        self._invite_debug_lock = RLock()
+        self._subscription_lock = RLock()
         self.pending_invite_responses: Dict[str, SIPMessage] = {}
         self.last_invite_debug: Dict[str, Any] = {}
         self.subscription_callback: Optional[
@@ -2332,14 +2335,27 @@ class SIPClient:
         return self.signal_target()
 
     def _set_last_invite_debug(self, **kwargs) -> None:
-        self.last_invite_debug.update(kwargs)
-        self.last_invite_debug["updated_at"] = time.time()
+        with self._invite_debug_lock:
+            self.last_invite_debug.update(kwargs)
+            self.last_invite_debug["updated_at"] = time.time()
 
     def invite_debug_snapshot(self) -> Dict[str, Any]:
-        return dict(self.last_invite_debug)
+        with self._invite_debug_lock:
+            return dict(self.last_invite_debug)
+
+    def queue_pending_invite_response(
+        self,
+        call_id: str,
+        response: SIPMessage,
+    ) -> None:
+        if not call_id:
+            return
+        with self._pending_invite_lock:
+            self.pending_invite_responses[str(call_id)] = response
 
     def pop_pending_invite_response(self, call_id: str) -> Optional[SIPMessage]:
-        return self.pending_invite_responses.pop(call_id, None)
+        with self._pending_invite_lock:
+            return self.pending_invite_responses.pop(call_id, None)
 
     @staticmethod
     def _summarize_media(
@@ -2774,8 +2790,13 @@ class SIPClient:
         *,
         event_type: str,
         message: Optional[SIPMessage] = None,
+        snapshot: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        info = subscription.snapshot()
+        if snapshot is None:
+            with self._subscription_lock:
+                info = subscription.snapshot()
+        else:
+            info = dict(snapshot)
         info["type"] = event_type
 
         if message is not None and message.type == SIPMessageType.RESPONSE:
@@ -2794,9 +2815,10 @@ class SIPClient:
         else:
             info["body"] = subscription.last_notify_body
 
-        if self.subscription_callback is not None:
+        callback = self.subscription_callback
+        if callback is not None:
             try:
-                self.subscription_callback(dict(info))
+                callback(dict(info))
             except Exception as ex:
                 debug(f"Exception in subscription_callback: {ex}")
         return info
@@ -2808,124 +2830,145 @@ class SIPClient:
         emit_callback: bool = True,
     ) -> Optional[Dict[str, Any]]:
         call_id = str(message.headers.get("Call-ID", "") or "")
-        subscription = self.subscriptions.get(call_id)
-        if subscription is None:
-            return None
+        with self._subscription_lock:
+            subscription = self.subscriptions.get(call_id)
+            if subscription is None:
+                return None
 
-        code = int(message.status)
-        subscription.updated_at = time.time()
-        subscription.last_response_code = code
-        subscription.last_response_phrase = message.status.phrase
+            code = int(message.status)
+            subscription.updated_at = time.time()
+            subscription.last_response_code = code
+            subscription.last_response_phrase = message.status.phrase
 
-        to_header = message.headers.get("To")
-        if isinstance(to_header, dict) and to_header.get("tag"):
-            subscription.remote_tag = to_header["tag"]
+            to_header = message.headers.get("To")
+            if isinstance(to_header, dict) and to_header.get("tag"):
+                subscription.remote_tag = to_header["tag"]
 
-        contact = message.headers.get("Contact")
-        if contact:
-            subscription.remote_target = self._extract_uri(str(contact))
+            contact = message.headers.get("Contact")
+            if contact:
+                subscription.remote_target = self._extract_uri(str(contact))
 
-        expires_header = message.headers.get("Expires")
-        if expires_header is not None:
-            try:
-                subscription.expires = int(expires_header)
-            except Exception:
-                pass
+            expires_header = message.headers.get("Expires")
+            if expires_header is not None:
+                try:
+                    subscription.expires = int(expires_header)
+                except Exception:
+                    pass
 
-        if 200 <= code < 300:
-            if subscription.pending_expires == 0 or subscription.expires == 0:
-                subscription.status = "cancelling"
-                subscription.reason = None
-            elif subscription.subscription_state in ("active", "pending"):
-                subscription.status = subscription.subscription_state
-                subscription.reason = None
+            if 200 <= code < 300:
+                if subscription.pending_expires == 0 or subscription.expires == 0:
+                    subscription.status = "cancelling"
+                    subscription.reason = None
+                elif subscription.subscription_state in ("active", "pending"):
+                    subscription.status = subscription.subscription_state
+                    subscription.reason = None
+                else:
+                    subscription.status = "pending"
+                    subscription.reason = None
+            elif code == int(SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST):
+                subscription.status = "terminated"
+                subscription.reason = f"{code} {message.status.phrase}"
             else:
-                subscription.status = "pending"
-                subscription.reason = None
-        elif code == int(SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST):
-            subscription.status = "terminated"
-            subscription.reason = f"{code} {message.status.phrase}"
-        else:
-            if subscription.subscription_state in ("active", "pending"):
-                subscription.status = subscription.subscription_state
-            else:
-                subscription.status = "failed"
-            subscription.reason = f"{code} {message.status.phrase}"
+                if subscription.subscription_state in ("active", "pending"):
+                    subscription.status = subscription.subscription_state
+                else:
+                    subscription.status = "failed"
+                subscription.reason = f"{code} {message.status.phrase}"
 
-        info = subscription.snapshot()
-        info["response_code"] = code
-        info["response_phrase"] = message.status.phrase
-        info["response_heading"] = str(
-            message.heading, "utf8", errors="replace"
-        )
+            info = subscription.snapshot()
+            info["response_code"] = code
+            info["response_phrase"] = message.status.phrase
+            info["response_heading"] = str(
+                message.heading, "utf8", errors="replace"
+            )
+            remove_subscription = subscription.status == "terminated"
 
         if emit_callback:
             info = self._emit_subscription_event(
                 subscription,
                 event_type="subscribe-response",
                 message=message,
+                snapshot=info,
             )
 
-        if subscription.status == "terminated":
-            self.subscriptions.pop(subscription.call_id, None)
+        if remove_subscription:
+            with self._subscription_lock:
+                if self.subscriptions.get(subscription.call_id) is subscription:
+                    self.subscriptions.pop(subscription.call_id, None)
 
         return info
 
     def _handle_notify(self, message: SIPMessage) -> None:
         call_id = str(message.headers.get("Call-ID", "") or "")
-        subscription = self.subscriptions.get(call_id)
         to_header = message.headers.get("To", {})
         local_tag = to_header.get("tag") if isinstance(to_header, dict) else ""
         event_header = str(message.headers.get("Event", "") or "").strip()
 
-        if (
-            subscription is None
-            or (
-                subscription.local_tag
-                and local_tag
-                and local_tag != subscription.local_tag
+        with self._subscription_lock:
+            subscription = self.subscriptions.get(call_id)
+            invalid_subscription = (
+                subscription is None
+                or (
+                    subscription.local_tag
+                    and local_tag
+                    and local_tag != subscription.local_tag
+                )
+                or (
+                    event_header
+                    and self._normalize_subscription_event(event_header)
+                    != self._normalize_subscription_event(subscription.event)
+                )
             )
-            or (
-                event_header
-                and self._normalize_subscription_event(event_header)
-                != self._normalize_subscription_event(subscription.event)
-            )
-        ):
+
+        if invalid_subscription:
             response = self.gen_response(
                 message, SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST
             )
             self._send_request_response(message, response)
             return
 
-        subscription.updated_at = time.time()
-        from_header = message.headers.get("From")
-        if isinstance(from_header, dict) and from_header.get("tag"):
-            subscription.remote_tag = from_header["tag"]
+        with self._subscription_lock:
+            if self.subscriptions.get(call_id) is not subscription:
+                response = self.gen_response(
+                    message, SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST
+                )
+                self._send_request_response(message, response)
+                return
 
-        contact = message.headers.get("Contact")
-        if contact:
-            subscription.remote_target = self._extract_uri(str(contact))
+            subscription.updated_at = time.time()
+            from_header = message.headers.get("From")
+            if isinstance(from_header, dict) and from_header.get("tag"):
+                subscription.remote_tag = from_header["tag"]
 
-        body_text = getattr(message, "body_text", "")
-        subscription.last_notify_body = body_text
-        subscription.last_notify_headers = {
-            "Event": str(message.headers.get("Event", "") or ""),
-            "Subscription-State": str(
-                message.headers.get("Subscription-State", "") or ""
-            ),
-            "Content-Type": str(message.headers.get("Content-Type", "") or ""),
-        }
+            contact = message.headers.get("Contact")
+            if contact:
+                subscription.remote_target = self._extract_uri(str(contact))
 
-        parsed_state = self._parse_subscription_state(
-            subscription.last_notify_headers["Subscription-State"]
-        )
-        if parsed_state["state"]:
-            subscription.subscription_state = parsed_state["state"]
-            subscription.status = parsed_state["state"]
-        if parsed_state["reason"]:
-            subscription.reason = parsed_state["reason"]
-        if parsed_state.get("expires") is not None:
-            subscription.expires = parsed_state["expires"]
+            body_text = getattr(message, "body_text", "")
+            subscription.last_notify_body = body_text
+            subscription.last_notify_headers = {
+                "Event": str(message.headers.get("Event", "") or ""),
+                "Subscription-State": str(
+                    message.headers.get("Subscription-State", "") or ""
+                ),
+                "Content-Type": str(message.headers.get("Content-Type", "") or ""),
+            }
+
+            parsed_state = self._parse_subscription_state(
+                subscription.last_notify_headers["Subscription-State"]
+            )
+            if parsed_state["state"]:
+                subscription.subscription_state = parsed_state["state"]
+                subscription.status = parsed_state["state"]
+            if parsed_state["reason"]:
+                subscription.reason = parsed_state["reason"]
+            if parsed_state.get("expires") is not None:
+                subscription.expires = parsed_state["expires"]
+
+            notify_snapshot = subscription.snapshot()
+            remove_subscription = (
+                subscription.subscription_state == "terminated"
+            )
 
         response = self.gen_ok(message)
         self._send_request_response(message, response)
@@ -2934,16 +2977,20 @@ class SIPClient:
             subscription,
             event_type="notify",
             message=message,
+            snapshot=notify_snapshot,
         )
-        if subscription.subscription_state == "terminated":
-            self.subscriptions.pop(subscription.call_id, None)
+        if remove_subscription:
+            with self._subscription_lock:
+                if self.subscriptions.get(subscription.call_id) is subscription:
+                    self.subscriptions.pop(subscription.call_id, None)
 
     def list_subscriptions(self) -> List[Dict[str, Any]]:
-        subscriptions = sorted(
-            self.subscriptions.values(),
-            key=lambda item: (item.target_uri, item.event, item.updated_at),
-        )
-        return [subscription.snapshot() for subscription in subscriptions]
+        with self._subscription_lock:
+            subscriptions = sorted(
+                self.subscriptions.values(),
+                key=lambda item: (item.target_uri, item.event, item.updated_at),
+            )
+            return [subscription.snapshot() for subscription in subscriptions]
 
     def _find_subscription(
         self, identifier: str, event: Optional[str] = None
@@ -2959,20 +3006,21 @@ class SIPClient:
         )
         ident_lower = ident.lower()
         matches: List[SIPSubscription] = []
-        for subscription in self.subscriptions.values():
-            if (
-                event_name is not None
-                and self._normalize_subscription_event(subscription.event)
-                != event_name
-            ):
-                continue
-            if (
-                ident_lower == subscription.target.lower()
-                or ident_lower == subscription.target_uri.lower()
-                or ident_lower == subscription.call_id.lower()
-                or subscription.call_id.lower().startswith(ident_lower)
-            ):
-                matches.append(subscription)
+        with self._subscription_lock:
+            for subscription in self.subscriptions.values():
+                if (
+                    event_name is not None
+                    and self._normalize_subscription_event(subscription.event)
+                    != event_name
+                ):
+                    continue
+                if (
+                    ident_lower == subscription.target.lower()
+                    or ident_lower == subscription.target_uri.lower()
+                    or ident_lower == subscription.call_id.lower()
+                    or subscription.call_id.lower().startswith(ident_lower)
+                ):
+                    matches.append(subscription)
 
         if not matches:
             return None
@@ -3010,7 +3058,8 @@ class SIPClient:
             expires=max(0, int(expires)),
             pending_expires=max(0, int(expires)),
         )
-        self.subscriptions[subscription.call_id] = subscription
+        with self._subscription_lock:
+            self.subscriptions[subscription.call_id] = subscription
         self.tagLibrary[subscription.call_id] = subscription.local_tag
 
         request = self._build_subscribe_request(
@@ -3092,14 +3141,16 @@ class SIPClient:
                 if 200 <= status_code < 300:
                     return info
 
-                self.subscriptions.pop(subscription.call_id, None)
+                with self._subscription_lock:
+                    self.subscriptions.pop(subscription.call_id, None)
                 raise RuntimeError(
                     f"SUBSCRIBE failed with SIP {status_code} "
                     + f"{response.status.phrase} "
                     + f"(Call-ID={subscription.call_id})."
                 )
 
-        self.subscriptions.pop(subscription.call_id, None)
+        with self._subscription_lock:
+            self.subscriptions.pop(subscription.call_id, None)
         raise TimeoutError(
             f"SUBSCRIBE timed out after {self.subscription_timeout}s "
             + f"(Call-ID={subscription.call_id})."
@@ -3118,8 +3169,9 @@ class SIPClient:
         if subscription is None:
             raise KeyError(f"No active subscription matched '{identifier}'.")
 
-        previous_pending = subscription.pending_expires
-        subscription.pending_expires = 0
+        with self._subscription_lock:
+            previous_pending = subscription.pending_expires
+            subscription.pending_expires = 0
         request = self._build_subscribe_request(subscription, expires=0)
 
         with self.recvLock:
@@ -3199,18 +3251,21 @@ class SIPClient:
                 if status_code == int(
                     SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST
                 ):
-                    self.subscriptions.pop(subscription.call_id, None)
+                    with self._subscription_lock:
+                        self.subscriptions.pop(subscription.call_id, None)
                     info["status"] = "terminated"
                     return info
 
-                subscription.pending_expires = previous_pending
+                with self._subscription_lock:
+                    subscription.pending_expires = previous_pending
                 raise RuntimeError(
                     f"Unsubscribe failed with SIP {status_code} "
                     + f"{response.status.phrase} "
                     + f"(Call-ID={subscription.call_id})."
                 )
 
-        subscription.pending_expires = previous_pending
+        with self._subscription_lock:
+            subscription.pending_expires = previous_pending
         raise TimeoutError(
             f"Unsubscribe timed out after {self.subscription_timeout}s "
             + f"(Call-ID={subscription.call_id})."
@@ -3340,6 +3395,10 @@ class SIPClient:
 
     def _has_matching_call(self, message: SIPMessage) -> bool:
         call_id = message.headers.get("Call-ID")
+        has_call_id = getattr(self.phone, "has_call_id", None)
+        if callable(has_call_id):
+            return bool(has_call_id(call_id))
+
         phone_calls = getattr(self.phone, "calls", None)
         if isinstance(phone_calls, dict):
             return call_id in phone_calls
@@ -4389,7 +4448,7 @@ class SIPClient:
                     # VoIPPhone.call() has inserted the call into self.calls.
                     # Queue it so the phone can apply the provisional state
                     # immediately after creating the VoIPCall.
-                    self.pending_invite_responses[call_id] = response
+                    self.queue_pending_invite_response(call_id, response)
 
                     return SIPMessage(invite.encode("utf8")), call_id, sess_id
 
@@ -4442,7 +4501,7 @@ class SIPClient:
                     return SIPMessage(invite.encode("utf8")), call_id, sess_id
 
                 # Final response (>=200) â€” don't hang waiting for only 100/180.
-                self.pending_invite_responses[call_id] = response
+                self.queue_pending_invite_response(call_id, response)
                 self._set_last_invite_debug(
                     event="invite-final-queued",
                     status=("failed" if status_code >= 300 else "final"),

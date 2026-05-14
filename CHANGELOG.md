@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.8.6+RFC
+
+- Race-proof hardened thread-safety bounded concurrency
+
 ## 2.8.5+RFC
 
 - SIP: Redact SIP `Authorization` and `Proxy-Authorization` headers from failed REGISTER debug logs.

@@ -1,7 +1,7 @@
 from enum import Enum
 from pyVoIP import SIP, RTP
 from pyVoIP.VoIP.status import PhoneStatus
-from threading import Timer, Lock
+from threading import Timer, Lock, RLock
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import audioop
 import ipaddress
@@ -234,6 +234,27 @@ def _ports_are_consecutive(ports: List[int]) -> bool:
 
 
 
+def _call_state_value(call: Any) -> Any:
+    getter = getattr(call, "_get_state", None)
+    if callable(getter):
+        return getter()
+    return getattr(call, "state", None)
+
+
+def _call_assigned_ports(call: Any) -> List[int]:
+    def extract() -> List[int]:
+        assigned_ports = getattr(call, "assignedPorts", {})
+        if hasattr(assigned_ports, "keys"):
+            return list(assigned_ports.keys())
+        return list(assigned_ports)
+
+    state_lock_for = getattr(call, "_state_lock_for", None)
+    if callable(state_lock_for):
+        with state_lock_for():
+            return extract()
+    return extract()
+
+
 class InvalidRangeError(Exception):
     pass
 
@@ -264,6 +285,7 @@ class VoIPCall:
         ms: Optional[Dict[int, RTP.PayloadType]] = None,
         sendmode="sendonly",
     ):
+        self._state_lock = RLock()
         self.state = callstate
         self.phone = phone
         self.sip = self.phone.sip
@@ -461,6 +483,32 @@ class VoIPCall:
                 self.port = m
                 self.assignedPorts[m] = self.ms[m]
 
+    def _state_lock_for(self):
+        lock = getattr(self, "_state_lock", None)
+        if lock is None:
+            lock = RLock()
+            self._state_lock = lock
+        return lock
+
+    def _get_state(self) -> CallState:
+        with self._state_lock_for():
+            return getattr(self, "state", None)
+
+    def _set_state(self, state: CallState) -> None:
+        with self._state_lock_for():
+            self.state = state
+
+    def _rtp_clients_snapshot(self) -> List[RTP.RTPClient]:
+        with self._state_lock_for():
+            return list(getattr(self, "RTPClients", []))
+
+    def _stop_rtp_clients(self) -> None:
+        for client in self._rtp_clients_snapshot():
+            try:
+                client.stop()
+            except Exception:
+                pass
+
     def createRTPClients(
         self,
         codecs: Dict[int, RTP.PayloadType],
@@ -545,44 +593,46 @@ class VoIPCall:
             local_ports,
             rtp_targets,
         ):
-            # RTPClient owns one local UDP socket; do not bind it twice.
-            if any(
-                client.inIP == ip and client.inPort == local_port
-                for client in self.RTPClients
-            ):
-                debug(
-                    f"Skipping duplicate RTP client for {self.call_id}",
-                    "Skipping duplicate RTP client setup "
-                    + f"call_id={self.call_id} local={ip}:{local_port}",
-                )
-                continue
+            with self._state_lock_for():
+                # RTPClient owns one local UDP socket; do not bind it twice.
+                if any(
+                    client.inIP == ip and client.inPort == local_port
+                    for client in self.RTPClients
+                ):
+                    debug(
+                        f"Skipping duplicate RTP client for {self.call_id}",
+                        "Skipping duplicate RTP client setup "
+                        + f"call_id={self.call_id} local={ip}:{local_port}",
+                    )
+                    continue
 
-            c = RTP.RTPClient(
-                codecs,
-                ip,
-                local_port,
-                remote_ip,
-                remote_port,
-                getattr(self, "sendmode", RTP.TransmitType.SENDRECV),
-                **rtp_kwargs,
-            )
-            self.RTPClients.append(c)
-            created_clients.append(c)
-            assigned_ports = getattr(self, "assignedPorts", None)
-            if isinstance(assigned_ports, dict):
-                assigned_ports[local_port] = codecs
+                c = RTP.RTPClient(
+                    codecs,
+                    ip,
+                    local_port,
+                    remote_ip,
+                    remote_port,
+                    getattr(self, "sendmode", RTP.TransmitType.SENDRECV),
+                    **rtp_kwargs,
+                )
+                self.RTPClients.append(c)
+                created_clients.append(c)
+                assigned_ports = getattr(self, "assignedPorts", None)
+                if isinstance(assigned_ports, dict):
+                    assigned_ports[local_port] = codecs
 
         if created_clients:
             group_ports = [client.inPort for client in created_clients]
-            self._rtp_media_groups.append(
-                {
-                    "media_type": (media or {}).get("type", "audio"),
-                    "base_port": group_ports[0],
-                    "port_count": len(group_ports),
-                    "codecs": dict(codecs),
-                    "clients": list(created_clients),
-                }
-            )
+            with self._state_lock_for():
+                self._rtp_media_groups.append(
+                    {
+                        "media_type": (media or {}).get("type", "audio"),
+                        "base_port": group_ports[0],
+                        "port_count": len(group_ports),
+                        "codecs": dict(codecs),
+                        "clients": list(created_clients),
+                    }
+                )
 
     def _request_local_rtp_ports(self, count: int) -> List[int]:
         try:
@@ -709,7 +759,8 @@ class VoIPCall:
     def __del__(self):
         try:
             phone = getattr(self, "phone", None)
-            ports = list(getattr(self, "assignedPorts", {}).keys())
+            with self._state_lock_for():
+                ports = list(getattr(self, "assignedPorts", {}).keys())
             if phone is None or not ports:
                 return
 
@@ -796,7 +847,7 @@ class VoIPCall:
     def active_codecs(self) -> List[Dict[str, Any]]:
         """Return codecs currently selected by this call's RTP client(s)."""
         active = []
-        for client in self.RTPClients:
+        for client in self._rtp_clients_snapshot():
             selected_codec_info = getattr(client, "selected_codec_info", None)
             if callable(selected_codec_info):
                 active.append(selected_codec_info())
@@ -854,7 +905,13 @@ class VoIPCall:
             pass
 
         if self.call_id in self.phone.calls:
-            del self.phone.calls[self.call_id]
+            remove_call = getattr(self.phone, "_remove_call", None)
+            if callable(remove_call):
+                remove_call(self.call_id, expected=self)
+            else:
+                calls = getattr(self.phone, "calls", {})
+                if calls.get(self.call_id) is self:
+                    del calls[self.call_id]
 
     def genMs(self) -> Dict[int, Any]:
         warnings.warn(
@@ -871,8 +928,9 @@ class VoIPCall:
         start_clients: bool = False,
     ) -> Dict[int, Any]:
         m: Dict[int, Any] = {}
-        if self._rtp_media_groups:
-            for group in self._rtp_media_groups:
+        with self._state_lock_for():
+            media_groups = []
+            for group in getattr(self, "_rtp_media_groups", []):
                 clients = [
                     client
                     for client in group.get("clients", [])
@@ -880,17 +938,31 @@ class VoIPCall:
                 ]
                 if not clients:
                     continue
+                media_groups.append(
+                    {
+                        "media_type": group.get("media_type", "audio"),
+                        "base_port": int(group.get("base_port", clients[0].inPort)),
+                        "port_count": int(group.get("port_count", len(clients))),
+                        "codecs": dict(group.get("codecs", clients[0].assoc)),
+                        "clients": list(clients),
+                    }
+                )
+            rtp_clients = list(getattr(self, "RTPClients", []))
+
+        if media_groups:
+            for group in media_groups:
+                clients = group["clients"]
 
                 if start_clients:
                     for client in clients:
                         client.start()
 
-                base_port = int(group.get("base_port", clients[0].inPort))
-                port_count = int(group.get("port_count", len(clients)))
-                codecs = group.get("codecs", clients[0].assoc)
+                base_port = group["base_port"]
+                port_count = group["port_count"]
+                codecs = group["codecs"]
                 if port_count > 1:
                     m[base_port] = {
-                        "media_type": group.get("media_type", "audio"),
+                        "media_type": group["media_type"],
                         "port_count": port_count,
                         "codecs": codecs,
                     }
@@ -898,7 +970,7 @@ class VoIPCall:
                     m[base_port] = codecs
             return m
 
-        for client in self.RTPClients:
+        for client in rtp_clients:
             if start_clients:
                 client.start()
             m[client.inPort] = client.assoc
@@ -936,14 +1008,15 @@ class VoIPCall:
             )
             rtp_targets.extend(_media_rtp_targets(request, i, i["port"]))
 
-        if len(rtp_targets) != len(self.RTPClients):
+        rtp_clients = self._rtp_clients_snapshot()
+        if len(rtp_targets) != len(rtp_clients):
             message = self.sip.gen_response(
                 request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
             )
             self.sip.send_response(request, message)
             return
 
-        for x in self.RTPClients:
+        for x in rtp_clients:
             x.sendrecv = self.sendmode
 
         m = self._rtp_media_answer_map()
@@ -952,7 +1025,7 @@ class VoIPCall:
         )
         self.sip.send_response(request, message)
         for client, (remote_ip, remote_port, _connection) in zip(
-            self.RTPClients,
+            rtp_clients,
             rtp_targets,
         ):
             client.outIP = remote_ip
@@ -972,7 +1045,7 @@ class VoIPCall:
             self.request, self.session_id, m, self.sendmode
         )
         self.sip.send_response(self.request, message)
-        self.state = CallState.ANSWERED
+        self._set_state(CallState.ANSWERED)
         debug(
             f"Call {self.call_id} answered",
             f"Call {self.call_id}: state -> ANSWERED",
@@ -1054,14 +1127,15 @@ class VoIPCall:
                 codecs, self.myIP, self.port, request, i["port"], media=i
             )
 
-        if not self.RTPClients:
+        rtp_clients = self._rtp_clients_snapshot()
+        if not rtp_clients:
             raise RTP.RTPParseError("No RTP clients were created.")
 
-        for x in self.RTPClients:
+        for x in rtp_clients:
             x.start()
         self.request.headers["Contact"] = request.headers["Contact"]
         self.request.headers["To"]["tag"] = request.headers["To"]["tag"]
-        self.state = CallState.ANSWERED
+        self._set_state(CallState.ANSWERED)
         debug(
             f"Call {self.call_id} connected",
             f"Call {self.call_id}: state -> ANSWERED remote_contact={request.headers.get('Contact')}",
@@ -1084,9 +1158,8 @@ class VoIPCall:
             )
             return
 
-        for x in self.RTPClients:
-            x.stop()
-        self.state = CallState.ENDED
+        self._stop_rtp_clients()
+        self._set_state(CallState.ENDED)
         self._finalize_ended_call()
         debug("Call not found and terminated")
         warnings.warn(
@@ -1108,9 +1181,8 @@ class VoIPCall:
             )
             return
 
-        for x in self.RTPClients:
-            x.stop()
-        self.state = CallState.ENDED
+        self._stop_rtp_clients()
+        self._set_state(CallState.ENDED)
         self._finalize_ended_call()
         debug("Call unavailable and terminated")
         warnings.warn(
@@ -1133,9 +1205,8 @@ class VoIPCall:
 
         message = self.sip.gen_busy(self.request)
         self.sip.send_response(self.request, message)
-        for x in self.RTPClients:
-            x.stop()
-        self.state = CallState.ENDED
+        self._stop_rtp_clients()
+        self._set_state(CallState.ENDED)
         self._finalize_ended_call()
 
     def cancel(self) -> None:
@@ -1146,10 +1217,9 @@ class VoIPCall:
             f"Call {self.call_id}: cancel requested",
         )
 
-        for x in self.RTPClients:
-            x.stop()
+        self._stop_rtp_clients()
         self.sip.cancel(self.request)
-        self.state = CallState.ENDED
+        self._set_state(CallState.ENDED)
         self._finalize_ended_call()
 
     def hangup(self) -> None:
@@ -1160,8 +1230,7 @@ class VoIPCall:
             f"Call {self.call_id}: hangup requested",
         )
 
-        for x in self.RTPClients:
-            x.stop()
+        self._stop_rtp_clients()
         try:
             self.sip.bye(self.request)
         except (OSError, RuntimeError) as ex:
@@ -1175,7 +1244,7 @@ class VoIPCall:
                 f"Failed to send BYE for {self.call_id}: {ex}",
                 f"Call {self.call_id}: BYE send failed: {ex}",
             )
-        self.state = CallState.ENDED
+        self._set_state(CallState.ENDED)
         self._finalize_ended_call()
 
     def bye(self) -> None:
@@ -1185,9 +1254,8 @@ class VoIPCall:
                 f"Call {self.call_id}: remote side ended the call",
             )
 
-            for x in self.RTPClients:
-                x.stop()
-            self.state = CallState.ENDED
+            self._stop_rtp_clients()
+            self._set_state(CallState.ENDED)
         self._finalize_ended_call()
 
     def writeAudio(self, data: bytes) -> None:
@@ -1200,18 +1268,20 @@ class VoIPCall:
         return self.write_audio(data)
 
     def write_audio(self, data: bytes) -> None:
-        for x in self.RTPClients:
+        for x in self._rtp_clients_snapshot():
             x.write(data)
 
     def audio_frame_size(self, duration_ms: int = 20) -> int:
-        if self.RTPClients:
-            return self.RTPClients[0].audio_frame_size(duration_ms)
+        rtp_clients = self._rtp_clients_snapshot()
+        if rtp_clients:
+            return rtp_clients[0].audio_frame_size(duration_ms)
         return self.phone.public_audio_frame_size(duration_ms)
 
     def audio_format(self) -> Dict[str, Any]:
+        rtp_clients = self._rtp_clients_snapshot()
         sample_rate = (
-            self.RTPClients[0].audio_sample_rate
-            if self.RTPClients
+            rtp_clients[0].audio_sample_rate
+            if rtp_clients
             else self.phone.audio_sample_rate
         )
         return {
@@ -1235,19 +1305,21 @@ class VoIPCall:
 
     def read_audio(self, length=None, blocking=True) -> bytes:
         if blocking:
-            while self.state not in (CallState.ANSWERED, CallState.ENDED):
+            while self._get_state() not in (CallState.ANSWERED, CallState.ENDED):
                 time.sleep(0.01)
 
         if length is None:
             length = self.audio_frame_size()
 
-        if self.state != CallState.ANSWERED or len(self.RTPClients) == 0:
+        state = self._get_state()
+        rtp_clients = self._rtp_clients_snapshot()
+        if state != CallState.ANSWERED or len(rtp_clients) == 0:
             return b"\x80" * length
 
-        if len(self.RTPClients) == 1:
-            return self.RTPClients[0].read(length, blocking)
+        if len(rtp_clients) == 1:
+            return rtp_clients[0].read(length, blocking)
 
-        data = [client.read(length, blocking) for client in self.RTPClients]
+        data = [client.read(length, blocking) for client in rtp_clients]
         mixed = audioop.bias(data[0], 1, -128)
         for frame in data[1:]:
             mixed = audioop.add(mixed, audioop.bias(frame, 1, -128), 1)
@@ -1285,7 +1357,8 @@ class VoIPPhone:
         self.rtpPortHigh = rtpPortHigh
         self.NSD = False
 
-        self.portsLock = Lock()
+        self._call_state_lock = RLock()
+        self.portsLock = RLock()
         self.assignedPorts: List[int] = []
         self.session_ids: List[int] = []
 
@@ -1351,6 +1424,34 @@ class VoIPPhone:
             tls_server_name=self.tls_server_name,
         )
 
+    def has_call_id(self, call_id: Any) -> bool:
+        with self._call_state_lock:
+            return call_id in self.calls
+
+    def _get_call(self, call_id: Any) -> Optional[VoIPCall]:
+        with self._call_state_lock:
+            return self.calls.get(call_id)
+
+    def _set_call(self, call_id: str, call: VoIPCall) -> None:
+        with self._call_state_lock:
+            self.calls[call_id] = call
+
+    def _remove_call(
+        self,
+        call_id: Any,
+        *,
+        expected: Optional[VoIPCall] = None,
+    ) -> Optional[VoIPCall]:
+        with self._call_state_lock:
+            call = self.calls.get(call_id)
+            if expected is not None and call is not expected:
+                return None
+            return self.calls.pop(call_id, None)
+
+    def _calls_snapshot(self) -> List[VoIPCall]:
+        with self._call_state_lock:
+            return list(self.calls.values())
+
     def _queue_unmatched_final_invite_response(
         self,
         request: SIP.SIPMessage,
@@ -1366,12 +1467,15 @@ class VoIPPhone:
         response would otherwise be treated as an unknown call.  Queue it so
         VoIPPhone.call() can apply it immediately after the call object exists.
         """
-        if self._outbound_call_creation_depth <= 0:
-            return False
-
         call_id = str(request.headers.get("Call-ID", "") or "")
         if not call_id:
             return False
+
+        with self._call_state_lock:
+            if self._outbound_call_creation_depth <= 0:
+                return False
+            if call_id in self.calls:
+                return False
 
         # Avoid queueing stale/unrelated responses where possible.  SIPClient
         # records the active outbound INVITE Call-ID in last_invite_debug.
@@ -1384,7 +1488,7 @@ class VoIPPhone:
         if active_invite_call_id and active_invite_call_id != call_id:
             return False
 
-        self.sip.pending_invite_responses[call_id] = request
+        self.sip.queue_pending_invite_response(call_id, request)
         debug(
             request.summary(),
             "Queued final INVITE response received before call object "
@@ -1448,13 +1552,18 @@ class VoIPPhone:
             + f"call_id={call_id} status={int(request.status)} {request.status.phrase}",
         )
 
-        if call_id in self.calls:
-            call = self.calls[call_id]
+        call = self._get_call(call_id)
+        if call is not None:
             if request.status in (
                 SIP.SIPStatus.RINGING,
                 SIP.SIPStatus.SESSION_PROGRESS,
             ):
-                if call.state == CallState.DIALING:
+                state_lock_for = getattr(call, "_state_lock_for", None)
+                if callable(state_lock_for):
+                    with state_lock_for():
+                        if call.state == CallState.DIALING:
+                            call.state = CallState.RINGING
+                elif getattr(call, "state", None) == CallState.DIALING:
                     call.state = CallState.RINGING
 
         require = request.headers.get("Require", "")
@@ -1474,7 +1583,8 @@ class VoIPPhone:
             request.summary(),
             f"Call did not work out call_id={call_id} status={code} {phrase}",
         )
-        if call_id not in self.calls:
+        call = self._get_call(call_id)
+        if call is None:
             if self._queue_unmatched_final_invite_response(request):
                 return
 
@@ -1488,16 +1598,10 @@ class VoIPPhone:
             )
 
         # End the call locally.
-        if call_id in self.calls:
-            call = self.calls[call_id]
-            for rtp in call.RTPClients:
-                try:
-                    rtp.stop()
-                except Exception:
-                    pass
-            call.state = CallState.ENDED
-            self.release_ports(call=call)
-            del self.calls[call_id]
+        if call is not None:
+            call._stop_rtp_clients()
+            call._set_state(CallState.ENDED)
+            call._finalize_ended_call()
 
         warnings.warn(
             f"Call failed with SIP {code} {phrase} (Call-ID={call_id}).",
@@ -1844,10 +1948,11 @@ class VoIPPhone:
         )
 
 
-        if call_id in self.calls:
+        call = self._get_call(call_id)
+        if call is not None:
             debug("Re-negotiation detected!")
-            if self.calls[call_id].state != CallState.RINGING:
-                self.calls[call_id].renegotiate(request)
+            if call._get_state() != CallState.RINGING:
+                call.renegotiate(request)
             return
 
         to_header = request.headers.get("To", {})
@@ -1937,7 +2042,12 @@ class VoIPPhone:
                 return
 
             try:
-                t = Timer(1, self.callCallback, [self.calls[call_id]])
+                call = self._get_call(call_id)
+                if call is None:
+                    raise RuntimeError(
+                        "Call was removed before callback dispatch."
+                    )
+                t = Timer(1, self.callCallback, [call])
                 t.name = f"Phone Call: {call_id}"
                 t.daemon = True
                 t.start()
@@ -1956,9 +2066,10 @@ class VoIPPhone:
             f"Inbound BYE call_id={call_id}",
         )
 
-        if call_id not in self.calls:
+        call = self._get_call(call_id)
+        if call is None:
             return
-        self.calls[call_id].bye()
+        call.bye()
 
     def _callback_MSG_Cancel(self, request: SIP.SIPMessage) -> None:
         call_id = request.headers["Call-ID"]
@@ -1967,21 +2078,17 @@ class VoIPPhone:
             f"Inbound CANCEL call_id={call_id}",
         )
 
-        call = self.calls.get(call_id)
-        if call is None or call.state != CallState.RINGING:
+        call = self._get_call(call_id)
+        if call is None or _call_state_value(call) != CallState.RINGING:
             return
 
-        for rtp in call.RTPClients:
-            try:
-                rtp.stop()
-            except Exception:
-                pass
+        call._stop_rtp_clients()
 
         response = self.sip.gen_response(
             call.request, SIP.SIPStatus.REQUEST_TERMINATED
         )
         self.sip.send_response(call.request, response)
-        call.state = CallState.ENDED
+        call._set_state(CallState.ENDED)
         call._finalize_ended_call()
 
     def _callback_RESP_OK(self, request: SIP.SIPMessage) -> None:
@@ -1992,7 +2099,8 @@ class VoIPPhone:
             f"Call OK response call_id={call_id} status={int(request.status)} {request.status.phrase}",
         )
 
-        if call_id not in self.calls:
+        call = self._get_call(call_id)
+        if call is None:
             if self._queue_unmatched_final_invite_response(request):
                 return
             debug("Unknown/No call")
@@ -2014,13 +2122,8 @@ class VoIPPhone:
                     f"Failed to send BYE after RTP address mismatch: {ex}",
                     f"Failed to send BYE for Call-ID={call_id}: {ex}",
                 )
-            call = self.calls[call_id]
-            for rtp in call.RTPClients:
-                try:
-                    rtp.stop()
-                except Exception:
-                    pass
-            call.state = CallState.ENDED
+            call._stop_rtp_clients()
+            call._set_state(CallState.ENDED)
             call._finalize_ended_call()
             warnings.warn(
                 "Remote SDP uses an RTP address family that does not match "
@@ -2046,13 +2149,8 @@ class VoIPPhone:
                     f"Failed to send BYE for Call-ID={call_id}: {ex}",
                 )
 
-            call = self.calls[call_id]
-            for rtp in call.RTPClients:
-                try:
-                    rtp.stop()
-                except Exception:
-                    pass
-            call.state = CallState.ENDED
+            call._stop_rtp_clients()
+            call._set_state(CallState.ENDED)
             call._finalize_ended_call()
             warnings.warn(
                 "Remote SDP does not contain exactly one assignable RTP "
@@ -2079,13 +2177,8 @@ class VoIPPhone:
                     f"Failed to send BYE for Call-ID={call_id}: {ex}",
                 )
 
-            call = self.calls[call_id]
-            for rtp in call.RTPClients:
-                try:
-                    rtp.stop()
-                except Exception:
-                    pass
-            call.state = CallState.ENDED
+            call._stop_rtp_clients()
+            call._set_state(CallState.ENDED)
             call._finalize_ended_call()
             warnings.warn(
                 "Remote SDP does not offer a compatible audio codec that "
@@ -2097,7 +2190,7 @@ class VoIPPhone:
             return
 
         try:
-            self.calls[call_id].answered(request)
+            call.answered(request)
         except RTP.RTPParseError as ex:
             debug(
                 request.summary(),
@@ -2113,13 +2206,8 @@ class VoIPPhone:
                     f"Failed to send BYE for Call-ID={call_id}: {bye_ex}",
                 )
 
-            call = self.calls[call_id]
-            for rtp in call.RTPClients:
-                try:
-                    rtp.stop()
-                except Exception:
-                    pass
-            call.state = CallState.ENDED
+            call._stop_rtp_clients()
+            call._set_state(CallState.ENDED)
             call._finalize_ended_call()
             warnings.warn(
                 "Remote SDP could not be negotiated for RTP. "
@@ -2140,7 +2228,8 @@ class VoIPPhone:
             f"Call not found response call_id={call_id}",
         )
 
-        if call_id not in self.calls:
+        call = self._get_call(call_id)
+        if call is None:
             if self._queue_unmatched_final_invite_response(request):
                 return
 
@@ -2149,7 +2238,7 @@ class VoIPPhone:
             self._send_ack(request)
             return
 
-        self.calls[call_id].not_found(request)
+        call.not_found(request)
         debug("Terminating Call")
         self._send_ack(request)
 
@@ -2161,7 +2250,8 @@ class VoIPPhone:
             f"Call unavailable response call_id={call_id}",
         )
 
-        if call_id not in self.calls:
+        call = self._get_call(call_id)
+        if call is None:
             if self._queue_unmatched_final_invite_response(request):
                 return
 
@@ -2169,13 +2259,13 @@ class VoIPPhone:
             debug("ACKing unmatched final INVITE response")
             self._send_ack(request)
             return
-        self.calls[call_id].unavailable(request)
+        call.unavailable(request)
         debug("Terminating Call")
         self._send_ack(request)
 
     def _create_Call(self, request: SIP.SIPMessage, sess_id: int) -> None:
         call_id = request.headers["Call-ID"]
-        self.calls[call_id] = VoIPCall(
+        call = VoIPCall(
             self,
             CallState.RINGING,
             request,
@@ -2183,6 +2273,7 @@ class VoIPPhone:
             self.myIP,
             sendmode=self.recvmode,
         )
+        self._set_call(call_id, call)
 
     def start(self) -> None:
         self._status = PhoneStatus.REGISTERING
@@ -2198,10 +2289,8 @@ class VoIPPhone:
     def stop(self, failed=False) -> None:
         self._status = PhoneStatus.DEREGISTERING
         try:
-            for call_id in list(self.calls):
-                call = self.calls.get(call_id)
-                if call is None:
-                    continue
+            for call in self._calls_snapshot():
+                call_id = call.call_id
 
                 try:
                     if call.state == CallState.ANSWERED:
@@ -2217,28 +2306,28 @@ class VoIPPhone:
                     else:
                         call._finalize_ended_call()
                 except InvalidStateError:
-                    for rtp in getattr(call, "RTPClients", ()):
+                    for rtp in call._rtp_clients_snapshot():
                         try:
                             rtp.stop()
                         except Exception:
                             pass
-                    call.state = CallState.ENDED
+                    call._set_state(CallState.ENDED)
                     call._finalize_ended_call()
                 except Exception as ex:
                     debug(
                         f"Error hanging up call during phone stop: {ex}",
                         f"Call {call_id}: forced local cleanup during stop: {ex}",
                     )
-                    for rtp in getattr(call, "RTPClients", ()):
+                    for rtp in call._rtp_clients_snapshot():
                         try:
                             rtp.stop()
                         except Exception:
                             pass
                     try:
-                        call.state = CallState.ENDED
+                        call._set_state(CallState.ENDED)
                         call._finalize_ended_call()
                     except Exception:
-                        self.calls.pop(call_id, None)
+                        self._remove_call(call_id, expected=call)
         finally:
             try:
                 self.sip.stop()
@@ -2252,7 +2341,8 @@ class VoIPPhone:
     def call(self, number: str) -> VoIPCall:
         call_id: Optional[str] = None
         port: Optional[int] = None
-        self._outbound_call_creation_depth += 1
+        with self._call_state_lock:
+            self._outbound_call_creation_depth += 1
         try:
             port = self.request_port()
             medias = {}
@@ -2272,19 +2362,20 @@ class VoIPPhone:
                 sendmode=self.sendmode,
             )
             assert call_id is not None
-            self.calls[call_id] = call
+            self._set_call(call_id, call)
         except Exception:
             if call_id is not None:
                 self.sip.pop_pending_invite_response(call_id)
             if port is not None and (
-                call_id is None or call_id not in self.calls
+                call_id is None or not self.has_call_id(call_id)
             ):
                 with self.portsLock:
                     if port in self.assignedPorts:
                         self.assignedPorts.remove(port)
             raise
         finally:
-            self._outbound_call_creation_depth -= 1
+            with self._call_state_lock:
+                self._outbound_call_creation_depth -= 1
 
 
         debug(
@@ -2393,14 +2484,14 @@ class VoIPPhone:
         return normalized
 
     def release_ports(self, call: Optional[VoIPCall] = None) -> None:
-        with self.portsLock:
-            self._cleanup_dead_calls()
+        with self._call_state_lock, self.portsLock:
+            self._cleanup_dead_calls_locked()
             if isinstance(call, VoIPCall):
-                ports = list(call.assignedPorts.keys())
+                ports = _call_assigned_ports(call)
             else:
                 dnr_ports = []
-                for call_id in self.calls:
-                    dnr_ports += list(self.calls[call_id].assignedPorts.keys())
+                for active_call in self.calls.values():
+                    dnr_ports += _call_assigned_ports(active_call)
                 ports = []
                 for port in self.assignedPorts:
                     if port not in dnr_ports:
@@ -2411,6 +2502,10 @@ class VoIPPhone:
                     self.assignedPorts.remove(port)
 
     def _cleanup_dead_calls(self) -> None:
+        with self._call_state_lock:
+            self._cleanup_dead_calls_locked()
+
+    def _cleanup_dead_calls_locked(self) -> None:
         to_delete = []
         for thread in self.threads:
             if not thread.is_alive():
@@ -2423,7 +2518,7 @@ class VoIPPhone:
                 if call is None:
                     debug("Unable to delete from calls dictionary!")
                     debug(f"call_id={call_id} calls={self.calls}")
-                elif call.state == CallState.ENDED:
+                elif _call_state_value(call) == CallState.ENDED:
                     del self.calls[call_id]
 
                 try:
