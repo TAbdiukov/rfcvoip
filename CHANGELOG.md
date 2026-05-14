@@ -25,6 +25,20 @@
 - RTP: Remove the packet manager rebuild race by making rebuild re-entrant and doing it while holding the buffer lock.
 - Codec: Make module discovery deterministic
 - Misc: Spelling mistakes
+- Packaging: Replace `exec()`-based version loading in `setup.py` with safe AST parsing for `__version__`
+- Documentation: Replace `exec()`-based version loading in `docs/conf.py` with safe AST parsing for `__version__`
+- SIPAuth: Redact folded `Authorization` and `Proxy-Authorization` continuation lines in SIP debug logs
+- SIP: Reject SIP messages whose body is shorter than the declared `Content-Length`
+- SIP: Preserve original INVITE request URI for non-2xx ACK generation
+- SIP: Improve INVITE transaction matching by validating both `Call-ID` and `CSeq`
+- SIP: Store outbound INVITE target URI in invite debug state for delayed ACK handling
+- SIP: Attach original INVITE request URI to queued final INVITE responses
+- SIP: Reuse original INVITE request URI for authentication retries and delayed ACKs
+- SIPTransport: Normalize bracketed IPv6 addresses before socket operations
+- RTP: Normalize bracketed IPv6 RTP addresses before socket operations
+- SIP: Normalize bracketed IPv6 SDP addresses before address-family detection
+- VoIP: Improve ACK generation for late or queued INVITE final responses
+- VoIP: Preserve ACK routing correctness for unmatched outbound INVITE responses
 
 ## 2.8.6+RFC
 
@@ -37,7 +51,6 @@
 - SIPAuth: Add reusable nonce generation, nonce validation, digest response computation, and server-side verification helpers.
 - SIPAuth: Support stored H(A1) credential hashes for both plain and `-sess` digest algorithms.
 - SIPAuth: Add digest authentication tests covering RFC 7616 vectors, nonce validation, strongest-algorithm selection, and session-algorithm verification.
-
 
 ## 2.8.5+RFC
 
@@ -66,7 +79,6 @@
 - VoIP: Preserve contiguous RTP port validation while avoiding receive-loop deadlocks
 - RTP/VoIP: Improve robustness of RTP media setup error propagation during inbound negotiation
 - RTP: Clamp invalid transmit delay reduction values to prevent negative sleep intervals
-
 
 ## 2.8.4+RFC
 
@@ -179,7 +191,6 @@
 - Opus: Return codec-sized silence frames instead of hardcoded 160-byte payloads.
 - SILK: Return codec-sized silence frames instead of hardcoded 160-byte payloads.
 - Packaging: Correct `Documentation` project URL metadata typo.
-
 
 ## 2.7.9+RFC
 
