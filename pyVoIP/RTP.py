@@ -760,6 +760,7 @@ class RTPPacketManager:
         try:
             with self.bufferLock:
                 if reset:
+                    self.offset = offset
                     self.log = {offset: data}
                     self.buffer = io.BytesIO(data)
                     return
@@ -949,7 +950,7 @@ class RTPClient:
     ):
         self._running = threading.Event()
         self._socket_lock = threading.RLock()
-        self.NSD = True
+        self.NSD = False
         # Example: {0: PayloadType.PCMU, 101: PayloadType.EVENT}
         self.assoc = assoc
         try:
@@ -1317,7 +1318,6 @@ class RTPClient:
         return True
 
     def start(self) -> None:
-        self.NSD = True
         with self._socket_lock:
             self.sin = socket.socket(self._socket_family, socket.SOCK_DGRAM)
             # Some systems just reply to the port they receive from instead of
@@ -1326,6 +1326,7 @@ class RTPClient:
             self.sin.bind(self._socket_address(self.inIP, self.inPort))
             self.sin.setblocking(False)
 
+        self.NSD = True
         r = Thread(target=self.recv, name="RTP Receiver", daemon=True)
         r.start()
         t = Thread(target=self.trans, name="RTP Transmitter", daemon=True)

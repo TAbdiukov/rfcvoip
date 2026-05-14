@@ -32,6 +32,7 @@ SUPPORTED_DIGEST_ALGORITHMS = (
     "SHA-512-256-sess",
     "SHA-256",
     "SHA-256-sess",
+    "MD5-sess",
     "MD5",
 )
 
@@ -43,6 +44,7 @@ _HASHLIB_ALGORITHMS = {
 
 _ALGORITHM_ALIASES = {
     "MD5": "MD5",
+    "MD5-SESS": "MD5-sess",
     "SHA-256": "SHA-256",
     "SHA256": "SHA-256",
     "SHA-256-SESS": "SHA-256-sess",

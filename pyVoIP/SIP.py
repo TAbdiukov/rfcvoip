@@ -2594,6 +2594,14 @@ class SIPClient:
             cseq_method,
         )
 
+    @staticmethod
+    def _request_body_bytes(request: str) -> bytes:
+        try:
+            _headers, body = request.split("\r\n\r\n", 1)
+        except ValueError:
+            return b""
+        return body.encode("utf8")
+
     def _send_register_request(
         self,
         request: str,
@@ -3054,12 +3062,21 @@ class SIPClient:
                     continue
 
                 cseq = response.headers.get("CSeq", {})
-                cseq_method = (
+                response_cseq_check = (
+                    cseq.get("check") if isinstance(cseq, dict) else None
+                )
+                response_cseq_method = (
                     cseq.get("method") if isinstance(cseq, dict) else None
                 )
+                (
+                    request_call_id,
+                    request_cseq_check,
+                    request_cseq_method,
+                ) = self._request_transaction(request)
                 if (
-                    response.headers.get("Call-ID") != subscription.call_id
-                    or cseq_method != "SUBSCRIBE"
+                    response.headers.get("Call-ID") != request_call_id
+                    or response_cseq_check != request_cseq_check
+                    or response_cseq_method != request_cseq_method
                 ):
                     self.parse_message(response)
                     continue
@@ -3161,12 +3178,21 @@ class SIPClient:
                     continue
 
                 cseq = response.headers.get("CSeq", {})
-                cseq_method = (
+                response_cseq_check = (
+                    cseq.get("check") if isinstance(cseq, dict) else None
+                )
+                response_cseq_method = (
                     cseq.get("method") if isinstance(cseq, dict) else None
                 )
+                (
+                    request_call_id,
+                    request_cseq_check,
+                    request_cseq_method,
+                ) = self._request_transaction(request)
                 if (
-                    response.headers.get("Call-ID") != subscription.call_id
-                    or cseq_method != "SUBSCRIBE"
+                    response.headers.get("Call-ID") != request_call_id
+                    or response_cseq_check != request_cseq_check
+                    or response_cseq_method != request_cseq_method
                 ):
                     self.parse_message(response)
                     continue
@@ -4351,21 +4377,24 @@ class SIPClient:
                     ):
                         header_name = "Proxy-Authorization"
 
+                    branch = self._bump_branch(branch)
+                    invite = self.gen_invite(
+                        number, str(sess_id), ms, sendtype, branch, call_id
+                    )
+
                     digest_uri = self._normalize_request_target(number)
                     auth_line = self._build_digest_auth_header(
                         response,
                         header_name=header_name,
                         method="INVITE",
                         uri=digest_uri,
+                        body=self._request_body_bytes(invite),
                     )
 
-                    branch = self._bump_branch(branch)
-                    invite = self.gen_invite(
-                        number, str(sess_id), ms, sendtype, branch, call_id
-                    )
                     invite = invite.replace(
                         "\r\nContent-Length",
                         f"\r\n{auth_line}Content-Length",
+                        1,
                     )
                     self.send_raw(invite.encode("utf8"), self.signal_target())
                     retries += 1
@@ -4494,6 +4523,7 @@ class SIPClient:
         header_name: str,
         method: str,
         uri: str,
+        body: bytes = b"",
     ) -> str:
         challenge_header = self._authorization_challenge_header(header_name)
         auth = self._select_auth_challenge(challenge, challenge_header)
@@ -4508,6 +4538,7 @@ class SIPClient:
                 password=self.password,
                 method=method,
                 uri=uri,
+                body=body,
             )
         except SIPAuthError as ex:
             raise SIPParseError(str(ex)) from ex

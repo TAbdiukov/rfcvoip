@@ -1545,7 +1545,7 @@ class VoIPPhone:
             code = int(request.status)
             if 100 <= code < 200:
                 self._callback_RESP_Provisional(request)
-            elif request.status == SIP.SIPStatus.OK:
+            elif 200 <= code < 300:
                 self._callback_RESP_OK(request)
             elif request.status == SIP.SIPStatus.NOT_FOUND:
                 self._callback_RESP_NotFound(request)
