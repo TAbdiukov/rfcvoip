@@ -8,6 +8,7 @@
 - VoIP: release only the port reserved by a failed outbound call setup
 - VoIP: reject outbound answers with unusable RTP connection data before marking the call answered
 - VoIP: honor remote SDP direction when creating RTP clients
+- SIP: Advertise local SDP codec capabilities in OPTIONS responses when possible
 - SIP: send raw SIP-version error responses back to the packet source
 - SIP: Ignore SIP keepalive packets during transaction waits and receive loop
 - SIP: fix local BYE CSeq for inbound calls

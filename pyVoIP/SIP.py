@@ -3181,8 +3181,9 @@ class SIPClient:
             if self.callCallback is not None:
                 self.callCallback(message)
         elif message.method == "OPTIONS":
-            # Common keep-alive / capability probe. Reply 200 OK.
-            response = self.gen_ok(message)
+            # Common keep-alive / capability probe. Reply 200 OK and include
+            # local SDP capabilities when the requester accepts SDP.
+            response = self.gen_options_ok(message)
             self._send_request_response(message, response)
         elif message.method == "NOTIFY":
             self._handle_notify(message)
@@ -3585,6 +3586,87 @@ class SIPClient:
         okResponse += "Content-Length: 0\r\n\r\n"
 
         return okResponse
+
+    @staticmethod
+    def _options_accepts_sdp(request: SIPMessage) -> bool:
+        accept = request.headers.get("Accept")
+        if accept is None:
+            return True
+
+        values = accept if isinstance(accept, list) else [accept]
+        for raw_value in values:
+            for item in str(raw_value).split(","):
+                media_type = item.split(";", 1)[0].strip().lower()
+                if media_type in ("application/sdp", "application/*", "*/*"):
+                    return True
+        return False
+
+    def _gen_options_sdp_body(self) -> str:
+        offer_codecs = self.phone._default_audio_offer()
+        addr_type = self._sdp_address_type(self.myIP)
+        sess_id = self.sessID.next()
+
+        body = "v=0\r\n"
+        body += (
+            f"o=pyVoIP {sess_id} {sess_id} "
+            + f"IN {addr_type} {self.myIP}\r\n"
+        )
+        body += f"s=pyVoIP {pyVoIP.__version__}\r\n"
+        body += f"c=IN {addr_type} {self.myIP}\r\n"
+        body += "t=0 0\r\n"
+        body += "m=audio 0 RTP/AVP"
+        for payload_type in offer_codecs:
+            body += f" {payload_type}"
+        body += "\r\n"
+        for payload_type, codec in offer_codecs.items():
+            body += (
+                "a=rtpmap:"
+                + pyVoIP.RTP.rtpmap_for_payload_type(payload_type, codec)
+                + "\r\n"
+            )
+            for fmtp in pyVoIP.RTP.fmtp_for_payload_type(payload_type, codec):
+                body += f"a=fmtp:{payload_type} {fmtp}\r\n"
+        return body
+
+    def gen_options_ok(self, request: SIPMessage) -> str:
+        body = (
+            self._gen_options_sdp_body()
+            if self._options_accepts_sdp(request)
+            and callable(getattr(self.phone, "_default_audio_offer", None))
+            else ""
+        )
+        body_bytes = body.encode("utf8")
+
+        response = "SIP/2.0 200 OK\r\n"
+        response += self._gen_response_via_header(request)
+        response += (
+            f"From: {request.headers['From']['raw']};tag="
+            + f"{request.headers['From']['tag']}\r\n"
+        )
+
+        to_line = request.headers["To"]["raw"]
+        if request.headers["To"]["tag"]:
+            to_line += f";tag={request.headers['To']['tag']}"
+        else:
+            to_line += f";tag={self.gen_tag()}"
+        response += f"To: {to_line}\r\n"
+
+        response += f"Call-ID: {request.headers['Call-ID']}\r\n"
+        response += (
+            f"CSeq: {request.headers['CSeq']['check']} "
+            + f"{request.headers['CSeq']['method']}\r\n"
+        )
+        response += self._contact_header()
+        response += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        response += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
+        response += "Accept: application/sdp\r\n"
+        response += self._gen_supported_header()
+        if body:
+            response += "Content-Type: application/sdp\r\n"
+        response += f"Content-Length: {len(body_bytes)}\r\n\r\n"
+        response += body
+
+        return response
 
     def genRinging(self, request: SIPMessage) -> str:
         warnings.warn(
