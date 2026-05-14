@@ -135,8 +135,14 @@ def _media_connections(
     if not connections:
         # Only session-level c= lines are inherited by media sections.
         # request.body["c"] is an aggregate of all c= lines, including
-        # media-level lines from other media sections.
-        connections = request.body.get("session_connections", [])
+        # media-level lines from other media sections.  Some tests and
+        # legacy callers build request.body manually and only provide "c",
+        # so keep that fallback when the parser did not provide the safer
+        # session_connections key.
+        connections = request.body.get(
+            "session_connections",
+            request.body.get("c", []),
+        )
     return [
         connection
         for connection in connections
