@@ -755,13 +755,7 @@ class RTPPacketManager:
                 packet = packet + (b"\x80" * missing)
         return packet
 
-    def rebuild(
-        self,
-        reset: bool,
-        offset: int = 0,
-        data: bytes = b"",
-        cursor_delta: int = 0,
-    ) -> None:
+    def rebuild(self, reset: bool, offset: int = 0, data: bytes = b"") -> None:
         self.rebuilding = True
         try:
             with self.bufferLock:
@@ -774,10 +768,8 @@ class RTPPacketManager:
                 bufferloc = self.buffer.tell()
                 old_log = sorted(list(self.log.items()))
                 self.buffer = io.BytesIO()
-                old_offset = self.offset
-
                 for pkt, payload in old_log:
-                    adjusted_offset = pkt - old_offset
+                    adjusted_offset = pkt - self.offset
                     if adjusted_offset < 0:
                         continue
                     self.buffer.seek(0, 2)
@@ -787,7 +779,7 @@ class RTPPacketManager:
                     self.buffer.seek(adjusted_offset, 0)
                     self.buffer.write(payload)
 
-                self.buffer.seek(max(0, bufferloc + cursor_delta), 0)
+                self.buffer.seek(bufferloc, 0)
         finally:
             self.rebuilding = False
 
@@ -810,13 +802,12 @@ class RTPPacketManager:
                 earliest, erase the buffer.  This will stop memory errors.
                 """
                 reset = abs(offset - self.offset) >= 100000
-                cursor_delta = 0 if reset else self.offset - offset
                 self.offset = offset
                 """
                 Rebuilds the buffer if something before the earliest
                 timestamp comes in, this will stop overwritting.
                 """
-                rebuild_args = (reset, offset, data, cursor_delta)
+                rebuild_args = (reset, offset, data)
             else:
                 adjusted_offset = offset - self.offset
                 if adjusted_offset > self.max_log_span:
