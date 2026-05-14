@@ -76,7 +76,7 @@ def test_event_only_invite_is_rejected_with_488(monkeypatch):
 
 
 def test_supported_invite_still_rings_and_creates_call(monkeypatch):
-    monkeypatch.setattr(voip_module, "Timer", FakeTimer)
+    monkeypatch.setattr(voip_module, "Thread", FakeTimer)
 
     phone = VoIPPhone(
         "sip.example.com",

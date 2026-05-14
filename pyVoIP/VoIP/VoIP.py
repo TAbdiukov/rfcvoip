@@ -1,7 +1,7 @@
 from enum import Enum
 from pyVoIP import SIP, RTP
 from pyVoIP.VoIP.status import PhoneStatus
-from threading import Timer, Lock, RLock
+from threading import Thread, Lock, RLock
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import audioop
 import ipaddress
@@ -1399,9 +1399,9 @@ class VoIPPhone:
         self.recvmode = "sendrecv"
 
         self.calls: Dict[str, VoIPCall] = {}
-        self.threads: List[Timer] = []
+        self.threads: List[Thread] = []
         # Allows you to find call ID based off thread.
-        self.threadLookup: Dict[Timer, str] = {}
+        self.threadLookup: Dict[Thread, str] = {}
         # Protects the short window between SIPClient.invite() returning and
         # the corresponding VoIPCall being inserted into self.calls.  A final
         # INVITE response can arrive in that window via the receive loop.
@@ -1451,6 +1451,16 @@ class VoIPPhone:
     def _calls_snapshot(self) -> List[VoIPCall]:
         with self._call_state_lock:
             return list(self.calls.values())
+
+    @staticmethod
+    def _run_call_callback(
+        callback: Callable[["VoIPCall"], None],
+        call: "VoIPCall",
+        delay: float = 1.0,
+    ) -> None:
+        if delay > 0:
+            time.sleep(delay)
+        callback(call)
 
     def _queue_unmatched_final_invite_response(
         self,
@@ -2047,9 +2057,15 @@ class VoIPPhone:
                     raise RuntimeError(
                         "Call was removed before callback dispatch."
                     )
-                t = Timer(1, self.callCallback, [call])
-                t.name = f"Phone Call: {call_id}"
-                t.daemon = True
+                callback = self.callCallback
+                if callback is None:
+                    raise RuntimeError("Call callback is not configured.")
+                t = Thread(
+                    target=self._run_call_callback,
+                    args=(callback, call),
+                    name=f"Phone Call: {call_id}",
+                    daemon=True,
+                )
                 t.start()
                 self.threads.append(t)
                 self.threadLookup[t] = call_id

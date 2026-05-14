@@ -1,5 +1,5 @@
 from enum import Enum
-from threading import Timer
+from threading import Thread
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple, Union
 from collections import deque
 import audioop
@@ -1326,13 +1326,9 @@ class RTPClient:
             self.sin.bind(self._socket_address(self.inIP, self.inPort))
             self.sin.setblocking(False)
 
-        r = Timer(0, self.recv)
-        r.name = "RTP Receiver"
-        r.daemon = True
+        r = Thread(target=self.recv, name="RTP Receiver", daemon=True)
         r.start()
-        t = Timer(0, self.trans)
-        t.name = "RTP Transmitter"
-        t.daemon = True
+        t = Thread(target=self.trans, name="RTP Transmitter", daemon=True)
         t.start()
 
     def stop(self) -> None:

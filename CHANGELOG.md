@@ -3,6 +3,7 @@
 ## 2.8.6+RFC
 
 - Race-proof hardened thread-safety bounded concurrency
+- Replace Timer-based workers with Thread-based execution while preserving delayed registration refresh behavior.
 
 ## 2.8.5+RFC
 

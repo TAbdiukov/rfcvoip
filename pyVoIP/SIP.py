@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from email import policy
 from email.parser import BytesParser
 from enum import Enum, IntEnum
-from threading import Timer, Lock, RLock
+from threading import Event, Lock, RLock, Thread
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 from pyVoIP.util import acquired_lock_and_unblocked_socket
 from pyVoIP.SIPTransport import (
@@ -1964,7 +1964,8 @@ class SIPClient:
 
         self.urnUUID = self.gen_urn_uuid()
 
-        self.registerThread: Optional[Timer] = None
+        self.registerThread: Optional[Thread] = None
+        self._register_cancel_event: Optional[Event] = None
         self.registerFailures = 0
         self.recvLock = Lock()
         self._pending_invite_lock = RLock()
@@ -3336,6 +3337,11 @@ class SIPClient:
                     continue
                 break
 
+    def _delayed_recv_loop(self, delay: float = 1.0) -> None:
+        if delay > 0:
+            time.sleep(delay)
+        self.recv_loop()
+
     def recv(self) -> None:
         connection = self.connection
         if connection is None:
@@ -3530,18 +3536,20 @@ class SIPClient:
         self.s = self.connection.socket
         self.out = self.s
         self.register()
-        t = Timer(1, self.recv_loop)
-        t.name = "SIP Receive"
-        t.daemon = True
+        t = Thread(
+            target=self._delayed_recv_loop,
+            name="SIP Receive",
+            daemon=True,
+        )
         t.start()
 
     def stop(self) -> None:
         if not self.NSD:
             return
         try:
+            self._cancel_pending_register_thread()
             if self.registerThread:
                 # Only run if registerThread exists
-                self.registerThread.cancel()
                 self.deregister()
         finally:
             self.NSD = False
@@ -4772,6 +4780,22 @@ class SIPClient:
             self.__start_register_timer(delay=0)
             return False
 
+    def _cancel_pending_register_thread(self) -> None:
+        cancel_event = self._register_cancel_event
+        if cancel_event is not None:
+            cancel_event.set()
+            self._register_cancel_event = None
+
+    def _run_delayed_register(
+        self,
+        delay: float,
+        cancel_event: Event,
+    ) -> None:
+        if cancel_event.wait(delay):
+            return
+        if self.NSD:
+            self.register()
+
     def __start_register_timer(self, delay: Optional[int] = None):
         if delay is None:
             delay = max(1, self.default_expires - 5)
@@ -4780,11 +4804,15 @@ class SIPClient:
         if self.NSD:
             debug("New register thread")
             # self.subscribe(response)
-            self.registerThread = Timer(delay, self.register)
-            self.registerThread.name = (
-                "SIP Register CSeq: " + f"{self.registerCounter.x}"
+            self._cancel_pending_register_thread()
+            cancel_event = Event()
+            self._register_cancel_event = cancel_event
+            self.registerThread = Thread(
+                target=self._run_delayed_register,
+                args=(float(delay), cancel_event),
+                name="SIP Register CSeq: " + f"{self.registerCounter.x}",
+                daemon=True,
             )
-            self.registerThread.daemon = True
             self.registerThread.start()
 
     def __register(self) -> bool:
