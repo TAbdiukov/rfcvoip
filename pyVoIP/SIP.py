@@ -1380,6 +1380,11 @@ class SIPMessage:
     def _body_by_content_length(self, body: bytes) -> bytes:
         content_length = self.headers.get("Content-Length")
         if isinstance(content_length, int):
+            if len(body) < content_length:
+                raise SIPParseError(
+                    "SIP body shorter than Content-Length: "
+                    + f"expected {content_length} bytes, got {len(body)}."
+                )
             return body[: max(0, content_length)]
         return body
 
@@ -2101,7 +2106,9 @@ class SIPClient:
     @staticmethod
     def _sdp_address_type(address: str) -> str:
         try:
-            parsed = ipaddress.ip_address(address)
+            parsed = ipaddress.ip_address(
+                str(address or "").strip().strip("[]")
+            )
         except ValueError:
             return "IP4"
         return "IP6" if parsed.version == 6 else "IP4"
@@ -4204,7 +4211,11 @@ class SIPClient:
         )
         return self.gen_ack(request)
 
-    def gen_ack(self, request: SIPMessage) -> str:
+    def gen_ack(
+        self,
+        request: SIPMessage,
+        request_uri: Optional[str] = None,
+    ) -> str:
         call_id = request.headers["Call-ID"]
         tag = self.tagLibrary.get(call_id)
         if tag is None:
@@ -4219,7 +4230,11 @@ class SIPClient:
             ack_uri = self._extract_uri(str(request.headers["Contact"]))
             via = self._via_header(rport=True)
         else:
-            ack_uri = request.headers["To"]["raw"].lstrip("<").rstrip(">")
+            ack_uri = (
+                request_uri
+                or getattr(request, "_pyvoip_invite_request_uri", None)
+                or request.headers["To"]["raw"].lstrip("<").rstrip(">")
+            )
             via = self._gen_response_via_header(
                 request,
                 request_header=True,
@@ -4296,12 +4311,14 @@ class SIPClient:
         branch = "z9hG4bK" + self.gen_call_id()[0:25]
         call_id = self.gen_call_id()
         sess_id = self.sessID.next()
+        target_uri = self._normalize_request_target(number)
         media_summary = self._summarize_media(ms)
         signal_host, signal_port = self.signal_target()
         self._set_last_invite_debug(
             event="invite-created",
             status="dialing",
             number=number,
+            target_uri=target_uri,
             call_id=call_id,
             sess_id=sess_id,
             branch=branch,
@@ -4329,6 +4346,9 @@ class SIPClient:
         invite = self.gen_invite(
             number, str(sess_id), ms, sendtype, branch, call_id
         )
+        invite_call_id, invite_cseq_check, _invite_cseq_method = (
+            self._request_transaction(invite)
+        )
         with self.recvLock:
             self.send_raw(invite.encode("utf8"), self.signal_target())
             self._set_last_invite_debug(event="invite-sent")
@@ -4350,8 +4370,10 @@ class SIPClient:
 
                 cseq = response.headers.get("CSeq", {})
                 cseq_method = cseq.get("method") if isinstance(cseq, dict) else None
+                cseq_check = cseq.get("check") if isinstance(cseq, dict) else None
                 if (
-                    response.headers.get("Call-ID") != call_id
+                    response.headers.get("Call-ID") != invite_call_id
+                    or cseq_check != invite_cseq_check
                     or cseq_method != "INVITE"
                 ):
                     # Not our transaction, process normally.
@@ -4388,6 +4410,11 @@ class SIPClient:
                 # so VoIPPhone.call() can create the call object; later final
                 # responses are then handled by the receive loop.
                 if 180 <= status_code < 200:
+                    setattr(
+                        response,
+                        "_pyvoip_invite_request_uri",
+                        target_uri,
+                    )
                     self._set_last_invite_debug(
                         event="invite-provisional",
                         status=(
@@ -4410,7 +4437,7 @@ class SIPClient:
                     SIPStatus.UNAUTHORIZED,
                     SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
                 ) and retries < self.invite_max_retries:
-                    ack = self.gen_ack(response)
+                    ack = self.gen_ack(response, request_uri=target_uri)
                     self.send_raw(ack.encode("utf8"), self.ack_target(response))
 
                     header_name = "Authorization"
@@ -4425,12 +4452,11 @@ class SIPClient:
                         number, str(sess_id), ms, sendtype, branch, call_id
                     )
 
-                    digest_uri = self._normalize_request_target(number)
                     auth_line = self._build_digest_auth_header(
                         response,
                         header_name=header_name,
                         method="INVITE",
-                        uri=digest_uri,
+                        uri=target_uri,
                         body=self._request_body_bytes(invite),
                     )
 
@@ -4457,6 +4483,11 @@ class SIPClient:
                     return SIPMessage(invite.encode("utf8")), call_id, sess_id
 
                 # Final response (>=200) â€” don't hang waiting for only 100/180.
+                setattr(
+                    response,
+                    "_pyvoip_invite_request_uri",
+                    target_uri,
+                )
                 self.queue_pending_invite_response(call_id, response)
                 self._set_last_invite_debug(
                     event="invite-final-queued",

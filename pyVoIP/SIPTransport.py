@@ -486,7 +486,9 @@ class SIPConnection:
 
     @staticmethod
     def _socket_address(host: str, port: int, family):
+        host = str(host or "").strip()
         if family == socket.AF_INET6:
+            host = host.strip("[]")
             return (host, int(port), 0, 0)
         return (host, int(port))
 

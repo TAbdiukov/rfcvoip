@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 from setuptools import find_packages
@@ -8,10 +9,22 @@ ROOT = Path(__file__).resolve().parent
 
 
 def read_version() -> str:
-    about = {}
     version_path = ROOT / "pyVoIP" / "_version.py"
-    exec(version_path.read_text(encoding="utf-8"), about)
-    return about["__version__"]
+    module = ast.parse(
+        version_path.read_text(encoding="utf-8"),
+        filename=str(version_path),
+    )
+    for node in module.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "__version__":
+                if isinstance(node.value, ast.Constant) and isinstance(
+                    node.value.value, str
+                ):
+                    return node.value.value
+                raise RuntimeError("__version__ must be a string literal.")
+    raise RuntimeError("__version__ not found.")
 
 
 with open(ROOT / "README.md", "r", encoding="utf-8") as f:

@@ -1209,7 +1209,7 @@ class RTPClient:
         return socket.AF_INET6 if version == 6 else socket.AF_INET
 
     def _socket_address(self, host: str, port: int):
-        host = str(host or "")
+        host = str(host or "").strip().strip("[]")
         if self._socket_family == socket.AF_INET6:
             if host in ("", "0.0.0.0", "::"):
                 host = "::"

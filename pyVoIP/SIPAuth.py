@@ -135,10 +135,17 @@ def parse_digest_params(value: str) -> Dict[str, str]:
 
 def redact_sensitive_sip_headers(message: str) -> str:
     redacted = []
+    redacting_sensitive_header = False
     for line in str(message or "").splitlines():
+        if line.startswith((" ", "\t")) and redacting_sensitive_header:
+            redacted.append(" <redacted>")
+            continue
+
+        redacting_sensitive_header = False
         header = line.split(":", 1)[0].strip().lower()
         if header in ("authorization", "proxy-authorization"):
             redacted.append(line.split(":", 1)[0] + ": <redacted>")
+            redacting_sensitive_header = True
         else:
             redacted.append(line)
     return "\n".join(redacted)
