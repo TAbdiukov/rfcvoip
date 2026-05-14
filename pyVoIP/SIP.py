@@ -4186,7 +4186,10 @@ class SIPClient:
             via = self._via_header(rport=True)
         else:
             ack_uri = request.headers["To"]["raw"].lstrip("<").rstrip(">")
-            via = self._gen_response_via_header(request)
+            via = self._gen_response_via_header(
+                request,
+                request_header=True,
+            )
 
         ackMessage = f"ACK {ack_uri} SIP/2.0\r\n"
         ackMessage += via
@@ -4208,7 +4211,12 @@ class SIPClient:
 
         return ackMessage
 
-    def _gen_response_via_header(self, request: SIPMessage) -> str:
+    def _gen_response_via_header(
+        self,
+        request: SIPMessage,
+        *,
+        request_header: bool = False,
+    ) -> str:
         via = ""
         for h_via in request.headers["Via"]:
             v_line = (
@@ -4225,14 +4233,15 @@ class SIPClient:
                 v_line += f';branch={h_via["branch"]}'
                 rendered_params.add("branch")
             if "rport" in h_via.keys():
-                if h_via["rport"] is not None:
+                if h_via["rport"] is not None and not request_header:
                     v_line += f';rport={h_via["rport"]}'
                 else:
                     v_line += ";rport"
                 rendered_params.add("rport")
             if "received" in h_via.keys():
-                v_line += f';received={h_via["received"]}'
                 rendered_params.add("received")
+                if not request_header:
+                    v_line += f';received={h_via["received"]}'
             for key, value in h_via.items():
                 if key in rendered_params:
                     continue
