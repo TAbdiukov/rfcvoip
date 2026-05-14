@@ -132,6 +132,18 @@ def _parse_digest_params(value: str) -> Dict[str, str]:
 
     return params
 
+
+def _redact_sensitive_sip_headers(message: str) -> str:
+    redacted = []
+    for line in str(message or "").splitlines():
+        header = line.split(":", 1)[0].strip().lower()
+        if header in ("authorization", "proxy-authorization"):
+            redacted.append(line.split(":", 1)[0] + ": <redacted>")
+        else:
+            redacted.append(line)
+    return "\n".join(redacted)
+
+
 def _content_type_base(value: Any) -> str:
     """Return the normalized media type without parameters."""
     return str(value or "").split(";", 1)[0].strip().lower()
@@ -791,12 +803,12 @@ class SIPMessage:
 
             caller = raw[: contact.start()].strip().strip('"').strip("'")
             address = contact.group(1).strip().rstrip(">")
-            if len(address.split("@")) == 2:
-                number = address.split("@")[0]
-                host = address.split("@")[1]
+            address_user_host = address.split(";", 1)[0]
+            if len(address_user_host.split("@", 1)) == 2:
+                number, host = address_user_host.split("@", 1)
             else:
                 number = None
-                host = address
+                host = address_user_host
 
             self.headers[header] = {
                 "raw": raw,
@@ -823,7 +835,17 @@ class SIPMessage:
                 item.strip() for item in data.split(",") if item.strip()
             ]
         elif header == "Content-Length":
-            self.headers[header] = int(data.strip())
+            try:
+                content_length = int(data.strip())
+            except ValueError as ex:
+                raise SIPParseError(
+                    f"Malformed Content-Length header: {data!r}"
+                ) from ex
+            if content_length < 0:
+                raise SIPParseError(
+                    f"Content-Length cannot be negative: {data!r}"
+                )
+            self.headers[header] = content_length
         elif header in (
             "WWW-Authenticate",
             "Authorization",
@@ -875,7 +897,9 @@ class SIPMessage:
             elif header == "o":
                 # SDP 5.2 Origin
                 # o=<username> <sess-id> <sess-version> <nettype> <addrtype> <unicast-address>
-                d = data.split(" ")
+                d = data.split()
+                if len(d) < 6:
+                    raise SIPParseError(f"Malformed SDP origin line: o={data!r}")
                 self.body[header] = {
                     "username": d[0],
                     "id": d[1],
@@ -986,12 +1010,16 @@ class SIPMessage:
             elif header == "t":
                 # SDP 5.9 Timing
                 # t=<start-time> <stop-time>
-                d = data.split(" ")
+                d = data.split()
+                if len(d) < 2:
+                    raise SIPParseError(f"Malformed SDP timing line: t={data!r}")
                 self.body[header] = {"start": d[0], "stop": d[1]}
             elif header == "r":
                 # SDP 5.10 Repeat Times
                 # r=<repeat interval> <active duration> <offsets from start-time> # noqa: E501
-                d = data.split(" ")
+                d = data.split()
+                if len(d) < 4:
+                    raise SIPParseError(f"Malformed SDP repeat line: r={data!r}")
                 self.body[header] = {
                     "repeat": d[0],
                     "duration": d[1],
@@ -1038,18 +1066,27 @@ class SIPMessage:
                     count = 1
                 methods = d[3:]
 
-                self.body["m"].append(
-                    {
-                        "type": d[0],
-                        "port": int(port),
-                        "port_count": count,
-                        "protocol": self._parse_sdp_rtp_protocol(d[2]),
-                        "methods": methods,
-                        "bandwidth": [],
-                        "connections": [],
-                        "attributes": {},
-                    }
-                )
+                media_description = {
+                    "type": d[0],
+                    "port": int(port),
+                    "port_count": count,
+                    "protocol": self._parse_sdp_rtp_protocol(d[2]),
+                    "methods": methods,
+                    "bandwidth": [],
+                    "connections": [],
+                    "attributes": {},
+                }
+
+                session_attributes = self.body.get("a", {})
+                if (
+                    isinstance(session_attributes, dict)
+                    and "transmit_type" in session_attributes
+                ):
+                    media_description["transmit_type"] = session_attributes[
+                        "transmit_type"
+                    ]
+
+                self.body["m"].append(media_description)
                 for x in self.body["m"][-1]["methods"]:
                     self.body["m"][-1]["attributes"][x] = {}
             elif header == "a":
@@ -1139,7 +1176,14 @@ class SIPMessage:
     ) -> None:
         headers: Dict[str, Any] = {"Via": []}
 
+        unfolded: List[bytes] = []
         for raw_line in headers_raw:
+            if raw_line.startswith((b" ", b"\t")) and unfolded:
+                unfolded[-1] += b" " + raw_line.lstrip()
+            else:
+                unfolded.append(raw_line)
+
+        for raw_line in unfolded:
             line = str(raw_line, "utf8", errors="replace")
             if ":" not in line:
                 continue
@@ -3178,9 +3222,6 @@ class SIPClient:
                     "Received SIP response but no callCallback is set: "
                     + str(message.heading, "utf8", errors="replace"),
                 )
-            sock = getattr(self, "s", None)
-            if sock is not None:
-                sock.setblocking(True)
             return
         elif message.method == "INVITE":
             if self.callCallback is None:
@@ -4536,8 +4577,8 @@ class SIPClient:
                 debug(firstRequest)
                 debug("\nRECEIVED")
                 debug(first_response.summary())
-                debug("\nSENT (DO NOT SHARE THIS PACKET)")
-                debug(regRequest)
+                debug("\nSENT")
+                debug(_redact_sensitive_sip_headers(regRequest))
                 debug("\nRECEIVED")
                 debug(response.summary())
                 debug("=" * 50)
@@ -4553,12 +4594,12 @@ class SIPClient:
             SIPStatus(401),
             SIPStatus(407),
         ]:
-            # Unauthorized
             if response.status == SIPStatus(500):
                 # We raise so the calling function can sleep and try again
                 raise RetryRequiredError("Response SIP status of 500")
-            else:
-                # TODO: determine if needed here
+
+            # Preserve callback/debug behavior for successful registration.
+            if response.status == SIPStatus.OK:
                 self.parse_message(response)
 
         debug(response.summary())
@@ -4566,11 +4607,21 @@ class SIPClient:
 
         if response.status == SIPStatus.OK:
             return True
-        else:
+
+        if response.status in (
+            SIPStatus.UNAUTHORIZED,
+            SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
+            SIPStatus.FORBIDDEN,
+        ):
             raise InvalidAccountInfoError(
                 "Invalid authentication credentials for SIP server "
                 + f"{self.server}:{self.myPort}"
             )
+
+        raise SIPRequestError(
+            "SIP REGISTER failed with "
+            + f"{int(response.status)} {response.status.phrase}"
+        )
 
     def _handle_bad_request(
         self,

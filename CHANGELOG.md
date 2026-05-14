@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.8.5+RFC
+
+- SIP: Redact SIP `Authorization` and `Proxy-Authorization` headers from failed REGISTER debug logs.
+- SIP: Remove unexpected socket blocking reset after SIP response handling.
+- SIP: Unfold folded SIP headers before parsing header fields.
+- SIP: Parse SIP URI user/host separately from URI parameters in `From` and `To` headers.
+- SIP: Raise `SIPParseError` for malformed SDP `o=`, `t=`, and `r=` lines.
+- SIP: Raise `SIPParseError` for malformed or negative Content-Length headers.
+- SIP: Honor session-level SDP direction attributes when creating media sections.
+- SIP: Report non-auth REGISTER failures as SIP request errors instead of credential errors.
+- VoIP: Fix phone shutdown state by clearing `VoIPPhone.NSD` when `stop()` completes.
+- VoIP: Scope RTP address-family validation to enabled audio media sections only.
+
+
 ## 2.8.4+RFC
 
 - Implement multi-connection RTP media sections

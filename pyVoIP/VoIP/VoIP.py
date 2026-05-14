@@ -1790,17 +1790,15 @@ class VoIPPhone:
         self, request: SIP.SIPMessage
     ) -> bool:
         local_address_type = SIP.SIPClient._sdp_address_type(self.myIP)
-        checked = False
         for media in request.body.get("m", []):
+            if media.get("type") != "audio":
+                continue
+            if (
+                not _media_uses_supported_rtp_profile(media)
+                or not _media_port_is_enabled(media)
+            ):
+                continue
             for connection in _media_connections(request, media):
-                checked = True
-                remote_address_type = str(
-                    connection.get("address_type", "")
-                ).upper()
-                if remote_address_type != local_address_type:
-                    return False
-        if not checked:
-            for connection in request.body.get("c", []):
                 remote_address_type = str(
                     connection.get("address_type", "")
                 ).upper()
@@ -2217,6 +2215,7 @@ class VoIPPhone:
             try:
                 self.sip.stop()
             finally:
+                self.NSD = False
                 self._status = PhoneStatus.FAILED if failed else PhoneStatus.INACTIVE
 
     def fatal(self) -> None:
