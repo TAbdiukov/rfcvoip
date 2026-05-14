@@ -1202,6 +1202,16 @@ class SIPMessage:
                 headers["Via"].append(value)
                 continue
 
+            if name == "Content-Length" and name in headers:
+                existing = str(headers[name]).strip()
+                current = value.strip()
+                if existing != current:
+                    raise SIPParseError(
+                        "Conflicting Content-Length headers: "
+                        + f"{existing!r} and {current!r}"
+                    )
+                continue
+
             if name in ("WWW-Authenticate", "Proxy-Authenticate"):
                 existing = headers.get(name)
                 if existing is None:
@@ -4534,7 +4544,9 @@ class SIPClient:
 
     def __start_register_timer(self, delay: Optional[int] = None):
         if delay is None:
-            delay = self.default_expires - 5
+            delay = max(1, self.default_expires - 5)
+        else:
+            delay = max(0, int(delay))
         if self.NSD:
             debug("New register thread")
             # self.subscribe(response)

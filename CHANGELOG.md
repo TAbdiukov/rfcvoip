@@ -10,6 +10,8 @@
 - SIP: Raise `SIPParseError` for malformed or negative Content-Length headers.
 - SIP: Honor session-level SDP direction attributes when creating media sections.
 - SIP: Report non-auth REGISTER failures as SIP request errors instead of credential errors.
+- SIP: Reject duplicate but conflicting `Content-Length` headers
+- SIP: Make registration math more robust
 - VoIP: Fix phone shutdown state by clearing `VoIPPhone.NSD` when `stop()` completes.
 - VoIP: Scope RTP address-family validation to enabled audio media sections only.
 - VoIP: Reject inbound calls cleanly when no RTP ports are available instead of blocking SIP receive handling

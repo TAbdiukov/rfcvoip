@@ -310,6 +310,15 @@ class VoIPCall:
                     self.audioPorts += x["port_count"]
                     audio.append(x)
                 elif x["type"] == "video":
+                    if (
+                        _media_uses_supported_rtp_profile(x)
+                        and _media_port_is_enabled(x)
+                    ):
+                        raise RTP.RTPParseError(
+                            "Video RTP media is not supported."
+                        )
+
+
                     try:
                         self.videoPorts += int(x.get("port_count", 1))
                     except (TypeError, ValueError):
