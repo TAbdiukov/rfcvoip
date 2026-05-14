@@ -725,7 +725,7 @@ class RTPPacketManager:
         offset adjustment in self.write(offset, data) works.
         """
         self.buffer = io.BytesIO()
-        self.bufferLock = threading.Lock()
+        self.bufferLock = threading.RLock()
         self.log = {}
         self.max_log_span = 200000
         self.rebuilding = False
@@ -784,7 +784,6 @@ class RTPPacketManager:
             self.rebuilding = False
 
     def write(self, offset: int, data: bytes) -> None:
-        rebuild_args = None
         with self.bufferLock:
             newest = max(max(self.log) if self.log else offset, offset)
             cutoff = newest - self.max_log_span
@@ -807,7 +806,8 @@ class RTPPacketManager:
                 Rebuilds the buffer if something before the earliest
                 timestamp comes in, this will stop overwritting.
                 """
-                rebuild_args = (reset, offset, data)
+                self.rebuild(reset, offset, data)
+                return
             else:
                 adjusted_offset = offset - self.offset
                 if adjusted_offset > self.max_log_span:
@@ -824,9 +824,6 @@ class RTPPacketManager:
                 self.buffer.seek(adjusted_offset, 0)
                 self.buffer.write(data)
                 self.buffer.seek(bufferloc, 0)
-
-        if rebuild_args is not None:
-            self.rebuild(*rebuild_args)
 
 class RTPMessage:
     def __init__(self, data: bytes, assoc: Dict[int, PayloadType]):
@@ -1186,7 +1183,10 @@ class RTPClient:
     @staticmethod
     def _ip_version(address: str) -> Optional[int]:
         try:
-            return ipaddress.ip_address(address).version
+            text = str(address or "").strip().strip("[]")
+            if text in ("", "0.0.0.0", "::"):
+                return None
+            return ipaddress.ip_address(text).version
         except ValueError:
             return None
 
@@ -1209,8 +1209,13 @@ class RTPClient:
         return socket.AF_INET6 if version == 6 else socket.AF_INET
 
     def _socket_address(self, host: str, port: int):
+        host = str(host or "")
         if self._socket_family == socket.AF_INET6:
+            if host in ("", "0.0.0.0", "::"):
+                host = "::"
             return (host, port, 0, 0)
+        if host in ("", "0.0.0.0", "::"):
+            host = "0.0.0.0"
         return (host, port)
 
     def sendDTMF(self, code: str) -> bool:

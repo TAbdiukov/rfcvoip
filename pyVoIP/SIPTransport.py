@@ -469,7 +469,10 @@ class SIPConnection:
     @staticmethod
     def _ip_version(address: str) -> Optional[int]:
         try:
-            return ipaddress.ip_address(str(address).strip("[]")).version
+            text = str(address or "").strip().strip("[]")
+            if text in ("", "0.0.0.0", "::"):
+                return None
+            return ipaddress.ip_address(text).version
         except ValueError:
             return None
 

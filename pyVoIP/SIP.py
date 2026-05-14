@@ -84,7 +84,7 @@ def _content_type_base(value: Any) -> str:
     return str(value or "").split(";", 1)[0].strip().lower()
 
 
-def _split_top_level_semicolon(value: str) -> List[str]:
+def _split_top_level(value: str, delimiter: str) -> List[str]:
     parts = []
     start = 0
     in_quote = False
@@ -111,12 +111,24 @@ def _split_top_level_semicolon(value: str) -> List[str]:
         if char == ">" and angle_depth:
             angle_depth -= 1
             continue
-        if char == ";" and angle_depth == 0:
+        if char == delimiter and angle_depth == 0:
             parts.append(value[start:index])
             start = index + 1
 
     parts.append(value[start:])
     return parts
+
+
+def _split_top_level_semicolon(value: str) -> List[str]:
+    return _split_top_level(value, ";")
+
+
+def _split_top_level_comma(value: str) -> List[str]:
+    return [
+        part.strip()
+        for part in _split_top_level(value, ",")
+        if part.strip()
+    ]
 
 
 def _split_sip_address_header(value: str) -> Tuple[str, str]:
@@ -784,14 +796,18 @@ class SIPMessage:
             data += f"Method: {self.method}\n\n"
         data += "Headers:\n"
         for x in self.headers:
-            data += f"{x}: {self.headers[x]}\n"
+            if x in ("Authorization", "Proxy-Authorization"):
+                data += f"{x}: <redacted>\n"
+            else:
+                data += f"{x}: {self.headers[x]}\n"
         data += "\n"
         data += "Body:\n"
         for x in self.body:
             data += f"{x}: {self.body[x]}\n"
         data += "\n"
         data += "Raw:\n"
-        data += str(self.raw)
+        raw_text = str(self.raw, "utf8", errors="replace")
+        data += _redact_sensitive_sip_headers(raw_text)
 
         return data
 
@@ -1281,7 +1297,10 @@ class SIPMessage:
 
         for key, values in headers.items():
             if key == "Via":
-                handle(key, values)
+                via_values: List[str] = []
+                for value in values:
+                    via_values.extend(_split_top_level_comma(value))
+                handle(key, via_values)
                 continue
 
             if key == "Content-Length":
@@ -3634,11 +3653,12 @@ class SIPClient:
         return self.gen_sip_version_not_supported(request)
 
     def gen_sip_version_not_supported(self, request: SIPMessage) -> str:
+        contact = request.headers.get("Contact")
         return self._build_response(
             request,
             SIPStatus.SIP_VERSION_NOT_SUPPORTED,
             to_header=f"{request.headers['To']['raw']};tag={self.gen_tag()}",
-            contact_header=str(request.headers["Contact"]),
+            contact_header=str(contact) if contact is not None else None,
             supported=True,
             warning='399 GS "Unable to accept call"',
         )

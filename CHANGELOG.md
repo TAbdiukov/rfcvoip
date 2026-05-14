@@ -16,6 +16,13 @@
 - SIP: Do not generate request `Via` headers with response-only `received` / filled `rport`
 - SIP: Redact authenticated INVITE retry logs.
 - SIP: Store generic SDP `a=` attributes on the active media section.
+- SIP: fix local BYE CSeq for inbound calls
+- SIP: Parse comma-separated `Via` headers correctly.
+- SIP: Avoid `Contact` `KeyError` in `gen_sip_version_not_supported()`.
+- SIP: Redact sensitive SIP auth data in message summaries
+- SIP: Fix wildcard address handling for RTP and SIP transport
+- RTP: Fix wildcard address handling for RTP and SIP transport
+- RTP: Remove the packet manager rebuild race by making rebuild re-entrant and doing it while holding the buffer lock.
 - Codec: Make module discovery deterministic
 - Misc: Spelling mistakes
 
@@ -76,7 +83,6 @@
 - VoIP: honor remote SDP direction when creating RTP clients
 - SIP: send raw SIP-version error responses back to the packet source
 - SIP: Ignore SIP keepalive packets during transaction waits and receive loop
-- SIP: fix local BYE CSeq for inbound calls
 - Misc: normalize version_info
 
 ## 2.8.2+RFC
