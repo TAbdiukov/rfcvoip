@@ -15,6 +15,10 @@ except Exception:  # pragma: no cover - keeps source-tree imports usable.
     dns_resolver = None
 
 
+class SIPFramingError(Exception):
+    pass
+
+
 class SIPTransport(Enum):
     UDP = "UDP"
     TCP = "TCP"
@@ -627,18 +631,63 @@ class SIPConnection:
         header_end = self._stream_buffer.find(b"\r\n\r\n")
         if header_end < 0:
             return None
+
         headers = self._stream_buffer[:header_end].decode(
             "utf8", errors="replace"
         ).split("\r\n")
-        content_length = 0
+        if not headers or not headers[0].strip():
+            raise SIPFramingError("SIP stream frame has an empty start line.")
+
+        unfolded = []
         for line in headers[1:]:
-            lower = line.lower()
-            if lower.startswith("content-length:") or lower.startswith("l:"):
-                try:
-                    content_length = int(line.split(":", 1)[1].strip())
-                except ValueError:
-                    content_length = 0
-                break
+            if line.startswith((" ", "\t")):
+                if not unfolded:
+                    raise SIPFramingError(
+                        "SIP stream frame starts with a folded header."
+                    )
+                unfolded[-1] += " " + line.lstrip()
+            else:
+                unfolded.append(line)
+
+        content_lengths = []
+        for line in unfolded:
+            if not line:
+                continue
+            if ":" not in line:
+                raise SIPFramingError(
+                    f"Malformed SIP header while framing: {line!r}"
+                )
+
+            name, value = line.split(":", 1)
+            name = name.strip()
+            if not name:
+                raise SIPFramingError(
+                    "SIP header name cannot be empty while framing."
+                )
+
+            if name.lower() not in ("content-length", "l"):
+                continue
+
+            try:
+                content_length = int(value.strip())
+            except ValueError as ex:
+                raise SIPFramingError(
+                    f"Invalid SIP Content-Length while framing: {value!r}"
+                ) from ex
+            if content_length < 0:
+                raise SIPFramingError(
+                    "SIP Content-Length cannot be negative while framing."
+                )
+            content_lengths.append(content_length)
+
+        content_length = 0
+        if content_lengths:
+            if len(set(content_lengths)) != 1:
+                raise SIPFramingError(
+                    "Conflicting SIP Content-Length headers while framing."
+                )
+            content_length = content_lengths[0]
+
         return header_end + 4 + content_length
 
     def _recv_stream_message(self) -> bytes:

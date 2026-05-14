@@ -8,6 +8,7 @@ from pyVoIP.util import acquired_lock_and_unblocked_socket
 from pyVoIP.SIPTransport import (
     ResolvedSIPTarget,
     SIPConnection,
+    SIPFramingError,
     SIPResolver,
     SIPTransport,
     format_hostport,
@@ -147,6 +148,123 @@ def _redact_sensitive_sip_headers(message: str) -> str:
 def _content_type_base(value: Any) -> str:
     """Return the normalized media type without parameters."""
     return str(value or "").split(";", 1)[0].strip().lower()
+
+
+def _split_top_level_semicolon(value: str) -> List[str]:
+    parts = []
+    start = 0
+    in_quote = False
+    escaped = False
+    angle_depth = 0
+
+    for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if in_quote:
+            if char == "\\":
+                escaped = True
+            elif char == '"':
+                in_quote = False
+            continue
+
+        if char == '"':
+            in_quote = True
+            continue
+        if char == "<":
+            angle_depth += 1
+            continue
+        if char == ">" and angle_depth:
+            angle_depth -= 1
+            continue
+        if char == ";" and angle_depth == 0:
+            parts.append(value[start:index])
+            start = index + 1
+
+    parts.append(value[start:])
+    return parts
+
+
+def _split_sip_address_header(value: str) -> Tuple[str, str]:
+    parts = _split_top_level_semicolon(str(value or "").strip())
+    raw_parts = [parts[0].strip()] if parts else [""]
+    tag = ""
+
+    for part in parts[1:]:
+        key, separator, val = part.partition("=")
+        if key.strip().lower() == "tag":
+            if not separator:
+                raise SIPParseError(f"Malformed SIP tag parameter: {value!r}")
+            tag = val.strip().strip('"')
+        else:
+            raw_parts.append(part.strip())
+
+    raw = ";".join(part for part in raw_parts if part != "").strip()
+    return raw, tag
+
+
+def _name_addr_parts(value: str) -> Tuple[str, str]:
+    text = str(value or "").strip()
+    in_quote = False
+    escaped = False
+    start = None
+
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if in_quote:
+            if char == "\\":
+                escaped = True
+            elif char == '"':
+                in_quote = False
+            continue
+
+        if char == '"':
+            in_quote = True
+            continue
+        if char == "<":
+            start = index
+            continue
+        if char == ">" and start is not None:
+            caller = text[:start].strip().strip('"').strip("'")
+            return caller, text[start + 1 : index].strip()
+
+    if start is not None:
+        raise SIPParseError(f"Malformed SIP address header: {value!r}")
+
+    return "", text
+
+
+def _parse_from_to_header(header: str, data: str) -> Dict[str, Any]:
+    raw, tag = _split_sip_address_header(data)
+    caller, uri = _name_addr_parts(raw)
+    match = re.match(r"^(sips?):(.+)$", uri.strip(), flags=re.IGNORECASE)
+    if match is None:
+        raise SIPParseError(f"Malformed {header} header: {data!r}")
+
+    address = match.group(2).strip()
+    if not address:
+        raise SIPParseError(f"Malformed {header} header: {data!r}")
+
+    address_user_host = address.split(";", 1)[0]
+    if len(address_user_host.rsplit("@", 1)) == 2:
+        number, host = address_user_host.rsplit("@", 1)
+    else:
+        number = None
+        host = address_user_host
+
+    if not host:
+        raise SIPParseError(f"Malformed {header} header: {data!r}")
+
+    return {
+        "raw": raw,
+        "tag": tag,
+        "address": address,
+        "number": number,
+        "caller": caller,
+        "host": host,
+    }
 
 
 def _mime_payload_bytes(part: Any) -> bytes:
@@ -652,10 +770,17 @@ class SIPMessage:
         "call-id": "Call-ID",
         "cseq": "CSeq",
         "allow": "Allow",
+        "accept": "Accept",
+        "allow-events": "Allow-Events",
         "supported": "Supported",
         "content-length": "Content-Length",
         "content-type": "Content-Type",
         "contact": "Contact",
+        "max-forwards": "Max-Forwards",
+        "proxy-require": "Proxy-Require",
+        "record-route": "Record-Route",
+        "require": "Require",
+        "route": "Route",
         "www-authenticate": "WWW-Authenticate",
         "authorization": "Authorization",
         "proxy-authenticate": "Proxy-Authenticate",
@@ -663,6 +788,34 @@ class SIPMessage:
         "event": "Event",
         "subscription-state": "Subscription-State",
         "expires": "Expires",
+        "user-agent": "User-Agent",
+    }
+
+    _COMMA_JOIN_HEADER_NAMES = {
+        "Accept",
+        "Allow",
+        "Allow-Events",
+        "Contact",
+        "Proxy-Require",
+        "Record-Route",
+        "Require",
+        "Route",
+        "Supported",
+    }
+
+    _SINGLE_VALUE_HEADER_NAMES = {
+        "Call-ID",
+        "Content-Encoding",
+        "Content-Type",
+        "CSeq",
+        "Event",
+        "Expires",
+        "From",
+        "Max-Forwards",
+        "Subject",
+        "Subscription-State",
+        "To",
+        "User-Agent",
     }
 
     def __init__(self, data: bytes):
@@ -791,33 +944,7 @@ class SIPMessage:
                         _via[x] = None
                 self.headers["Via"].append(_via)
         elif header == "From" or header == "To":
-            info = re.split(r";tag=", data, maxsplit=1, flags=re.IGNORECASE)
-            tag = ""
-            if len(info) >= 2:
-                tag = info[1].split(";", 1)[0]
-            raw = info[0].strip()
-
-            contact = re.search(r"<?sips?:([^>\s]+)>?", raw, flags=re.IGNORECASE)
-            if contact is None:
-                raise SIPParseError(f"Malformed {header} header: {data!r}")
-
-            caller = raw[: contact.start()].strip().strip('"').strip("'")
-            address = contact.group(1).strip().rstrip(">")
-            address_user_host = address.split(";", 1)[0]
-            if len(address_user_host.split("@", 1)) == 2:
-                number, host = address_user_host.split("@", 1)
-            else:
-                number = None
-                host = address_user_host
-
-            self.headers[header] = {
-                "raw": raw,
-                "tag": tag,
-                "address": address,
-                "number": number,
-                "caller": caller,
-                "host": host,
-            }
+            self.headers[header] = _parse_from_to_header(header, data)
         elif header == "CSeq":
             parts = data.split()
             if len(parts) < 2:
@@ -1172,9 +1299,9 @@ class SIPMessage:
 
     @classmethod
     def parse_raw_header(
-        cls, headers_raw: List[bytes], handle: Callable[[str, str], None]
+        cls, headers_raw: List[bytes], handle: Callable[[str, Any], None]
     ) -> None:
-        headers: Dict[str, Any] = {"Via": []}
+        headers: Dict[str, List[str]] = {"Via": []}
 
         unfolded: List[bytes] = []
         for raw_line in headers_raw:
@@ -1185,12 +1312,16 @@ class SIPMessage:
 
         for raw_line in unfolded:
             line = str(raw_line, "utf8", errors="replace")
-            if ":" not in line:
+            if not line:
                 continue
+            if ":" not in line:
+                raise SIPParseError(f"Malformed SIP header line: {line!r}")
 
             name, value = line.split(":", 1)
             name = name.strip()
             value = value.lstrip()
+            if not name:
+                raise SIPParseError("SIP header name cannot be empty.")
 
             lookup = name.lower()
             name = cls._COMPACT_HEADER_NAMES.get(
@@ -1198,47 +1329,64 @@ class SIPMessage:
                 cls._CANONICAL_HEADER_NAMES.get(lookup, name),
             )
 
-            if name == "Via":
-                headers["Via"].append(value)
+            headers.setdefault(name, []).append(value)
+
+        for key, values in headers.items():
+            if key == "Via":
+                handle(key, values)
                 continue
 
-            if name == "Content-Length" and name in headers:
-                existing = str(headers[name]).strip()
-                current = value.strip()
-                if existing != current:
+            if key == "Content-Length":
+                parsed_values = []
+                for value in values:
+                    try:
+                        parsed_value = int(str(value).strip())
+                    except ValueError as ex:
+                        raise SIPParseError(
+                            f"Malformed Content-Length header: {value!r}"
+                        ) from ex
+                    if parsed_value < 0:
+                        raise SIPParseError(
+                            f"Content-Length cannot be negative: {value!r}"
+                        )
+                    parsed_values.append(parsed_value)
+
+                if len(set(parsed_values)) > 1:
                     raise SIPParseError(
                         "Conflicting Content-Length headers: "
-                        + f"{existing!r} and {current!r}"
+                        + ", ".join(repr(value) for value in values)
                     )
+                handle(key, str(parsed_values[0] if parsed_values else 0))
                 continue
 
-            if name in ("WWW-Authenticate", "Proxy-Authenticate"):
-                existing = headers.get(name)
-                if existing is None:
-                    headers[name] = value
-                elif isinstance(existing, list):
-                    existing.append(value)
-                else:
-                    headers[name] = [existing, value]
-                continue
-
-            # Preserve current behavior for most duplicate non-Via headers.
-            if name not in headers:
-                headers[name] = value
-
-        for key, val in headers.items():
-            if isinstance(val, list) and key in (
+            if key in (
                 "WWW-Authenticate",
                 "Proxy-Authenticate",
+                "Authorization",
+                "Proxy-Authorization",
             ):
-                for item in val:
+                for item in values:
                     handle(key, item)
+                continue
+
+            if len(values) > 1:
+                if key in cls._COMMA_JOIN_HEADER_NAMES:
+                    handle(key, ", ".join(values))
+                    continue
+                if key in cls._SINGLE_VALUE_HEADER_NAMES:
+                    raise SIPParseError(
+                        f"Duplicate SIP header {key!r} is not allowed."
+                    )
+                handle(key, list(values))
             else:
-                handle(key, val)
+                handle(key, values[0])
 
     @staticmethod
     def parse_raw_body(
-        body: bytes, handle: Callable[[str, str], None]
+        body: bytes,
+        handle: Callable[[str, str], None],
+        *,
+        strict: bool = False,
     ) -> None:
         if len(body) > 0:
             body_raw = body.splitlines()
@@ -1247,10 +1395,20 @@ class SIPMessage:
                     continue
                 line = str(raw_line, "utf8", errors="replace")
                 if "=" not in line:
+                    if strict:
+                        raise SIPParseError(
+                            f"Malformed SDP body line: {line!r}"
+                        )
                     continue
                 key, value = line.split("=", 1)
+                if strict and len(key) != 1:
+                    raise SIPParseError(
+                        f"Malformed SDP body field name: {key!r}"
+                    )
                 if key:
                     handle(key, value)
+                elif strict:
+                    raise SIPParseError("SDP body field name cannot be empty.")
 
     def _body_by_content_length(self, body: bytes) -> bytes:
         content_length = self.headers.get("Content-Length")
@@ -1266,13 +1424,19 @@ class SIPMessage:
             return
 
         content_type = self.headers.get("Content-Type", "")
-        sdp_body = extract_sdp_body(content_type, self.body_raw)
-        if sdp_body is not None:
+        sdp_bodies = extract_sdp_bodies(content_type, self.body_raw)
+        if sdp_bodies:
+            if len(sdp_bodies) > 1:
+                raise SIPParseError(
+                    "Multiple application/sdp bodies are not supported."
+                )
             # SIP offer/answer uses one application/sdp body. Keep the raw
-            # multipart body in body_raw, but parse the first SDP part into
+            # multipart body in body_raw, but parse the SDP part into
             # the existing structured SDP fields.
             self._body_content_type = "application/sdp"
-            self.parse_raw_body(sdp_body, self.parse_body)
+            self.parse_raw_body(
+                sdp_bodies[0], self.parse_body, strict=True
+            )
             return
 
         # Do not accidentally parse text/plain or other multipart parts that
@@ -2086,10 +2250,14 @@ class SIPClient:
                     return None
                 raw = sock.recv(8192)
             else:
-                raw = self.connection.recv_raw_message_before(
-                    deadline,
-                    running=lambda: self.NSD,
-                )
+                try:
+                    raw = self.connection.recv_raw_message_before(
+                        deadline,
+                        running=lambda: self.NSD,
+                    )
+                except SIPFramingError as ex:
+                    debug(f"SIP stream framing error while waiting: {ex}")
+                    return None
                 if raw is None:
                     return None
 
@@ -3123,6 +3291,9 @@ class SIPClient:
         except BlockingIOError:
             # Re-raise so recv_loop() can release locks and continue
             raise
+        except SIPFramingError as ex:
+            debug(f"SIP stream framing error: {ex}")
+            return
 
         if self._is_keepalive_packet(raw):
             return

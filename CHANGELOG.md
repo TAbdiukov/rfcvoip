@@ -12,6 +12,12 @@
 - SIP: Report non-auth REGISTER failures as SIP request errors instead of credential errors.
 - SIP: Reject duplicate but conflicting `Content-Length` headers
 - SIP: Make registration math more robust
+- SIP: Harden SIP header parsing by rejecting malformed lines and duplicate singleton headers instead of silently ignoring them.
+- SIP: Improve SIP TCP/TLS framing validation with strict `Content-Length` handling and malformed stream detection.
+- SIP: Reject malformed SDP body lines and unsupported multipart messages containing multiple SDP payloads.
+- SIP: Preserve duplicate list-style SIP headers (for example `Allow` and `Supported`) instead of dropping later values.
+- SIP: Improve `From`/`To` SIP URI parsing for quoted display names and parameterized SIP URIs.
+- SIP: Add parser hardening tests covering malformed headers, SDP validation, multipart SDP rejection, and stream framing edge cases.
 - VoIP: Fix phone shutdown state by clearing `VoIPPhone.NSD` when `stop()` completes.
 - VoIP: Scope RTP address-family validation to enabled audio media sections only.
 - VoIP: Reject inbound calls cleanly when no RTP ports are available instead of blocking SIP receive handling
