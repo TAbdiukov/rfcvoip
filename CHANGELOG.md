@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.8.4+RFC
+
+- Implement multi-connection RTP media sections
+
 ## 2.8.3+RFC
 
 - RTP: accept `telephone-event` regardless of advertised clock rate
@@ -16,7 +20,7 @@
 
 ## 2.8.2+RFC
 
-- Codec: Implement per-instance codec ordering. 
+- Codec: Implement per-instance codec ordering.
 - util/SIPTransport: Preserve original socket timeout state when temporarily switching sockets to non-blocking mode
 - SIPTransport: IPv6-safe UDP send addresses in `SIPConnection`
 - RTP: Reject SDP codec name lookups with mismatched RTP clock rates

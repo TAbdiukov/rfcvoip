@@ -2,8 +2,9 @@ from enum import Enum
 from pyVoIP import SIP, RTP
 from pyVoIP.VoIP.status import PhoneStatus
 from threading import Timer, Lock
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import audioop
+import ipaddress
 import io
 import pyVoIP
 import random
@@ -142,17 +143,95 @@ def _media_connections(
     ]
 
 
+def _connection_address_at(
+    connection: Dict[str, Any],
+    offset: int,
+) -> str:
+    address = str(connection.get("address", "") or "")
+    if offset <= 0:
+        return address
+
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError as ex:
+        raise RTP.RTPParseError(
+            "Unable to expand multi-connection SDP address "
+            + f"{address!r}; connection address counts require an IP literal."
+        ) from ex
+
+    expanded = int(parsed) + int(offset)
+    if expanded >= (1 << parsed.max_prefixlen):
+        raise RTP.RTPParseError(
+            "Unable to expand multi-connection SDP address "
+            + f"{address!r}; address range exceeds IP version boundary."
+        )
+
+    address_cls = (
+        ipaddress.IPv6Address if parsed.version == 6 else ipaddress.IPv4Address
+    )
+    return str(address_cls(expanded))
+
+
+def _expanded_media_connections(
+    request: SIP.SIPMessage,
+    media: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    expanded: List[Dict[str, Any]] = []
+    for connection in _media_connections(request, media):
+        try:
+            address_count = int(connection.get("address_count", 1) or 1)
+        except (TypeError, ValueError) as ex:
+            raise RTP.RTPParseError(
+                "SDP connection address_count must be an integer."
+            ) from ex
+
+        if address_count <= 0:
+            raise RTP.RTPParseError(
+                "SDP connection address_count must be positive."
+            )
+
+        for offset in range(address_count):
+            item = dict(connection)
+            item["source_address"] = connection.get("address")
+            item["source_address_count"] = address_count
+            item["address"] = _connection_address_at(connection, offset)
+            item["address_count"] = 1
+            item["connection_index"] = len(expanded)
+            expanded.append(item)
+
+    return expanded
+
+
 def _media_connection_count(
     request: SIP.SIPMessage,
     media: Dict[str, Any],
 ) -> int:
-    count = 0
-    for connection in _media_connections(request, media):
-        try:
-            count += int(connection.get("address_count", 1))
-        except (TypeError, ValueError):
-            count += 1
-    return count
+    return len(_expanded_media_connections(request, media))
+
+
+def _media_rtp_targets(
+    request: SIP.SIPMessage,
+    media: Dict[str, Any],
+    baseport: int,
+) -> List[Tuple[str, int, Dict[str, Any]]]:
+    try:
+        remote_base_port = int(baseport)
+    except (TypeError, ValueError) as ex:
+        raise RTP.RTPParseError("Remote RTP base port must be an integer.") from ex
+
+    return [
+        (connection["address"], remote_base_port + index, connection)
+        for index, connection in enumerate(
+            _expanded_media_connections(request, media)
+        )
+    ]
+
+
+def _ports_are_consecutive(ports: List[int]) -> bool:
+    if not ports:
+        return True
+    return ports == list(range(ports[0], ports[0] + len(ports)))
+
 
 
 class InvalidRangeError(Exception):
@@ -203,6 +282,7 @@ class VoIPCall:
         self.dtmf = io.StringIO()
 
         self.RTPClients: List[RTP.RTPClient] = []
+        self._rtp_media_groups: List[Dict[str, Any]] = []
 
         self.connections = 0
         self.audioPorts = 0
@@ -349,10 +429,12 @@ class VoIPCall:
                     continue
                 self.sendmode = negotiated_sendmode
 
-                port = self.phone.request_port()
-                self.assignedPorts[port] = codecs
+                target_count = _media_connection_count(self.request, i)
+                ports = self._request_local_rtp_ports(target_count)
+                for port in ports:
+                    self.assignedPorts[port] = codecs
                 self.create_rtp_clients(
-                    codecs, self.myIP, port, request, i["port"], media=i
+                    codecs, self.myIP, ports, request, i["port"], media=i
                 )
 
             if len(self.assignedPorts) == 0:
@@ -390,7 +472,7 @@ class VoIPCall:
         self,
         codecs: Dict[int, RTP.PayloadType],
         ip: str,
-        port: int,
+        port: Any,
         request: SIP.SIPMessage,
         baseport: int,
         media: Optional[Dict[str, Any]] = None,
@@ -403,21 +485,26 @@ class VoIPCall:
             + ",".join(f"{pt}:{codec}" for pt, codec in codecs.items()),
         )
 
-        # RTPClient owns one local UDP socket; do not bind it twice.
-        if any(
-            client.inIP == ip and client.inPort == port
-            for client in self.RTPClients
-        ):
-            debug(
-                f"Skipping duplicate RTP client for {self.call_id}",
-                "Skipping duplicate RTP client setup "
-                + f"call_id={self.call_id} local={ip}:{port}",
-            )
+        rtp_targets = _media_rtp_targets(request, media or {}, baseport)
+        if not rtp_targets:
             return
 
-        connections = _media_connections(request, media or {})
-        if not connections:
-            return
+        # Backwards compatibility for older direct unit tests and callers that
+        # invoke create_rtp_clients() without passing the SDP media section.
+        # Real call setup now passes ``media`` and therefore gets one RTPClient
+        # per expanded media connection. Without ``media`` there is no reliable
+        # m= port/count context, so preserve the historical single-client
+        # behavior.
+        if media is None:
+            rtp_targets = rtp_targets[:1]
+
+        local_ports = self._local_ports_for_rtp_targets(
+            port,
+            len(rtp_targets),
+        )
+
+        if not hasattr(self, "_rtp_media_groups"):
+            self._rtp_media_groups = []
 
         phone = getattr(self, "phone", None)
         audio_sample_rate = getattr(phone, "audio_sample_rate", None)
@@ -444,17 +531,143 @@ class VoIPCall:
         if getattr(phone, "codec_priorities", None):
             rtp_kwargs["codec_priority_scores"] = phone.codec_priorities
 
-        remote_ip = connections[0]["address"]
-        c = RTP.RTPClient(
-            codecs,
-            ip,
-            port,
-            remote_ip,
-            baseport,
-            self.sendmode,
-            **rtp_kwargs,
-        )
-        self.RTPClients.append(c)
+        created_clients = []
+        for local_port, (remote_ip, remote_port, _connection) in zip(
+            local_ports,
+            rtp_targets,
+        ):
+            # RTPClient owns one local UDP socket; do not bind it twice.
+            if any(
+                client.inIP == ip and client.inPort == local_port
+                for client in self.RTPClients
+            ):
+                debug(
+                    f"Skipping duplicate RTP client for {self.call_id}",
+                    "Skipping duplicate RTP client setup "
+                    + f"call_id={self.call_id} local={ip}:{local_port}",
+                )
+                continue
+
+            c = RTP.RTPClient(
+                codecs,
+                ip,
+                local_port,
+                remote_ip,
+                remote_port,
+                getattr(self, "sendmode", RTP.TransmitType.SENDRECV),
+                **rtp_kwargs,
+            )
+            self.RTPClients.append(c)
+            created_clients.append(c)
+            assigned_ports = getattr(self, "assignedPorts", None)
+            if isinstance(assigned_ports, dict):
+                assigned_ports[local_port] = codecs
+
+        if created_clients:
+            group_ports = [client.inPort for client in created_clients]
+            self._rtp_media_groups.append(
+                {
+                    "media_type": (media or {}).get("type", "audio"),
+                    "base_port": group_ports[0],
+                    "port_count": len(group_ports),
+                    "codecs": dict(codecs),
+                    "clients": list(created_clients),
+                }
+            )
+
+    def _request_local_rtp_ports(self, count: int) -> List[int]:
+        try:
+            count = int(count)
+        except (TypeError, ValueError) as ex:
+            raise RTP.RTPParseError(
+                "RTP media connection count must be an integer."
+            ) from ex
+
+        if count <= 0:
+            raise RTP.RTPParseError(
+                "RTP media connection count must be positive."
+            )
+
+        request_ports = getattr(self.phone, "request_ports", None)
+        if callable(request_ports):
+            raw_ports = request_ports(count)
+            if isinstance(raw_ports, int):
+                ports = [raw_ports]
+            else:
+                ports = [int(port) for port in raw_ports]
+        else:
+            request_port = getattr(self.phone, "request_port", None)
+            if not callable(request_port):
+                raise RTP.RTPParseError(
+                    "Phone object cannot allocate RTP ports."
+                )
+            ports = [int(request_port()) for _ in range(count)]
+
+        if len(ports) != count:
+            raise RTP.RTPParseError(
+                "Allocated RTP port count does not match SDP connection count."
+            )
+
+        if len(set(ports)) != len(ports):
+            raise RTP.RTPParseError("Allocated RTP ports must be unique.")
+
+        if count > 1 and not _ports_are_consecutive(ports):
+            raise RTP.RTPParseError(
+                "Multi-connection RTP media sections require contiguous "
+                + "local RTP ports so SDP can advertise port/count."
+            )
+
+        return ports
+
+    def _local_ports_for_rtp_targets(
+        self,
+        port: Any,
+        target_count: int,
+    ) -> List[int]:
+        if target_count <= 0:
+            return []
+
+        if isinstance(port, (list, tuple)):
+            local_ports = [int(item) for item in port]
+            if len(local_ports) != target_count:
+                raise RTP.RTPParseError(
+                    "Local RTP port count does not match SDP connection count."
+                )
+        else:
+            first_port = int(port)
+            if target_count == 1:
+                local_ports = [first_port]
+            else:
+                local_ports = list(range(first_port, first_port + target_count))
+                phone = getattr(self, "phone", None)
+                reserve_ports = (
+                    getattr(phone, "reserve_ports", None)
+                    if phone is not None
+                    else None
+                )
+                if callable(reserve_ports):
+                    assigned_ports = getattr(self, "assignedPorts", {})
+                    allow_existing = (
+                        {first_port}
+                        if isinstance(assigned_ports, dict)
+                        and first_port in assigned_ports
+                        else set()
+                    )
+                    reserve_ports(
+                        local_ports,
+                        allow_existing=allow_existing,
+                    )
+
+        if len(set(local_ports)) != len(local_ports):
+            raise RTP.RTPParseError("Local RTP ports must be unique.")
+
+        if target_count > 1 and not _ports_are_consecutive(local_ports):
+            raise RTP.RTPParseError(
+                "Multi-connection RTP media sections require contiguous "
+                + "local RTP ports so SDP can advertise port/count."
+            )
+
+        return local_ports
 
     def dtmfCallback(self, code: str) -> None:
         warnings.warn(
@@ -615,7 +828,7 @@ class VoIPCall:
         if self.call_id in self.phone.calls:
             del self.phone.calls[self.call_id]
 
-    def genMs(self) -> Dict[int, Dict[int, RTP.PayloadType]]:
+    def genMs(self) -> Dict[int, Any]:
         warnings.warn(
             "genMs is deprecated due to PEP8 compliance. "
             + "Use gen_ms instead.",
@@ -624,17 +837,51 @@ class VoIPCall:
         )
         return self.gen_ms()
 
-    def gen_ms(self) -> Dict[int, Dict[int, RTP.PayloadType]]:
+    def _rtp_media_answer_map(
+        self,
+        *,
+        start_clients: bool = False,
+    ) -> Dict[int, Any]:
+        m: Dict[int, Any] = {}
+        if self._rtp_media_groups:
+            for group in self._rtp_media_groups:
+                clients = [
+                    client
+                    for client in group.get("clients", [])
+                    if client in self.RTPClients
+                ]
+                if not clients:
+                    continue
+
+                if start_clients:
+                    for client in clients:
+                        client.start()
+
+                base_port = int(group.get("base_port", clients[0].inPort))
+                port_count = int(group.get("port_count", len(clients)))
+                codecs = group.get("codecs", clients[0].assoc)
+                if port_count > 1:
+                    m[base_port] = {
+                        "media_type": group.get("media_type", "audio"),
+                        "port_count": port_count,
+                        "codecs": codecs,
+                    }
+                else:
+                    m[base_port] = codecs
+            return m
+
+        for client in self.RTPClients:
+            if start_clients:
+                client.start()
+            m[client.inPort] = client.assoc
+        return m
+
+    def gen_ms(self) -> Dict[int, Any]:
         """
         Generate m SDP attribute for answering originally and
         for re-negotiations.
         """
-        m = {}
-        for x in self.RTPClients:
-            x.start()
-            m[x.inPort] = x.assoc
-
-        return m
+        return self._rtp_media_answer_map(start_clients=True)
 
     def renegotiate(self, request: SIP.SIPMessage) -> None:
         if not self.phone._has_compatible_rtp_address_family(request):
@@ -644,9 +891,7 @@ class VoIPCall:
             self.sip.send_response(request, message)
             return
 
-        m = {}
-        for x in self.RTPClients:
-            m[x.inPort] = x.assoc
+        rtp_targets: List[Tuple[str, int, Dict[str, Any]]] = []
 
         desired_sendmode = _transmit_type_from_value(self.sendmode)
         for i in request.body.get("m", []):
@@ -661,29 +906,29 @@ class VoIPCall:
                 _media_transmit_type(i),
                 desired_sendmode,
             )
-            break
+            rtp_targets.extend(_media_rtp_targets(request, i, i["port"]))
+
+        if len(rtp_targets) != len(self.RTPClients):
+            message = self.sip.gen_response(
+                request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
+            )
+            self.sip.send_response(request, message)
+            return
 
         for x in self.RTPClients:
             x.sendrecv = self.sendmode
 
+        m = self._rtp_media_answer_map()
         message = self.sip.gen_answer(
             request, self.session_id, m, self.sendmode
         )
         self.sip.send_response(request, message)
-        for i in request.body["m"]:
-            if i.get("type") != "audio":
-                continue
-            if (
-                not _media_uses_supported_rtp_profile(i)
-                or not _media_port_is_enabled(i)
-            ):
-                continue
-            connections = _media_connections(request, i)
-            for ii, (connection, client) in enumerate(
-                zip(connections, self.RTPClients)
-            ):
-                client.outIP = connection["address"]
-                client.outPort = i["port"] + ii
+        for client, (remote_ip, remote_port, _connection) in zip(
+            self.RTPClients,
+            rtp_targets,
+        ):
+            client.outIP = remote_ip
+            client.outPort = remote_port
 
     def answer(self) -> None:
         if self.state != CallState.RINGING:
@@ -1492,7 +1737,10 @@ class VoIPPhone:
                 or not _media_port_is_enabled(media)
             ):
                 continue
-            connections = _media_connection_count(request, media)
+            try:
+                connections = _media_connection_count(request, media)
+            except RTP.RTPParseError:
+                return False
             try:
                 port_count = int(media.get("port_count", 1))
             except (TypeError, ValueError):
@@ -2032,31 +2280,50 @@ class VoIPPhone:
         return call
 
     def request_port(self, blocking=True) -> int:
+        return self.request_ports(1, blocking=blocking)[0]
+
+    def _available_contiguous_port_starts_locked(self, count: int) -> List[int]:
+        assigned = set(self.assignedPorts)
+        if count > (self.rtpPortHigh - self.rtpPortLow + 1):
+            return []
+        return [
+            start
+            for start in range(self.rtpPortLow, self.rtpPortHigh - count + 2)
+            if all((start + offset) not in assigned for offset in range(count))
+        ]
+
+    def request_ports(self, count: int, blocking=True) -> List[int]:
+        try:
+            count = int(count)
+        except (TypeError, ValueError) as ex:
+            raise InvalidRangeError("'count' must be an integer") from ex
+
+        if count <= 0:
+            raise InvalidRangeError("'count' must be positive")
+
         while True:
             with self.portsLock:
-                ports_available = [
-                    port
-                    for port in range(self.rtpPortLow, self.rtpPortHigh + 1)
-                    if port not in self.assignedPorts
-                ]
-                if ports_available:
-                    selection = random.choice(ports_available)
-                    self.assignedPorts.append(selection)
-                    return selection
+                starts_available = self._available_contiguous_port_starts_locked(
+                    count
+                )
+                if starts_available:
+                    start = random.choice(starts_available)
+                    ports = list(range(start, start + count))
+                    self.assignedPorts.extend(ports)
+                    return ports
 
             # If no ports are available attempt to cleanup any missed calls.
             self.release_ports()
 
             with self.portsLock:
-                ports_available = [
-                    port
-                    for port in range(self.rtpPortLow, self.rtpPortHigh + 1)
-                    if port not in self.assignedPorts
-                ]
-                if ports_available:
-                    selection = random.choice(ports_available)
-                    self.assignedPorts.append(selection)
-                    return selection
+                starts_available = self._available_contiguous_port_starts_locked(
+                    count
+                )
+                if starts_available:
+                    start = random.choice(starts_available)
+                    ports = list(range(start, start + count))
+                    self.assignedPorts.extend(ports)
+                    return ports
 
             if not (self.NSD and blocking):
                 raise NoPortsAvailableError(
@@ -2064,6 +2331,39 @@ class VoIPPhone:
                 )
 
             time.sleep(0.5)
+
+    def reserve_ports(
+        self,
+        ports: List[int],
+        *,
+        allow_existing: Optional[Any] = None,
+    ) -> List[int]:
+        allow_existing_set = {
+            int(port) for port in (allow_existing or set())
+        }
+        normalized = [int(port) for port in ports]
+        if len(set(normalized)) != len(normalized):
+            raise NoPortsAvailableError("Duplicate RTP ports cannot be reserved")
+
+        with self.portsLock:
+            for port in normalized:
+                if port < self.rtpPortLow or port > self.rtpPortHigh:
+                    raise NoPortsAvailableError(
+                        f"RTP port {port} is outside the configured range"
+                    )
+                if (
+                    port in self.assignedPorts
+                    and port not in allow_existing_set
+                ):
+                    raise NoPortsAvailableError(
+                        f"RTP port {port} is already assigned"
+                    )
+
+            for port in normalized:
+                if port not in self.assignedPorts:
+                    self.assignedPorts.append(port)
+
+        return normalized
 
     def release_ports(self, call: Optional[VoIPCall] = None) -> None:
         with self.portsLock:

@@ -1326,6 +1326,35 @@ def _safe_int(value: Any) -> Optional[int]:
 def _protocol_value(protocol: Any) -> str:
     return str(getattr(protocol, "value", protocol))
 
+
+def _sdp_media_spec_details(media_spec: Any) -> Tuple[str, int, Dict[Any, Any]]:
+    """Normalize legacy and structured local SDP media specifications.
+
+    Historically pyVoIP passed ``{port: {payload: codec}}`` to ``gen_invite``
+    and ``gen_answer``.  Multi-connection media sections need a little more
+    metadata so a single ``m=`` line can advertise ``port/count`` while still
+    preserving the old public shape.
+    """
+    if isinstance(media_spec, dict) and "codecs" in media_spec:
+        codecs = media_spec.get("codecs", {})
+        media_type = str(media_spec.get("media_type") or "audio")
+        port_count = _safe_int(media_spec.get("port_count")) or 1
+    else:
+        codecs = media_spec
+        media_type = "audio"
+        port_count = 1
+
+    if not isinstance(codecs, dict):
+        codecs = {}
+
+    return media_type, max(1, int(port_count)), codecs
+
+
+def _sdp_media_port_field(port: Any, port_count: int) -> str:
+    port_text = str(port)
+    return f"{port_text}/{port_count}" if port_count > 1 else port_text
+
+
 def _bandwidths_to_list(value: Any) -> List[Dict[str, Any]]:
     if value is None:
         return []
@@ -2092,13 +2121,17 @@ class SIPClient:
 
     @staticmethod
     def _summarize_media(
-        ms: Dict[int, Dict[str, "RTP.PayloadType"]]
+        ms: Dict[int, Any]
     ) -> Dict[str, Dict[str, str]]:
         summary: Dict[str, Dict[str, str]] = {}
-        for port, codecs in ms.items():
-            summary[str(port)] = {
+        for port, media_spec in ms.items():
+            media_type, port_count, codecs = _sdp_media_spec_details(media_spec)
+            media_summary = {
                 str(payload): str(codec) for payload, codec in codecs.items()
             }
+            media_summary["_media_type"] = media_type
+            media_summary["_port_count"] = str(port_count)
+            summary[str(port)] = media_summary
         return summary
 
     @staticmethod
@@ -3705,7 +3738,7 @@ class SIPClient:
         self,
         request: SIPMessage,
         sess_id: str,
-        ms: Dict[int, Dict[int, "RTP.PayloadType"]],
+        ms: Dict[int, Any],
         sendtype: "RTP.TransmitType",
     ) -> str:
         warnings.warn(
@@ -3720,7 +3753,7 @@ class SIPClient:
         self,
         request: SIPMessage,
         sess_id: str,
-        ms: Dict[int, Dict[int, "RTP.PayloadType"]],
+        ms: Dict[int, Any],
         sendtype: "RTP.TransmitType",
     ) -> str:
         # Generate body first for content length
@@ -3734,13 +3767,17 @@ class SIPClient:
         body += f"s=pyVoIP {pyVoIP.__version__}\r\n"
         body += f"c=IN {addr_type} {self.myIP}\r\n"
         body += "t=0 0\r\n"
-        for x in ms:
-            body += f"m=audio {x} RTP/AVP"
-            for m in ms[x]:
+        for x, media_spec in ms.items():
+            media_type, port_count, codecs = _sdp_media_spec_details(media_spec)
+            body += (
+                f"m={media_type} "
+                + f"{_sdp_media_port_field(x, port_count)} RTP/AVP"
+            )
+            for m in codecs:
                 body += f" {m}"
             body += "\r\n"
-            for m in ms[x]:
-                codec = ms[x][m]
+            for m in codecs:
+                codec = codecs[m]
                 body += (
                     "a=rtpmap:"
                     + pyVoIP.RTP.rtpmap_for_payload_type(m, codec)
@@ -3781,7 +3818,7 @@ class SIPClient:
         self,
         number: str,
         sess_id: str,
-        ms: Dict[int, Dict[str, "RTP.PayloadType"]],
+        ms: Dict[int, Any],
         sendtype: "RTP.TransmitType",
         branch: str,
         call_id: str,
@@ -3798,7 +3835,7 @@ class SIPClient:
         self,
         number: str,
         sess_id: str,
-        ms: Dict[int, Dict[str, "RTP.PayloadType"]],
+        ms: Dict[int, Any],
         sendtype: "RTP.TransmitType",
         branch: str,
         call_id: str,
@@ -3814,13 +3851,17 @@ class SIPClient:
         body += f"s=pyVoIP {pyVoIP.__version__}\r\n"
         body += f"c=IN {addr_type} {self.myIP}\r\n"
         body += "t=0 0\r\n"
-        for x in ms:
-            body += f"m=audio {x} RTP/AVP"
-            for m in ms[x]:
+        for x, media_spec in ms.items():
+            media_type, port_count, codecs = _sdp_media_spec_details(media_spec)
+            body += (
+                f"m={media_type} "
+                + f"{_sdp_media_port_field(x, port_count)} RTP/AVP"
+            )
+            for m in codecs:
                 body += f" {m}"
             body += "\r\n"
-            for m in ms[x]:
-                codec = ms[x][m]
+            for m in codecs:
+                codec = codecs[m]
                 body += (
                     "a=rtpmap:"
                     + pyVoIP.RTP.rtpmap_for_payload_type(m, codec)
