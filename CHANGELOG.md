@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.8.8+RFC
+
+- Standalone Telemetry module.
+
 ## 2.8.7+RFC
 
 - VoIP: Treat any SIP `2xx` INVITE response as success, not only `200 OK`.

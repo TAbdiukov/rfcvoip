@@ -1,44 +1,229 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from copy import deepcopy
 import re
 import time
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+
+import pyVoIP
 
 
 __all__ = [
-    "active_codecs",
-    "authentication_info",
-    "available_codecs",
+    "auth_snapshot",
+    "call_active_codecs",
     "call_codec_report",
+    "call_remote_supported_codecs",
+    "call_snapshot",
     "codec_availability",
     "codec_info",
     "codec_support_report",
+    "discord_report",
     "get",
     "local_codec_offer",
+    "local_codec_report",
+    "local_supported_codecs",
     "phone_codec_report",
-    "report",
+    "phone_snapshot",
+    "record_digest_auth",
     "remote_supported_codecs",
-    "sip_message_codec_report",
+    "report",
+    "rtp_client_codec_info",
+    "sip_client_snapshot",
+    "sip_message_snapshot",
     "sip_supported_codecs",
     "snapshot",
     "supported_codecs",
+    "telegram_report",
 ]
 
 
-_MISSING = object()
+_SDP_MEDIA_BANDWIDTH_LIMIT_TYPES = {"AS", "TIAS"}
+_TELEGRAM_V2_SPECIALS = r"_*[]()~`>#+-=|{}.!"
 
 
-_PATH_TOKEN_RE = re.compile(
-    r"""
-    (?P<name>[^.\[\]]+)
-    |
-    \[(?P<bracket>(?:[^\]"']+|"(?:\\.|[^"])*"|'(?:\\.|[^'])*')+)\]
-    """,
-    re.VERBOSE,
+_PROCESS_TELEMETRY: Dict[str, Any] = {
+    "auth": {
+        "last_digest": None,
+        "digest_history": [],
+    }
+}
+
+# Frontends often wrap the real pyVoIP objects.
+# Authentication telemetry is recorded on SIPClient, so auth lookups must walk
+# a small but explicit set of wrapper attributes.
+_TELEMETRY_SOURCE_ATTRS = (
+    "sip",
+    "_sip",
+    "phone",
+    "_phone",
+    "call",
+    "_call",
+    "client",
+    "_client",
+    "backend",
+    "_backend",
+    "request",
+    "remote_sip_message",
 )
 
 
-_MARKDOWN_SPECIALS_V2 = "\\_*[]()~`>#+-=|{}.!"
+def _empty_auth_snapshot(**extra: Any) -> Dict[str, Any]:
+    data: Dict[str, Any] = {
+        "last_digest": None,
+        "digest_history": [],
+        "has_authenticated": False,
+    }
+    data.update(extra)
+    return data
+
+
+def _iter_source_candidates(source: Any, *, max_depth: int = 4):
+    """Yield ``source`` and likely wrapped pyVoIP objects without cycles."""
+    seen = set()
+
+    def visit(obj: Any, depth: int):
+        if obj is None:
+            return
+        obj_id = id(obj)
+        if obj_id in seen:
+            return
+        seen.add(obj_id)
+        yield obj
+        if depth <= 0:
+            return
+
+        if isinstance(obj, dict):
+            for key in _TELEMETRY_SOURCE_ATTRS:
+                child = obj.get(key)
+                if child is not None and child is not obj:
+                    yield from visit(child, depth - 1)
+            return
+
+        for attr in _TELEMETRY_SOURCE_ATTRS:
+            try:
+                child = getattr(obj, attr)
+            except Exception:
+                continue
+            if child is not None and child is not obj:
+                yield from visit(child, depth - 1)
+
+    yield from visit(source, max_depth)
+
+
+def _normalize_auth_block(auth: Any) -> Dict[str, Any]:
+    if not isinstance(auth, dict):
+        return _empty_auth_snapshot()
+
+    data = deepcopy(auth)
+    history = data.get("digest_history")
+    if history is None:
+        history = data.get("history")
+    if history is None:
+        history = []
+    elif isinstance(history, tuple):
+        history = list(history)
+    elif not isinstance(history, list):
+        history = [history]
+    history = [dict(item) for item in history if isinstance(item, dict)]
+
+    last_digest = data.get("last_digest")
+    if last_digest is None:
+        last_digest = data.get("last") or data.get("digest")
+    if not isinstance(last_digest, dict) and history:
+        last_digest = history[-1]
+
+    data["last_digest"] = (
+        deepcopy(last_digest) if isinstance(last_digest, dict) else None
+    )
+    data["digest_history"] = deepcopy(history)
+    data["has_authenticated"] = bool(
+        data["last_digest"] or history or data.get("has_authenticated")
+    )
+    return data
+
+
+def _auth_block_from_candidate(candidate: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(candidate, dict):
+        if "last_digest" in candidate or "digest_history" in candidate:
+            return _normalize_auth_block(candidate)
+        if "auth" in candidate:
+            return _normalize_auth_block(candidate.get("auth"))
+        return None
+
+    telemetry = getattr(candidate, "_telemetry", None)
+    if isinstance(telemetry, dict):
+        auth = _normalize_auth_block(telemetry.get("auth", {}))
+        if auth.get("last_digest") or auth.get("digest_history"):
+            return auth
+
+    for attr in (
+        "auth_telemetry",
+        "_auth_telemetry",
+        "digest_auth_telemetry",
+        "_digest_auth_telemetry",
+        "last_digest_auth",
+        "_last_digest_auth",
+    ):
+        try:
+            value = getattr(candidate, attr)
+        except Exception:
+            continue
+        if value is None:
+            continue
+        if attr.startswith("last") or attr.startswith("_last"):
+            return _normalize_auth_block({"last_digest": value})
+        auth = _normalize_auth_block(value)
+        if auth.get("last_digest") or auth.get("digest_history"):
+            return auth
+
+    return None
+
+
+def _is_sip_client_like(source: Any) -> bool:
+    if source is None:
+        return False
+    if source.__class__.__name__ == "SIPClient":
+        return True
+    if isinstance(getattr(source, "_telemetry", None), dict) and (
+        hasattr(source, "signal_target")
+        or hasattr(source, "signal_transport")
+        or hasattr(source, "_build_digest_auth_header")
+    ):
+        return True
+    return False
+
+
+def _unwrap_snapshot_source(source: Any) -> Any:
+    """Prefer the real pyVoIP phone/SIP/call object inside frontend wrappers."""
+    if source is None or isinstance(source, dict):
+        return source
+
+    if (
+        (hasattr(source, "calls") and hasattr(source, "sip"))
+        or (hasattr(source, "RTPClients") and hasattr(source, "call_id"))
+        or (
+            hasattr(source, "headers")
+            and hasattr(source, "body")
+            and hasattr(source, "type")
+        )
+        or _is_sip_client_like(source)
+    ):
+        return source
+
+    candidates = list(_iter_source_candidates(source))
+    for candidate in candidates[1:]:
+        if hasattr(candidate, "calls") and hasattr(candidate, "sip"):
+            return candidate
+    for candidate in candidates[1:]:
+        if hasattr(candidate, "RTPClients") and hasattr(candidate, "call_id"):
+            return candidate
+    for candidate in candidates[1:]:
+        if _is_sip_client_like(candidate):
+            return candidate
+    for candidate in candidates[1:]:
+        if isinstance(getattr(candidate, "_telemetry", None), dict):
+            return candidate
+    return source
 
 
 def _safe_int(value: Any) -> Optional[int]:
@@ -62,6 +247,23 @@ def _bandwidths_to_list(value: Any) -> List[Dict[str, Any]]:
     return []
 
 
+def _enforceable_bandwidth_limit_bps(
+    session_bandwidth: Any = None,
+    media_bandwidth: Any = None,
+) -> Optional[int]:
+    limits: List[int] = []
+    for bandwidth in _bandwidths_to_list(session_bandwidth) + _bandwidths_to_list(
+        media_bandwidth
+    ):
+        bw_type = str(bandwidth.get("type", "")).upper()
+        if bw_type not in _SDP_MEDIA_BANDWIDTH_LIMIT_TYPES:
+            continue
+        limit = _safe_int(bandwidth.get("bits_per_second"))
+        if limit is not None:
+            limits.append(limit)
+    return min(limits) if limits else None
+
+
 def _codec_required_bandwidth_bps(codec: Any) -> Optional[int]:
     try:
         from pyVoIP.codecs import codec_required_bandwidth_bps as required_bps
@@ -71,25 +273,32 @@ def _codec_required_bandwidth_bps(codec: Any) -> Optional[int]:
         return None
 
 
+def _codec_bandwidth_supported(
+    codec: Any,
+    *,
+    session_bandwidth: Any = None,
+    media_bandwidth: Any = None,
+) -> bool:
+    required = _codec_required_bandwidth_bps(codec)
+    limit = _enforceable_bandwidth_limit_bps(
+        session_bandwidth=session_bandwidth,
+        media_bandwidth=media_bandwidth,
+    )
+    return required is None or limit is None or limit >= required
+
+
 def _bandwidth_context(
     session_bandwidth: Any = None,
     media_bandwidth: Any = None,
     codec: Any = None,
 ) -> Dict[str, Any]:
-    try:
-        from pyVoIP import SIP
-
-        limit = SIP._enforceable_bandwidth_limit_bps(
-            session_bandwidth=session_bandwidth,
-            media_bandwidth=media_bandwidth,
-        )
-    except Exception:
-        limit = None
-
     return {
         "session": _bandwidths_to_list(session_bandwidth),
         "media": _bandwidths_to_list(media_bandwidth),
-        "limit_bps": limit,
+        "limit_bps": _enforceable_bandwidth_limit_bps(
+            session_bandwidth=session_bandwidth,
+            media_bandwidth=media_bandwidth,
+        ),
         "required_bps": _codec_required_bandwidth_bps(codec),
     }
 
@@ -109,13 +318,19 @@ def _fmtp_settings(attributes: Dict[str, Any]) -> List[str]:
     return []
 
 
+def _codec_name_key(codec: Dict[str, Any]) -> str:
+    name = str(codec.get("name") or "").lower()
+    rate = codec.get("rate")
+    return f"{name}/{rate}" if rate not in (None, "") else name
+
+
 def _codec_availability_details(codec: Any) -> Dict[str, Any]:
     from pyVoIP import RTP
 
     try:
         from pyVoIP.codecs import codec_availability as _availability
 
-        return _availability(codec)
+        return dict(_availability(codec))
     except Exception as ex:
         return {
             "available": False,
@@ -142,22 +357,16 @@ def codec_availability(
 ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
     """Return codec availability telemetry.
 
-    ``codec`` may be a :class:`pyVoIP.RTP.PayloadType`, codec name, or payload
-    number. With no codec this returns every known codec implementation,
-    including optional codecs that are not currently available.
+    Pass one payload type for a single record. With no payload type, all known
+    codec implementations are returned, including optional codecs that are not
+    currently available.
     """
     if codec is not None:
-        try:
-            from pyVoIP.codecs import _normalize_payload_type
-
-            codec = _normalize_payload_type(codec)
-        except Exception:
-            pass
         return _codec_availability_details(codec)
 
     from pyVoIP.codecs import availability_report
 
-    return availability_report(refresh=refresh)
+    return list(availability_report(refresh=refresh))
 
 
 def codec_info(
@@ -171,8 +380,7 @@ def codec_info(
     priority_scores: Optional[Dict[Any, int]] = None,
     enabled_codecs: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Return a serializable RTP codec telemetry record."""
-    import pyVoIP
+    """Return a serializable telemetry record for one RTP codec."""
     from pyVoIP import RTP
 
     availability = _codec_availability_details(codec)
@@ -221,8 +429,8 @@ def codec_info(
             codec,
             priority_scores=priority_scores,
         ),
-        "rate": getattr(codec, "rate", None),
-        "channels": getattr(codec, "channel", None),
+        "rate": getattr(codec, "rate", 0),
+        "channels": getattr(codec, "channel", 0),
         "preferred_source_sample_rate": availability.get(
             "preferred_source_sample_rate"
         ),
@@ -236,6 +444,7 @@ def codec_info(
         "availability_reason": availability.get("reason"),
         "library": availability.get("library"),
         "default_payload_type": preferred_payload_type,
+        "required_bandwidth_bps": availability.get("required_bandwidth_bps"),
         "rtpmap": (
             RTP.rtpmap_for_payload_type(payload_type, codec)
             if payload_type is not None
@@ -261,13 +470,13 @@ def _prioritize_payload_types(
     return [payload_type for _idx, payload_type in indexed]
 
 
-def supported_codecs(
+def local_supported_codecs(
     include_unavailable: bool = False,
+    *,
     priority_scores: Optional[Dict[Any, int]] = None,
     enabled_codecs: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Return local codec telemetry for this PyVoIP build/configuration."""
-    import pyVoIP
     from pyVoIP import RTP
 
     if include_unavailable:
@@ -293,6 +502,20 @@ def supported_codecs(
             priority_scores=priority_scores,
         )
     ]
+
+
+def supported_codecs(
+    include_unavailable: bool = False,
+    *,
+    priority_scores: Optional[Dict[Any, int]] = None,
+    enabled_codecs: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Alias for local_supported_codecs()."""
+    return local_supported_codecs(
+        include_unavailable=include_unavailable,
+        priority_scores=priority_scores,
+        enabled_codecs=enabled_codecs,
+    )
 
 
 def _unknown_codec_info(
@@ -344,8 +567,7 @@ def _codec_info_from_media(
     *,
     session_bandwidth: Any = None,
 ) -> Dict[str, Any]:
-    import pyVoIP
-    from pyVoIP import RTP, SIP
+    from pyVoIP import RTP
 
     media_bandwidth = _bandwidths_to_list(media.get("bandwidth", []))
     session_bandwidth = _bandwidths_to_list(session_bandwidth)
@@ -371,7 +593,11 @@ def _codec_info_from_media(
         rate = _safe_int(rtpmap.get("frequency"))
         channels = _safe_int(rtpmap.get("encoding"))
         try:
-            codec = RTP.payload_type_from_name(name, rate=rate, channels=channels)
+            codec = RTP.payload_type_from_name(
+                name,
+                rate=rate,
+                channels=channels,
+            )
         except ValueError:
             codec = None
 
@@ -398,7 +624,7 @@ def _codec_info_from_media(
     codec_supported = codec in getattr(pyVoIP, "RTPCompatibleCodecs", [])
     protocol_supported = _media_protocol_supported(media)
     fmtp_supported = RTP.codec_fmtp_supported(codec, fmtp)
-    bandwidth_supported = SIP.codec_bandwidth_supported(
+    bandwidth_supported = _codec_bandwidth_supported(
         codec,
         session_bandwidth=session_bandwidth,
         media_bandwidth=media_bandwidth,
@@ -439,9 +665,10 @@ def sip_supported_codecs(
     media_type: Optional[str] = "audio",
 ) -> List[Dict[str, Any]]:
     """Return codecs advertised by a parsed SIP message's SDP body."""
-    session_bandwidth = _bandwidths_to_list(getattr(message, "body", {}).get("b", []))
-    codecs = []
-    for media in getattr(message, "body", {}).get("m", []):
+    body = getattr(message, "body", {}) or {}
+    session_bandwidth = _bandwidths_to_list(body.get("b", []))
+    codecs: List[Dict[str, Any]] = []
+    for media in body.get("m", []):
         if media_type is not None and media.get("type") != media_type:
             continue
         for method in media.get("methods", []):
@@ -455,26 +682,20 @@ def sip_supported_codecs(
     return codecs
 
 
-def _codec_name_key(codec: Dict[str, Any]) -> str:
-    name = str(codec.get("name") or "").lower()
-    rate = codec.get("rate")
-    return f"{name}/{rate}" if rate not in (None, "") else name
-
-
-def sip_message_codec_report(
+def codec_support_report(
     message: Any,
     media_type: Optional[str] = "audio",
 ) -> Dict[str, Any]:
-    """Compare a SIP message's SDP codecs against local PyVoIP support."""
+    """Compare a SIP message's SDP codecs against PyVoIP support."""
     remote = sip_supported_codecs(message, media_type=media_type)
-    pyvoip_codecs = supported_codecs()
+    pyvoip_codecs = local_supported_codecs()
     compatible = [codec for codec in remote if codec.get("supported")]
     unsupported = [codec for codec in remote if not codec.get("supported")]
     remote_names = {_codec_name_key(codec) for codec in remote}
     pyvoip_missing_from_remote = [
         codec for codec in pyvoip_codecs if _codec_name_key(codec) not in remote_names
     ]
-    remote_has_sdp = bool(getattr(message, "body", {}).get("m"))
+    remote_has_sdp = bool((getattr(message, "body", {}) or {}).get("m"))
     transmittable_audio = [
         codec
         for codec in compatible
@@ -496,15 +717,18 @@ def sip_message_codec_report(
     }
 
 
+def _phone_priority_scores(phone: Optional[Any] = None) -> Dict[Any, int]:
+    return dict(getattr(phone, "codec_priorities", {}) or {})
+
+
 def _prioritized_enabled_codecs(phone: Optional[Any] = None) -> List[Any]:
-    import pyVoIP
     from pyVoIP import RTP
 
-    priorities = dict(getattr(phone, "codec_priorities", {}) or {})
+    priority_scores = _phone_priority_scores(phone)
     indexed = list(enumerate(getattr(pyVoIP, "RTPCompatibleCodecs", [])))
     indexed.sort(
         key=lambda item: (
-            -RTP.codec_priority_score(item[1], priority_scores=priorities),
+            -RTP.codec_priority_score(item[1], priority_scores=priority_scores),
             item[0],
         )
     )
@@ -524,7 +748,9 @@ def _add_codec_to_offer(offer_codecs: Dict[int, Any], codec: Any) -> None:
     seen_payload_types = set()
     while payload_type in offer_codecs:
         if payload_type in seen_payload_types:
-            raise RTP.RTPParseError("No RTP payload numbers are available for SDP offer.")
+            raise RTP.RTPParseError(
+                "No RTP payload numbers are available for SDP offer."
+            )
         seen_payload_types.add(payload_type)
         payload_type += 1
         if payload_type > 127:
@@ -534,12 +760,13 @@ def _add_codec_to_offer(offer_codecs: Dict[int, Any], codec: Any) -> None:
 
 
 def local_codec_offer(phone: Optional[Any] = None) -> List[Dict[str, Any]]:
-    """Return the audio codecs that a phone/global PyVoIP config would offer."""
-    import pyVoIP
+    """Return the audio codecs a phone would offer in an INVITE."""
     from pyVoIP import RTP
 
-    priority_scores = dict(getattr(phone, "codec_priorities", {}) or {})
     offer_codecs: Dict[int, Any] = {}
+    priority_scores = _phone_priority_scores(phone)
+    audio_sample_rate = getattr(phone, "audio_sample_rate", None)
+
     for codec in _prioritized_enabled_codecs(phone):
         if RTP.is_transmittable_audio_codec(codec):
             _add_codec_to_offer(offer_codecs, codec)
@@ -561,7 +788,7 @@ def local_codec_offer(phone: Optional[Any] = None) -> List[Dict[str, Any]]:
         info["protocol_supported"] = True
         info["bandwidth_supported"] = True
         info["public_audio_sample_rate"] = (
-            getattr(phone, "audio_sample_rate", None)
+            audio_sample_rate
             or info.get("preferred_source_sample_rate")
             or info.get("rate")
         )
@@ -574,50 +801,42 @@ def local_codec_offer(phone: Optional[Any] = None) -> List[Dict[str, Any]]:
     return offer
 
 
-def _local_codec_report(phone: Optional[Any] = None) -> Dict[str, Any]:
-    local_codecs = supported_codecs(priority_scores=getattr(phone, "codec_priorities", None))
-    local_offer = local_codec_offer(phone)
+def local_codec_report(phone: Optional[Any] = None) -> Dict[str, Any]:
+    """Return local codec telemetry and the INVITE offer for a phone."""
+    local_codecs = local_supported_codecs(
+        priority_scores=_phone_priority_scores(phone),
+    )
+    offer = local_codec_offer(phone)
     local_transmittable_audio = [
         codec
-        for codec in local_offer
+        for codec in offer
         if codec.get("supported") and codec.get("can_transmit_audio")
     ]
-    audio_format = (
-        _phone_audio_format(phone) if phone is not None else _default_audio_format()
-    )
+    audio_format = None
+    if phone is not None:
+        audio_format_fn = getattr(phone, "audio_format", None)
+        if callable(audio_format_fn):
+            audio_format = audio_format_fn()
     return {
         "local": local_codecs,
         "pyvoip": local_codecs,
-        "local_offer": local_offer,
+        "local_offer": offer,
         "local_transmittable_audio": local_transmittable_audio,
         "local_can_start_call": bool(local_transmittable_audio),
         "audio_format": audio_format,
     }
 
 
-def _default_audio_format() -> Dict[str, Any]:
-    return {
-        "sample_rate": None,
-        "sample_rate_mode": "auto",
-        "fallback_sample_rate": 8000,
-        "sample_width": 1,
-        "channels": 1,
-        "encoding": "unsigned-8bit-linear",
-    }
-
-
-def _phone_audio_format(phone: Any) -> Dict[str, Any]:
-    sample_rate = getattr(phone, "audio_sample_rate", None)
-    sample_width = getattr(phone, "audio_sample_width", 1)
-    channels = getattr(phone, "audio_channels", 1)
-    return {
-        "sample_rate": sample_rate,
-        "sample_rate_mode": "auto" if sample_rate is None else "fixed",
-        "fallback_sample_rate": sample_rate or 8000,
-        "sample_width": sample_width,
-        "channels": channels,
-        "encoding": "unsigned-8bit-linear",
-    }
+def remote_supported_codecs(
+    phone: Any,
+    target: str,
+    media_type: Optional[str] = "audio",
+    *,
+    timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Probe a remote target with SIP OPTIONS and return SDP codec telemetry."""
+    response = phone.sip.options(target, timeout=timeout)
+    return sip_supported_codecs(response, media_type=media_type)
 
 
 def phone_codec_report(
@@ -627,10 +846,10 @@ def phone_codec_report(
     *,
     timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Return local and, when requested, remote pre-call codec telemetry."""
-    report_data = _local_codec_report(phone)
+    """Return local codec telemetry and optionally remote OPTIONS telemetry."""
+    codec_report = local_codec_report(phone)
     if target is None:
-        report_data.update(
+        codec_report.update(
             {
                 "target": None,
                 "target_uri": None,
@@ -641,21 +860,21 @@ def phone_codec_report(
                 "unsupported": [],
                 "good": [],
                 "missing": [],
-                "pyvoip_missing_from_remote": report_data["local"],
+                "pyvoip_missing_from_remote": codec_report["local"],
                 "remote_has_sdp": False,
                 "transmittable_audio": [],
                 "call_compatible": [],
-                "can_start_call": report_data["local_can_start_call"],
+                "can_start_call": codec_report["local_can_start_call"],
             }
         )
-        return report_data
+        return codec_report
 
     target_uri = phone.sip._normalize_request_target(target)
     response = phone.sip.options(target_uri, timeout=timeout)
-    remote_report = sip_message_codec_report(response, media_type=media_type)
-    report_data.update(remote_report)
+    remote_report = codec_support_report(response, media_type=media_type)
+    codec_report.update(remote_report)
     status_code = int(response.status)
-    report_data.update(
+    codec_report.update(
         {
             "target": target,
             "target_uri": target_uri,
@@ -668,71 +887,70 @@ def phone_codec_report(
             },
         }
     )
-    if not report_data.get("remote_has_sdp"):
-        report_data["can_start_call"] = None
-    return report_data
+    if not codec_report.get("remote_has_sdp"):
+        codec_report["can_start_call"] = None
+    return codec_report
 
 
-def remote_supported_codecs(
-    phone: Any,
-    target: str,
-    media_type: Optional[str] = "audio",
-    *,
-    timeout: Optional[float] = None,
-) -> List[Dict[str, Any]]:
-    response = phone.sip.options(target, timeout=timeout)
-    return sip_supported_codecs(response, media_type=media_type)
+def rtp_client_codec_info(client: Any) -> Dict[str, Any]:
+    """Return active codec telemetry for one RTPClient-like object."""
+    selected = codec_info(
+        client.preference,
+        payload_type=client.preference_payload_type,
+        media_type="audio",
+        source="active-call",
+        supported=True,
+        priority_scores=getattr(client, "codec_priority_scores", None),
+        enabled_codecs=getattr(client, "enabled_codecs", None),
+    )
+    selected["rtp"] = {
+        "local": {"ip": client.inIP, "port": client.inPort},
+        "remote": {"ip": client.outIP, "port": client.outPort},
+        "transmit_type": str(client.sendrecv),
+    }
+    selected["public_audio_format"] = {
+        "sample_rate": client.audio_sample_rate,
+        "sample_width": client.audio_sample_width,
+        "channels": client.audio_channels,
+        "encoding": "unsigned-8bit-linear",
+    }
+    return selected
 
 
-def available_codecs(
-    phone: Optional[Any] = None,
-    target: Optional[str] = None,
-    media_type: Optional[str] = "audio",
-    *,
-    timeout: Optional[float] = None,
-) -> Dict[str, Any]:
-    if phone is None:
-        return _local_codec_report(None)
-    return phone_codec_report(phone, target=target, media_type=media_type, timeout=timeout)
+def _rtp_clients_snapshot(call: Any) -> List[Any]:
+    getter = getattr(call, "_rtp_clients_snapshot", None)
+    if callable(getter):
+        return list(getter())
+    return list(getattr(call, "RTPClients", []) or [])
 
 
-def active_codecs(call: Any) -> List[Dict[str, Any]]:
-    """Return codecs currently selected by a call's RTP client(s)."""
+def call_active_codecs(call: Any) -> List[Dict[str, Any]]:
+    """Return codecs selected by a call's RTP clients."""
     active = []
-    for client in list(getattr(call, "RTPClients", []) or []):
-        preference = getattr(client, "preference", None)
-        if preference is None:
-            continue
-        info = codec_info(
-            preference,
-            payload_type=getattr(client, "preference_payload_type", None),
-            media_type="audio",
-            source="active-call",
-            supported=True,
-            priority_scores=getattr(client, "codec_priority_scores", None),
-            enabled_codecs=getattr(client, "enabled_codecs", None),
-        )
-        info["rtp"] = {
-            "local": {"ip": getattr(client, "inIP", None), "port": getattr(client, "inPort", None)},
-            "remote": {"ip": getattr(client, "outIP", None), "port": getattr(client, "outPort", None)},
-            "transmit_type": str(getattr(client, "sendrecv", "")),
-        }
-        info["public_audio_format"] = {
-            "sample_rate": getattr(client, "audio_sample_rate", None),
-            "sample_width": getattr(client, "audio_sample_width", 1),
-            "channels": getattr(client, "audio_channels", 1),
-            "encoding": "unsigned-8bit-linear",
-        }
-        active.append(info)
+    for client in _rtp_clients_snapshot(call):
+        try:
+            active.append(rtp_client_codec_info(client))
+        except Exception as ex:
+            active.append({"supported": False, "error": str(ex), "source": "active-call"})
     return active
 
 
+def call_remote_supported_codecs(call: Any) -> List[Dict[str, Any]]:
+    """Return codecs advertised by the remote endpoint for a call."""
+    remote_sip_message = getattr(call, "remote_sip_message", None)
+    if remote_sip_message is None:
+        return []
+    return sip_supported_codecs(remote_sip_message)
+
+
 def call_codec_report(call: Any) -> Dict[str, Any]:
-    """Return codec telemetry for an active or pending VoIPCall."""
-    active = active_codecs(call)
-    remote_message = getattr(call, "remote_sip_message", None)
-    if remote_message is None:
-        pyvoip_codecs = supported_codecs(priority_scores=getattr(getattr(call, "phone", None), "codec_priorities", None))
+    """Return codec telemetry for a VoIPCall-like object."""
+    active_codecs = call_active_codecs(call)
+    remote_sip_message = getattr(call, "remote_sip_message", None)
+    if remote_sip_message is None:
+        pyvoip_codecs = local_supported_codecs(
+            priority_scores=_phone_priority_scores(getattr(call, "phone", None))
+        )
         return {
             "remote": [],
             "pyvoip": pyvoip_codecs,
@@ -746,312 +964,601 @@ def call_codec_report(call: Any) -> Dict[str, Any]:
             "transmittable_audio": [],
             "call_compatible": [],
             "can_start_call": None,
-            "active_codecs": active,
+            "active_codecs": active_codecs,
         }
-    report_data = sip_message_codec_report(remote_message)
-    report_data["active_codecs"] = active
-    return report_data
+    codec_report = codec_support_report(remote_sip_message)
+    codec_report["active_codecs"] = active_codecs
+    return codec_report
 
 
-def codec_support_report(
-    subject: Optional[Any] = None,
-    media_type: Optional[str] = "audio",
-    *,
-    target: Optional[str] = None,
-    timeout: Optional[float] = None,
-) -> Dict[str, Any]:
-    """Dispatch to the right codec telemetry report for a message, call, or phone."""
-    if subject is None:
-        return available_codecs()
-    if hasattr(subject, "body") and hasattr(subject, "headers"):
-        return sip_message_codec_report(subject, media_type=media_type)
-    if hasattr(subject, "RTPClients") and hasattr(subject, "call_id"):
-        return call_codec_report(subject)
-    if hasattr(subject, "sip") and hasattr(subject, "_default_audio_offer"):
-        return phone_codec_report(subject, target=target, media_type=media_type, timeout=timeout)
-    return available_codecs(subject, target=target, media_type=media_type, timeout=timeout)
+def _normalize_digest_algorithm_for_display(value: Any) -> str:
+    try:
+        from pyVoIP.SIPAuth import normalize_digest_algorithm
+
+        return normalize_digest_algorithm(value)
+    except Exception:
+        return str(value or "MD5")
 
 
-def authentication_info(subject: Any) -> Dict[str, Any]:
-    """Return digest-auth telemetry for a SIPMessage, SIPClient, phone, or call."""
-    from pyVoIP.SIPAuth import normalize_digest_algorithm
-
-    telemetry = getattr(subject, "telemetry", None)
-    if isinstance(telemetry, dict):
-        auth = telemetry.get("auth")
-        if isinstance(auth, dict):
-            last_digest = auth.get("last_digest") or {}
-            return {
-                "source": "sip-client",
-                "last_digest": dict(last_digest) if isinstance(last_digest, dict) else last_digest,
-                "history": list(auth.get("history", [])),
-                "algorithm": (
-                    last_digest.get("algorithm")
-                    if isinstance(last_digest, dict)
-                    else None
-                ),
-                "qop": last_digest.get("qop") if isinstance(last_digest, dict) else None,
-                "realm": last_digest.get("realm") if isinstance(last_digest, dict) else None,
-                "header": last_digest.get("header") if isinstance(last_digest, dict) else None,
-                "method": last_digest.get("method") if isinstance(last_digest, dict) else None,
-            }
-
-    if hasattr(subject, "sip"):
-        return authentication_info(subject.sip)
-    if hasattr(subject, "phone"):
-        return authentication_info(subject.phone)
-
-    headers = getattr(subject, "headers", {})
-    params = dict(getattr(subject, "authentication", {}) or {})
-    header = getattr(subject, "authentication_header", None)
-    algorithm = params.get("algorithm")
-    if algorithm:
-        algorithm = normalize_digest_algorithm(algorithm)
-
-    challenges: Dict[str, List[Dict[str, Any]]] = {}
-    raw_challenges = getattr(subject, "authentication_challenges", {})
+def _message_auth_challenges(message: Any) -> List[Dict[str, Any]]:
+    challenges: List[Dict[str, Any]] = []
+    raw_challenges = getattr(message, "authentication_challenges", {}) or {}
     if isinstance(raw_challenges, dict):
-        for challenge_header, entries in raw_challenges.items():
-            normalized_entries = []
-            for entry in entries if isinstance(entries, list) else [entries]:
-                if not isinstance(entry, dict):
+        for header, items in raw_challenges.items():
+            if isinstance(items, dict):
+                iterable = [items]
+            else:
+                iterable = items or []
+            for item in iterable:
+                if not isinstance(item, dict):
                     continue
-                normalized = dict(entry)
-                if normalized.get("algorithm"):
-                    normalized["algorithm"] = normalize_digest_algorithm(normalized["algorithm"])
-                normalized_entries.append(normalized)
-            challenges[str(challenge_header)] = normalized_entries
+                challenges.append(
+                    {
+                        "header": header,
+                        "algorithm": _normalize_digest_algorithm_for_display(
+                            item.get("algorithm")
+                        ),
+                        "realm": item.get("realm"),
+                        "qop": item.get("qop"),
+                        "nonce_present": bool(item.get("nonce")),
+                        "opaque_present": bool(item.get("opaque")),
+                    }
+                )
+    return challenges
+
+
+def _digest_params_from_header_value(value: Any) -> Dict[str, str]:
+    if isinstance(value, dict):
+        return {
+            str(key).lower(): str(val)
+            for key, val in value.items()
+            if val is not None
+        }
+    try:
+        from pyVoIP.SIPAuth import parse_digest_params
+
+        return parse_digest_params(str(value or ""))
+    except Exception:
+        return {}
+
+
+def _message_authorization_record(message: Any) -> Optional[Dict[str, Any]]:
+    headers = getattr(message, "headers", {}) or {}
+    if not isinstance(headers, dict):
+        headers = {}
+
+    candidates: List[Tuple[str, Any]] = []
+    for header in ("Authorization", "Proxy-Authorization"):
+        value = headers.get(header)
+        if value is None:
+            continue
+        if isinstance(value, list):
+            candidates.extend((header, item) for item in value)
+        else:
+            candidates.append((header, value))
+
+    if not candidates and getattr(message, "authentication", None):
+        header = getattr(message, "authentication_header", None) or "Authorization"
+        candidates.append((str(header), getattr(message, "authentication")))
+
+    for header, value in candidates:
+        params = _digest_params_from_header_value(value)
+        if not params:
+            continue
+        if not any(
+            key in params
+            for key in ("response", "uri", "username", "qop", "cnonce", "nc")
+        ):
+            continue
+
+        cseq = headers.get("CSeq", {})
+        cseq_method = cseq.get("method") if isinstance(cseq, dict) else None
+        return {
+            "algorithm": _normalize_digest_algorithm_for_display(
+                params.get("algorithm")
+            ),
+            "qop": params.get("qop"),
+            "header": header,
+            "challenge_header": (
+                "Proxy-Authenticate"
+                if header == "Proxy-Authorization"
+                else "WWW-Authenticate"
+            ),
+            "method": cseq_method or getattr(message, "method", None),
+            "uri": params.get("uri") or getattr(message, "uri", None),
+            "realm": params.get("realm"),
+            "username": params.get("username"),
+            "nonce_present": bool(params.get("nonce")),
+            "opaque_present": bool(params.get("opaque")),
+            "body_hashing": str(params.get("qop") or "").lower() == "auth-int",
+            "source": "sip-message-authorization",
+            "recorded_at": None,
+        }
+
+    return None
+
+
+def _message_auth_snapshot(message: Any) -> Dict[str, Any]:
+    record = _message_authorization_record(message)
+    return _empty_auth_snapshot(
+        last_digest=record,
+        digest_history=[record] if record else [],
+        has_authenticated=bool(record),
+        message_authentication_header=getattr(message, "authentication_header", None),
+        challenges=_message_auth_challenges(message),
+    )
+
+
+def _store_auth_record(telemetry: Dict[str, Any], record: Dict[str, Any]) -> None:
+    auth = telemetry.setdefault("auth", {})
+    if not isinstance(auth, dict):
+        auth = {}
+        telemetry["auth"] = auth
+    auth["last_digest"] = dict(record)
+    auth["has_authenticated"] = True
+    auth["updated_at"] = record.get("recorded_at", time.time())
+    history = auth.setdefault("digest_history", [])
+    if not isinstance(history, list):
+        history = []
+        auth["digest_history"] = history
+    history.append(dict(record))
+    if len(history) > 20:
+        del history[:-20]
+
+
+def record_digest_auth(source: Any, record: Dict[str, Any]) -> Dict[str, Any]:
+    """Record non-secret metadata about the selected SIP digest algorithm."""
+    if not isinstance(record, dict):
+        record = {"value": record}
+    record = deepcopy(record)
+    record.setdefault("recorded_at", time.time())
+    record.setdefault("source", "sip-digest-auth")
+
+    stored = False
+    for candidate in _iter_source_candidates(source):
+        if candidate is None or isinstance(candidate, dict):
+            continue
+        telemetry = getattr(candidate, "_telemetry", None)
+        if not isinstance(telemetry, dict):
+            if not _is_sip_client_like(candidate):
+                continue
+            telemetry = {}
+            try:
+                setattr(candidate, "_telemetry", telemetry)
+            except Exception:
+                continue
+        _store_auth_record(telemetry, record)
+        stored = True
+        break
+
+    _store_auth_record(_PROCESS_TELEMETRY, record)
+    if not stored and isinstance(source, dict):
+        _store_auth_record(source, record)
+    return record
+
+
+def auth_snapshot(source: Any) -> Dict[str, Any]:
+    """Return SIP authentication telemetry for a phone, SIP client, message, or wrapper."""
+    fallback: Optional[Dict[str, Any]] = None
+
+    for candidate in _iter_source_candidates(source):
+        auth = _auth_block_from_candidate(candidate)
+        if auth is not None:
+            if auth.get("last_digest"):
+                return auth
+            if fallback is None and auth.get("digest_history"):
+                fallback = auth
+
+        if (
+            hasattr(candidate, "authentication")
+            or hasattr(candidate, "authentication_challenges")
+            or isinstance(getattr(candidate, "headers", None), dict)
+        ):
+            auth = _message_auth_snapshot(candidate)
+            if auth.get("last_digest"):
+                return auth
+            if fallback is None and auth.get("challenges"):
+                fallback = auth
+
+    process_auth = _normalize_auth_block(_PROCESS_TELEMETRY.get("auth", {}))
+    if process_auth.get("last_digest"):
+        process_auth["source"] = "process-fallback"
+        return process_auth
+
+    return fallback or _empty_auth_snapshot()
+
+
+def sip_client_snapshot(client: Any) -> Dict[str, Any]:
+    """Return signaling and auth telemetry for a SIPClient-like object."""
+    target = None
+    transport = None
+    try:
+        signal_host, signal_port = client.signal_target()
+        target = {"host": signal_host, "port": signal_port}
+    except Exception:
+        pass
+    try:
+        transport = str(client.signal_transport().value)
+    except Exception:
+        transport = str(getattr(client, "requested_transport", "") or "") or None
 
     return {
-        "source": "sip-message",
-        "header": header,
-        "algorithm": algorithm,
-        "qop": params.get("qop"),
-        "realm": params.get("realm"),
-        "username": params.get("username"),
-        "uri": params.get("uri"),
-        "has_response": bool(params.get("response")),
-        "has_nonce": bool(params.get("nonce")),
-        "params": params,
-        "challenges": challenges,
-        "authorization_present": bool(headers.get("Authorization")),
-        "proxy_authorization_present": bool(headers.get("Proxy-Authorization")),
+        "type": "sip-client",
+        "running": bool(getattr(client, "NSD", False)),
+        "server": getattr(client, "server", None),
+        "server_host": getattr(client, "server_host", None),
+        "server_port": getattr(client, "server_port", None),
+        "proxy": getattr(client, "proxy", None),
+        "proxy_port": getattr(client, "proxy_port", None),
+        "target": target,
+        "transport": transport,
+        "my_ip": getattr(client, "myIP", None),
+        "my_port": getattr(client, "myPort", None),
+        "auth": auth_snapshot(client),
     }
 
 
-def _parse_path(path: Union[str, Sequence[Any]]) -> List[Any]:
-    if isinstance(path, (list, tuple)):
-        return list(path)
-
-    path_text = str(path or "")
-    tokens: List[Any] = []
-    position = 0
-    while position < len(path_text):
-        if path_text[position] == ".":
-            position += 1
-            continue
-        match = _PATH_TOKEN_RE.match(path_text, position)
-        if match is None:
-            return []
-        if match.group("name") is not None:
-            tokens.append(match.group("name"))
-        else:
-            raw = match.group("bracket").strip()
-            if (raw.startswith('"') and raw.endswith('"')) or (
-                raw.startswith("'") and raw.endswith("'")
-            ):
-                raw = raw[1:-1].encode("utf-8").decode("unicode_escape")
-            else:
-                maybe_int = _safe_int(raw)
-                raw = maybe_int if maybe_int is not None else raw
-            tokens.append(raw)
-        position = match.end()
-    return tokens
-
-
-def _resolve_one(current: Any, token: Any) -> Any:
-    if current is _MISSING:
-        return _MISSING
-    if isinstance(current, dict):
-        return current.get(token, _MISSING)
-    if isinstance(current, (list, tuple)) and isinstance(token, int):
-        if -len(current) <= token < len(current):
-            return current[token]
-        return _MISSING
-    if isinstance(token, int):
+def sip_message_snapshot(
+    message: Any,
+    media_type: Optional[str] = "audio",
+) -> Dict[str, Any]:
+    """Return concise telemetry for one parsed SIPMessage-like object."""
+    cseq = getattr(message, "headers", {}).get("CSeq", {})
+    cseq_method = cseq.get("method") if isinstance(cseq, dict) else None
+    cseq_check = cseq.get("check") if isinstance(cseq, dict) else None
+    status = getattr(message, "status", None)
+    code = None
+    phrase = None
+    if status is not None:
         try:
-            return current[token]
+            code = int(status)
         except Exception:
-            return _MISSING
-    if hasattr(current, str(token)):
-        return getattr(current, str(token))
-    try:
-        return current[token]
-    except Exception:
-        return _MISSING
+            code = None
+        phrase = getattr(status, "phrase", None)
+
+    codec_report = codec_support_report(message, media_type=media_type)
+    return {
+        "type": "sip-message",
+        "message_type": str(getattr(message, "type", "")),
+        "method": getattr(message, "method", None),
+        "status_code": code,
+        "status_phrase": phrase,
+        "call_id": getattr(message, "headers", {}).get("Call-ID"),
+        "cseq": {"check": cseq_check, "method": cseq_method},
+        "content_type": getattr(message, "headers", {}).get("Content-Type"),
+        "has_sdp": bool((getattr(message, "body", {}) or {}).get("m")),
+        "auth": auth_snapshot(message),
+        "codecs": codec_report,
+    }
 
 
-def get(source: Any, path: Union[str, Sequence[Any]], default: Any = None) -> Any:
-    """Return one telemetry value by dotted/bracket path without side effects.
+def call_snapshot(call: Any) -> Dict[str, Any]:
+    """Return telemetry for a VoIPCall-like object."""
+    state = getattr(call, "state", None)
+    state_value = getattr(state, "value", str(state) if state is not None else None)
+    assigned_ports = getattr(call, "assignedPorts", {})
+    if hasattr(assigned_ports, "keys"):
+        ports = list(assigned_ports.keys())
+    else:
+        ports = list(assigned_ports or [])
 
-    Examples: ``Telemetry.get(phone, "sip.telemetry.auth.last_digest.algorithm")``
-    or ``Telemetry.get(call, "RTPClients[0].preference")``.
+    return {
+        "type": "call",
+        "call_id": getattr(call, "call_id", None),
+        "state": state_value,
+        "session_id": getattr(call, "session_id", None),
+        "sendmode": str(getattr(call, "sendmode", "")),
+        "local_ports": ports,
+        "codecs": call_codec_report(call),
+        "auth": auth_snapshot(getattr(call, "sip", None)),
+    }
+
+
+def phone_snapshot(phone: Any, media_type: Optional[str] = "audio") -> Dict[str, Any]:
+    """Return telemetry for a VoIPPhone-like object."""
+    status = getattr(phone, "_status", None)
+    status_value = getattr(status, "value", str(status) if status is not None else None)
+    calls_getter = getattr(phone, "_calls_snapshot", None)
+    calls = calls_getter() if callable(calls_getter) else list(getattr(phone, "calls", {}).values())
+    sip = getattr(phone, "sip", None)
+
+    return {
+        "type": "phone",
+        "package": {"name": "pyVoIP", "version": getattr(pyVoIP, "__version__", None)},
+        "generated_at": time.time(),
+        "phone": {
+            "status": status_value,
+            "running": bool(getattr(phone, "NSD", False)),
+            "server": getattr(phone, "server", None),
+            "port": getattr(phone, "port", None),
+            "my_ip": getattr(phone, "myIP", None),
+            "username": getattr(phone, "username", None),
+            "proxy": getattr(phone, "proxy", None),
+            "proxy_port": getattr(phone, "proxyPort", None),
+            "transport": getattr(phone, "transport", None),
+            "rtp_port_low": getattr(phone, "rtpPortLow", None),
+            "rtp_port_high": getattr(phone, "rtpPortHigh", None),
+            "assigned_ports": list(getattr(phone, "assignedPorts", []) or []),
+            "audio_format": phone.audio_format() if callable(getattr(phone, "audio_format", None)) else None,
+        },
+        "sip": sip_client_snapshot(sip) if sip is not None else None,
+        "auth": auth_snapshot(sip) if sip is not None else auth_snapshot(phone),
+        "codecs": phone_codec_report(phone, media_type=media_type),
+        "calls": [call_snapshot(call) for call in calls],
+    }
+
+
+def snapshot(source: Optional[Any] = None, *, media_type: Optional[str] = "audio") -> Dict[str, Any]:
+    """Return a serializable telemetry snapshot for a phone, call, SIP object, or package."""
+    if isinstance(source, dict):
+        return deepcopy(source)
+
+    source = _unwrap_snapshot_source(source)
+
+    if source is None:
+        return {
+            "type": "package",
+            "package": {"name": "pyVoIP", "version": getattr(pyVoIP, "__version__", None)},
+            "generated_at": time.time(),
+            "auth": auth_snapshot(None),
+            "codecs": local_codec_report(None),
+        }
+
+    if hasattr(source, "calls") and hasattr(source, "sip"):
+        return phone_snapshot(source, media_type=media_type)
+    if hasattr(source, "RTPClients") and hasattr(source, "call_id"):
+        return call_snapshot(source)
+    if hasattr(source, "headers") and hasattr(source, "body") and hasattr(source, "type"):
+        return sip_message_snapshot(source, media_type=media_type)
+    if _is_sip_client_like(source):
+        snap = sip_client_snapshot(source)
+        return {
+            "type": "sip-client",
+            "package": {"name": "pyVoIP", "version": getattr(pyVoIP, "__version__", None)},
+            "generated_at": time.time(),
+            "sip": snap,
+            "auth": snap.get("auth"),
+        }
+    if source.__class__.__name__ == "RTPClient":
+        return {
+            "type": "rtp-client",
+            "package": {"name": "pyVoIP", "version": getattr(pyVoIP, "__version__", None)},
+            "generated_at": time.time(),
+            "codecs": {"active_codecs": [rtp_client_codec_info(source)]},
+        }
+
+    return {
+        "type": "object",
+        "package": {"name": "pyVoIP", "version": getattr(pyVoIP, "__version__", None)},
+        "generated_at": time.time(),
+        "object_type": source.__class__.__name__,
+        "auth": auth_snapshot(source),
+    }
+
+
+_PATH_TOKEN_RE = re.compile(r"([^.[\]]+)|\[(\d+)\]")
+
+
+def _path_tokens(path: Union[str, Iterable[Any]]) -> List[Any]:
+    if isinstance(path, str):
+        tokens: List[Any] = []
+        for match in _PATH_TOKEN_RE.finditer(path):
+            key, index = match.groups()
+            tokens.append(int(index) if index is not None else key)
+        return tokens
+    return list(path)
+
+
+def get(
+    source: Any,
+    path: Union[str, Iterable[Any]],
+    default: Any = None,
+    *,
+    media_type: Optional[str] = "audio",
+) -> Any:
+    """Surgically read a telemetry value using dot/list path notation.
+
+    Example: ``get(phone, "auth.last_digest.algorithm")``. Authentication
+    paths are resolved through :func:`auth_snapshot`, so callers may pass a
+    pyVoIP object or a frontend wrapper that owns ``_phone``/``_call``.
     """
-    current = source
-    for token in _parse_path(path):
-        current = _resolve_one(current, token)
-        if current is _MISSING:
+    tokens = _path_tokens(path)
+    if tokens and tokens[0] == "auth" and not isinstance(source, dict):
+        current: Any = {"auth": auth_snapshot(source)}
+    elif len(tokens) >= 2 and tokens[0] == "sip" and tokens[1] == "auth" and not isinstance(source, dict):
+        current = {"sip": {"auth": auth_snapshot(source)}}
+    else:
+        current = source if isinstance(source, dict) else snapshot(source, media_type=media_type)
+
+    for token in tokens:
+        try:
+            if isinstance(current, dict):
+                current = current[token]
+            elif isinstance(current, (list, tuple)) and isinstance(token, int):
+                current = current[token]
+            else:
+                current = getattr(current, str(token))
+        except (KeyError, IndexError, TypeError, AttributeError):
             return default
     return current
 
 
-def snapshot(subject: Any) -> Dict[str, Any]:
-    """Return a compact structured telemetry snapshot for a message, client, phone, or call."""
-    if hasattr(subject, "RTPClients") and hasattr(subject, "call_id"):
-        return {
-            "type": "call",
-            "call_id": getattr(subject, "call_id", None),
-            "state": str(getattr(getattr(subject, "state", None), "value", getattr(subject, "state", None))),
-            "auth": authentication_info(subject),
-            "codecs": call_codec_report(subject),
-            "active_codecs": active_codecs(subject),
-        }
-    if hasattr(subject, "sip") and hasattr(subject, "_default_audio_offer"):
-        calls = getattr(subject, "calls", {})
-        return {
-            "type": "phone",
-            "status": str(getattr(getattr(subject, "_status", None), "value", getattr(subject, "_status", None))),
-            "audio_format": _phone_audio_format(subject),
-            "auth": authentication_info(subject),
-            "codecs": phone_codec_report(subject),
-            "calls": {call_id: str(getattr(getattr(call, "state", None), "value", getattr(call, "state", None))) for call_id, call in calls.items()},
-        }
-    if hasattr(subject, "body") and hasattr(subject, "headers"):
-        return {
-            "type": "sip-message",
-            "heading": str(getattr(subject, "heading", b""), "utf8", errors="replace") if isinstance(getattr(subject, "heading", b""), bytes) else str(getattr(subject, "heading", "")),
-            "auth": authentication_info(subject),
-            "codecs": sip_message_codec_report(subject),
-        }
-    return {
-        "type": type(subject).__name__,
-        "auth": authentication_info(subject),
-    }
+def _telegram_escape(text: str) -> str:
+    return "".join("\\" + ch if ch in _TELEGRAM_V2_SPECIALS else ch for ch in text)
 
 
-def _escape_telegram_markdown_v2(text: Any) -> str:
-    escaped = str(text)
-    for char in _MARKDOWN_SPECIALS_V2:
-        escaped = escaped.replace(char, "\\" + char)
-    return escaped
+def _text(text: Any, platform: str) -> str:
+    value = str(text)
+    return _telegram_escape(value) if platform.startswith("telegram") else value
 
 
-def _bold(text: str, markdown: str) -> str:
-    if markdown.lower().startswith("telegram"):
-        if markdown.lower() in ("telegram-v2", "telegram_markdown_v2", "telegramv2"):
-            return "*" + _escape_telegram_markdown_v2(text) + "*"
-        return f"*{text}*"
+def _bold(text: str, platform: str) -> str:
+    if platform.startswith("telegram"):
+        return f"*{_telegram_escape(text)}*"
     return f"**{text}**"
 
 
-def _plain(text: Any, markdown: str) -> str:
-    if markdown.lower() in ("telegram-v2", "telegram_markdown_v2", "telegramv2"):
-        return _escape_telegram_markdown_v2(text)
-    return str(text)
+def _code(value: Any, platform: str) -> str:
+    text_value = "None" if value is None else str(value)
+    if platform.startswith("telegram"):
+        text_value = text_value.replace("\\", "\\\\").replace("`", "\\`")
+    else:
+        text_value = text_value.replace("`", "'")
+    return f"`{text_value}`"
 
 
-def _format_codecs(codecs: List[Dict[str, Any]], *, limit: int = 5) -> str:
-    names = []
-    for item in codecs[:limit]:
-        name = item.get("name") or item.get("description") or "unknown"
-        rate = item.get("rate")
-        payload = item.get("payload_type")
-        label = f"{name}/{rate}" if rate not in (None, "") else str(name)
-        if payload is not None:
-            label += f" pt={payload}"
-        names.append(label)
-    if len(codecs) > limit:
-        names.append(f"+{len(codecs) - limit} more")
-    return ", ".join(names) if names else "none"
+def _codec_label(codec: Dict[str, Any]) -> str:
+    name = str(codec.get("name") or codec.get("description") or "unknown")
+    payload_type = codec.get("payload_type")
+    rate = codec.get("rate")
+    label = name
+    if rate not in (None, "", 0):
+        label += f"/{rate}"
+    if payload_type is not None:
+        label += f":{payload_type}"
+    return label
 
 
-def _status_text(subject: Any) -> str:
-    if hasattr(subject, "_status"):
-        status = getattr(subject, "_status")
-        return str(getattr(status, "value", status))
-    if hasattr(subject, "state"):
-        state = getattr(subject, "state")
-        return str(getattr(state, "value", state))
-    return "unknown"
+def _codec_summary(
+    codecs: List[Dict[str, Any]],
+    platform: str,
+    *,
+    max_items: int = 5,
+) -> str:
+    if not codecs:
+        return _code("none", platform)
+    labels = [_codec_label(codec) for codec in codecs]
+    rendered = ", ".join(_code(label, platform) for label in labels[:max_items])
+    remaining = len(labels) - max_items
+    if remaining > 0:
+        rendered += " " + _text(f"and {remaining} more", platform)
+    return rendered
+
+
+def _call_state_summary(calls: List[Dict[str, Any]], platform: str) -> str:
+    if not calls:
+        return _code("0", platform)
+    counts: Dict[str, int] = {}
+    for call in calls:
+        state = str(call.get("state") or "UNKNOWN")
+        counts[state] = counts.get(state, 0) + 1
+    parts = [_code(str(len(calls)), platform)]
+    parts.extend(
+        f"{_code(state, platform)} {_text('x', platform)} {_code(count, platform)}"
+        for state, count in sorted(counts.items())
+    )
+    return _text(" | ", platform).join(parts)
 
 
 def report(
-    subject: Optional[Any] = None,
+    source: Optional[Any] = None,
     *,
-    target: Optional[str] = None,
+    platform: str = "discord",
     media_type: Optional[str] = "audio",
-    timeout: Optional[float] = None,
-    markdown: str = "discord",
 ) -> str:
-    """Return a concise emoji telemetry report for Discord or Telegram Markdown.
+    """Render concise emoji telemetry using Discord or Telegram Markdown.
 
-    Use ``markdown="discord"`` for Discord, ``markdown="telegram"`` for
-    Telegram legacy Markdown, and ``markdown="telegram-v2"`` for Telegram
-    MarkdownV2 escaping.
+    ``platform='discord'`` emits Discord Markdown. ``platform='telegram'`` emits
+    Telegram MarkdownV2-safe output. Both formats avoid large Markdown headers.
     """
-    lines: List[str] = []
-    title = "pyVoIP telemetry"
-    lines.append(f"☎️ {_bold(title, markdown)}")
+    platform = str(platform or "discord").lower()
+    if platform not in ("discord", "telegram", "telegram-v2", "telegram_markdown_v2"):
+        raise ValueError("platform must be 'discord' or 'telegram'.")
+    if platform.startswith("telegram"):
+        platform = "telegram"
 
-    if subject is None:
-        data = codec_support_report(None, media_type=media_type)
-        lines.append(f"🧩 {_bold('Local codecs', markdown)}: {_plain(_format_codecs(data.get('local_offer', [])), markdown)}")
-        lines.append(f"🎚️ {_bold('Audio', markdown)}: {_plain(data.get('audio_format', {}).get('sample_rate_mode', 'auto'), markdown)}")
-        return "\n".join(lines)
+    data = snapshot(source, media_type=media_type)
+    lines = [_bold("📡 pyVoIP telemetry", platform)]
 
-    auth = authentication_info(subject)
-    auth_algo = auth.get("algorithm") or get(auth, "last_digest.algorithm") or "not used"
-    auth_header = auth.get("header") or get(auth, "last_digest.header") or "n/a"
-    auth_qop = auth.get("qop") or get(auth, "last_digest.qop")
+    phone = data.get("phone") or {}
+    sip = data.get("sip") or {}
+    if phone:
+        status = phone.get("status")
+        target = None
+        if isinstance(sip, dict):
+            target_data = sip.get("target") or {}
+            if target_data:
+                target = f"{sip.get('transport') or 'SIP'} {target_data.get('host')}:{target_data.get('port')}"
+        line = f"📞 {_text('Phone', platform)}: {_code(status, platform)}"
+        if target:
+            line += _text(" | ", platform) + f"{_text('SIP', platform)} {_code(target, platform)}"
+        lines.append(line)
+    elif isinstance(sip, dict) and sip:
+        target_data = sip.get("target") or {}
+        target = None
+        if target_data:
+            target = f"{sip.get('transport') or 'SIP'} {target_data.get('host')}:{target_data.get('port')}"
+        line = f"📡 {_text('SIP', platform)}: {_code('running' if sip.get('running') else 'stopped', platform)}"
+        if target:
+            line += _text(" | ", platform) + _code(target, platform)
+        lines.append(line)
 
-    if hasattr(subject, "RTPClients") and hasattr(subject, "call_id"):
-        data = call_codec_report(subject)
-        lines.append(f"📞 {_bold('Call', markdown)}: {_plain(getattr(subject, 'call_id', 'unknown'), markdown)}")
-        lines.append(f"🔁 {_bold('State', markdown)}: {_plain(_status_text(subject), markdown)}")
-        lines.append(f"🔐 {_bold('Digest', markdown)}: {_plain(str(auth_algo) + (f' qop={auth_qop}' if auth_qop else '') + f' via {auth_header}', markdown)}")
-        lines.append(f"🎧 {_bold('Active audio', markdown)}: {_plain(_format_codecs(data.get('active_codecs', [])), markdown)}")
-        return "\n".join(lines)
-
-    if hasattr(subject, "sip") and hasattr(subject, "_default_audio_offer"):
-        data = phone_codec_report(subject, target=target, media_type=media_type, timeout=timeout)
-        calls = getattr(subject, "calls", {})
-        lines.append(f"📟 {_bold('Phone status', markdown)}: {_plain(_status_text(subject), markdown)}")
-        lines.append(f"🔐 {_bold('Digest', markdown)}: {_plain(str(auth_algo) + (f' qop={auth_qop}' if auth_qop else '') + f' via {auth_header}', markdown)}")
-        lines.append(f"🧩 {_bold('Offer', markdown)}: {_plain(_format_codecs(data.get('local_offer', [])), markdown)}")
-        if target is not None:
-            response = data.get("response") or {}
-            remote = _format_codecs(data.get("remote", []))
-            status = response.get("status_code", "?")
-            phrase = response.get("phrase", "")
-            lines.append(f"🌐 {_bold('Remote', markdown)}: {_plain(f'{target} → SIP {status} {phrase}'.strip(), markdown)}")
-            lines.append(f"🤝 {_bold('Compatible', markdown)}: {_plain(_format_codecs(data.get('transmittable_audio', [])) or remote, markdown)}")
-        lines.append(f"📞 {_bold('Calls', markdown)}: {_plain(len(calls), markdown)}")
-        return "\n".join(lines)
-
-    if hasattr(subject, "body") and hasattr(subject, "headers"):
-        data = sip_message_codec_report(subject, media_type=media_type)
-        heading = getattr(subject, "heading", b"")
-        if isinstance(heading, bytes):
-            heading_text = str(heading, "utf8", errors="replace")
+    auth = data.get("auth") or (sip.get("auth") if isinstance(sip, dict) else {}) or {}
+    last_digest = auth.get("last_digest") if isinstance(auth, dict) else None
+    if last_digest:
+        auth_bits = [
+            _code(last_digest.get("algorithm"), platform),
+            f"{_text('qop', platform)} {_code(last_digest.get('qop') or 'none', platform)}",
+        ]
+        if last_digest.get("header"):
+            auth_bits.append(f"{_text('via', platform)} {_code(last_digest.get('header'), platform)}")
+        lines.append(f"🔐 {_text('Auth', platform)}: " + _text(" | ", platform).join(auth_bits))
+    else:
+        challenges = auth.get("challenges") if isinstance(auth, dict) else None
+        if challenges:
+            offered = sorted({str(item.get("algorithm")) for item in challenges if item.get("algorithm")})
+            lines.append(
+                f"🔐 {_text('Auth challenge', platform)}: "
+                + ", ".join(_code(item, platform) for item in offered[:4])
+            )
         else:
-            heading_text = str(heading)
-        lines.append(f"📨 {_bold('SIP', markdown)}: {_plain(heading_text, markdown)}")
-        lines.append(f"🔐 {_bold('Digest', markdown)}: {_plain(str(auth_algo) + (f' qop={auth_qop}' if auth_qop else '') + f' via {auth_header}', markdown)}")
-        lines.append(f"🧩 {_bold('Remote codecs', markdown)}: {_plain(_format_codecs(data.get('remote', [])), markdown)}")
-        lines.append(f"🤝 {_bold('Compatible', markdown)}: {_plain(_format_codecs(data.get('transmittable_audio', [])), markdown)}")
-        return "\n".join(lines)
+            lines.append(f"🔐 {_text('Auth', platform)}: {_code('not used yet', platform)}")
 
-    data = snapshot(subject)
-    lines.append(f"📦 {_bold('Object', markdown)}: {_plain(data.get('type'), markdown)}")
-    lines.append(f"🔐 {_bold('Digest', markdown)}: {_plain(str(auth_algo) + (f' qop={auth_qop}' if auth_qop else '') + f' via {auth_header}', markdown)}")
+    codecs = data.get("codecs") or {}
+    if isinstance(codecs, dict):
+        active = codecs.get("active_codecs") or codecs.get("active") or []
+        if active:
+            lines.append(
+                f"🎙️ {_text('Active codec', platform)}: "
+                + _codec_summary(active, platform, max_items=3)
+            )
+
+        local_offer = codecs.get("local_offer") or []
+        if local_offer:
+            lines.append(
+                f"🎧 {_text('Local offer', platform)}: "
+                + _codec_summary(local_offer, platform, max_items=5)
+            )
+
+        remote = codecs.get("remote") or []
+        if remote:
+            lines.append(
+                f"📨 {_text('Remote SDP', platform)}: "
+                + _codec_summary(remote, platform, max_items=5)
+            )
+
+        if "can_start_call" in codecs:
+            state = codecs.get("can_start_call")
+            if state is True:
+                rendered = "yes"
+            elif state is False:
+                rendered = "no"
+            else:
+                rendered = "unknown"
+            lines.append(f"✅ {_text('Can start call', platform)}: {_code(rendered, platform)}")
+
+    calls = data.get("calls")
+    if isinstance(calls, list):
+        lines.append(f"☎️ {_text('Calls', platform)}: {_call_state_summary(calls, platform)}")
+
     return "\n".join(lines)
+
+
+def discord_report(source: Optional[Any] = None, *, media_type: Optional[str] = "audio") -> str:
+    """Render a Discord Markdown telemetry report."""
+    return report(source, platform="discord", media_type=media_type)
+
+
+def telegram_report(source: Optional[Any] = None, *, media_type: Optional[str] = "audio") -> str:
+    """Render a Telegram MarkdownV2 telemetry report."""
+    return report(source, platform="telegram", media_type=media_type)

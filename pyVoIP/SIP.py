@@ -4445,11 +4445,27 @@ class SIPClient:
             "opaque_present": bool(params.get("opaque")),
             "body_hash_used": params.get("qop") == "auth-int",
         }
-        auth_telemetry = self.telemetry.setdefault("auth", {})
+        try:
+            from pyVoIP import Telemetry as telemetry
+            telemetry.record_digest_auth(self, entry)
+            return
+        except Exception:
+            # Telemetry must never break SIP authentication. Keep a local
+            # fallback so partial installs still expose ``SIPClient.telemetry``.
+            pass
+
+        telemetry = getattr(self, "telemetry", None)
+        if not isinstance(telemetry, dict):
+            telemetry = {}
+            self.telemetry = telemetry
+
+        auth_telemetry = telemetry.setdefault("auth", {})
         auth_telemetry["last_digest"] = entry
+        auth_telemetry["has_authenticated"] = True
         history = auth_telemetry.setdefault("history", [])
-        history.append(entry)
-        del history[:-20]
+        history.append(dict(entry))
+        if len(history) > 20:
+            del history[:-20]
 
     def bye(self, request: SIPMessage) -> None:
         message = self.gen_bye(request)
