@@ -150,11 +150,12 @@ def _auth_block_from_candidate(candidate: Any) -> Optional[Dict[str, Any]]:
             return _normalize_auth_block(candidate.get("auth"))
         return None
 
-    telemetry = getattr(candidate, "_telemetry", None)
-    if isinstance(telemetry, dict):
-        auth = _normalize_auth_block(telemetry.get("auth", {}))
-        if auth.get("last_digest") or auth.get("digest_history"):
-            return auth
+    for telemetry_attr in ("_telemetry", "telemetry"):
+        telemetry = getattr(candidate, telemetry_attr, None)
+        if isinstance(telemetry, dict):
+            auth = _normalize_auth_block(telemetry.get("auth", {}))
+            if auth.get("last_digest") or auth.get("digest_history"):
+                return auth
 
     for attr in (
         "auth_telemetry",
@@ -362,6 +363,10 @@ def codec_availability(
     currently available.
     """
     if codec is not None:
+        if refresh:
+            from pyVoIP.codecs import refresh_codec_availability
+
+            refresh_codec_availability()
         return _codec_availability_details(codec)
 
     from pyVoIP.codecs import availability_report
@@ -1048,16 +1053,17 @@ def _message_authorization_record(message: Any) -> Optional[Dict[str, Any]]:
             candidates.append((header, value))
 
     if not candidates and getattr(message, "authentication", None):
-        header = getattr(message, "authentication_header", None) or "Authorization"
-        candidates.append((str(header), getattr(message, "authentication")))
+        header = str(getattr(message, "authentication_header", None) or "")
+        if header in ("Authorization", "Proxy-Authorization"):
+            candidates.append((header, getattr(message, "authentication")))
 
     for header, value in candidates:
         params = _digest_params_from_header_value(value)
         if not params:
             continue
-        if not any(
-            key in params
-            for key in ("response", "uri", "username", "qop", "cnonce", "nc")
+        if not all(
+            params.get(key)
+            for key in ("response", "uri", "username", "realm", "nonce")
         ):
             continue
 
@@ -1129,15 +1135,21 @@ def record_digest_auth(source: Any, record: Dict[str, Any]) -> Dict[str, Any]:
         if candidate is None or isinstance(candidate, dict):
             continue
         telemetry = getattr(candidate, "_telemetry", None)
+        public_telemetry = getattr(candidate, "telemetry", None)
         if not isinstance(telemetry, dict):
-            if not _is_sip_client_like(candidate):
+            if isinstance(public_telemetry, dict):
+                telemetry = public_telemetry
+            elif not _is_sip_client_like(candidate):
                 continue
-            telemetry = {}
-            try:
-                setattr(candidate, "_telemetry", telemetry)
-            except Exception:
-                continue
+            else:
+                telemetry = {}
+                try:
+                    setattr(candidate, "_telemetry", telemetry)
+                except Exception:
+                    continue
         _store_auth_record(telemetry, record)
+        if isinstance(public_telemetry, dict) and public_telemetry is not telemetry:
+            _store_auth_record(public_telemetry, record)
         stored = True
         break
 
@@ -1150,6 +1162,7 @@ def record_digest_auth(source: Any, record: Dict[str, Any]) -> Dict[str, Any]:
 def auth_snapshot(source: Any) -> Dict[str, Any]:
     """Return SIP authentication telemetry for a phone, SIP client, message, or wrapper."""
     fallback: Optional[Dict[str, Any]] = None
+    use_process_fallback = source is None
 
     for candidate in _iter_source_candidates(source):
         auth = _auth_block_from_candidate(candidate)
@@ -1170,10 +1183,11 @@ def auth_snapshot(source: Any) -> Dict[str, Any]:
             if fallback is None and auth.get("challenges"):
                 fallback = auth
 
-    process_auth = _normalize_auth_block(_PROCESS_TELEMETRY.get("auth", {}))
-    if process_auth.get("last_digest"):
-        process_auth["source"] = "process-fallback"
-        return process_auth
+    if use_process_fallback:
+        process_auth = _normalize_auth_block(_PROCESS_TELEMETRY.get("auth", {}))
+        if process_auth.get("last_digest"):
+            process_auth["source"] = "process-fallback"
+            return process_auth
 
     return fallback or _empty_auth_snapshot()
 
