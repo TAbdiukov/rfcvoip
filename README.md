@@ -1,5 +1,11 @@
 # rfcvoip
 
+[![GitHub](https://img.shields.io/badge/GitHub-TAbdiukov/rfcvoip-black?logo=github)](https://github.com/TAbdiukov/rfcvoip)
+[![PyPI Version](https://img.shields.io/pypi/v/rfcvoip.svg)](https://pypi.org/project/rfcvoip) 
+![License](https://img.shields.io/github/license/TAbdiukov/rfcvoip)
+
+[![buymeacoffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/tabdiukov)
+
 rfcvoip is a maintained, protocol-focused VoIP/SIP/RTP library and a practical
 drop-in successor to the original PyVoIP API.
 
