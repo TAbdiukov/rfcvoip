@@ -1,14 +1,10 @@
 __all__ = [
-    "SIP", "RTP", "VoIP",
-    "codec_availability",
+    "SIP", "RTP", "Telemetry", "VoIP",
     "codec_priorities",
     "codec_priority_score",
-    "codec_support_report",
     "refresh_supported_codecs",
     "reset_codec_priorities",
     "set_codec_priority",
-    "sip_supported_codecs",
-    "supported_codecs",
 ]
 
 from datetime import datetime, timezone
@@ -117,29 +113,11 @@ def codec_priorities(include_events=True):
     }
 
 
-def codec_availability(refresh=False):
-    """Return all known codec availability details, including unavailable ones."""
-    from pyVoIP.codecs import availability_report
+def __getattr__(name):
+    if name == "Telemetry":
+        import importlib
 
-    return availability_report(refresh=refresh)
-
-
-def supported_codecs(include_unavailable=False):
-    """Return codecs supported by this PyVoIP build/configuration."""
-    from pyVoIP.RTP import supported_codecs as _supported_codecs
-
-    return _supported_codecs(include_unavailable=include_unavailable)
-
-
-def sip_supported_codecs(message, media_type="audio"):
-    """Return codecs advertised by a parsed SIP message's SDP body."""
-    from pyVoIP.SIP import sip_supported_codecs as _sip_supported_codecs
-
-    return _sip_supported_codecs(message, media_type=media_type)
-
-
-def codec_support_report(message, media_type="audio"):
-    """Compare a SIP message's SDP codecs against PyVoIP support."""
-    from pyVoIP.SIP import codec_support_report as _codec_support_report
-
-    return _codec_support_report(message, media_type=media_type)
+        module = importlib.import_module("pyVoIP.Telemetry")
+        globals()[name] = module
+        return module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -17,8 +17,6 @@ __all__ = [
     "add_bytes",
     "byte_to_bits",
     "DynamicPayloadType",
-    "codec_availability",
-    "codec_info",
     "codec_fmtp_supported",
     "codec_priority_score",
     "default_payload_type",
@@ -32,7 +30,6 @@ __all__ = [
     "rtpmap_for_payload_type",
     "reset_codec_priorities",
     "set_codec_priority",
-    "supported_codecs",
     "PayloadType",
     "select_transmittable_audio_codec",
     "RTPParseError",
@@ -261,44 +258,6 @@ def is_audio_codec(codec: PayloadType) -> bool:
 def is_video_codec(codec: PayloadType) -> bool:
     """Return whether ``codec`` represents an RTP video payload type."""
     return payload_type_media_kind(codec) in ("video", "audio/video")
-
-
-def _codec_availability_details(codec: PayloadType) -> Dict[str, Any]:
-    try:
-        from pyVoIP.codecs import codec_availability as _availability
-
-        return _availability(codec)
-    except Exception as ex:
-        return {
-            "available": False,
-            "reason": str(ex),
-            "library": None,
-            "name": str(codec),
-            "description": getattr(codec, "description", None),
-            "payload_kind": payload_type_media_kind(codec),
-            "rate": getattr(codec, "rate", 0),
-            "channels": getattr(codec, "channel", 0),
-            "can_transmit_audio": False,
-            "default_payload_type": None,
-            "is_dynamic": True,
-            "priority_score": 0,
-        }
-
-
-def codec_availability(
-    codec: Optional[PayloadType] = None,
-) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
-    """Return codec availability details.
-
-    With no argument this returns all known codec implementations, including
-    optional codecs that are not currently available.
-    """
-    if codec is not None:
-        return _codec_availability_details(codec)
-
-    from pyVoIP.codecs import availability_report
-
-    return availability_report()
 
 
 def codec_priority_score(
@@ -585,136 +544,6 @@ def payload_type_from_name(
             )
 
     return matches[0]
-
-
-def codec_info(
-    codec: PayloadType,
-    payload_type: Optional[int] = None,
-    *,
-    media_type: Optional[str] = None,
-    fmtp: Optional[List[str]] = None,
-    source: str = "pyvoip",
-    supported: Optional[bool] = None,
-    priority_scores: Optional[Dict[Any, int]] = None,
-    enabled_codecs: Optional[Any] = None,
-) -> Dict[str, Any]:
-    """Return a serializable description of an RTP codec."""
-    availability = _codec_availability_details(codec)
-    preferred_payload_type = default_payload_type(codec)
-    fmtp_list = list(fmtp or [])
-    fmtp_supported = codec_fmtp_supported(codec, fmtp_list)
-    compatible_codecs = (
-        getattr(pyVoIP, "RTPCompatibleCodecs", [])
-        if enabled_codecs is None
-        else enabled_codecs
-    )
-
-    if payload_type is None:
-        payload_type = preferred_payload_type
-
-    if payload_type is None:
-        try:
-            payload_type = int(codec)
-        except DynamicPayloadType:
-            payload_type = None
-
-    if supported is None:
-        supported = (
-            codec in compatible_codecs
-            and bool(availability.get("available", True))
-            and fmtp_supported
-        )
-
-    is_dynamic = (
-        payload_type is None
-        or not isinstance(codec.value, int)
-        or (isinstance(payload_type, int) and payload_type >= 96)
-    )
-
-    return {
-        "media_type": media_type,
-        "payload_type": payload_type,
-        "name": str(codec),
-        "description": codec.description,
-        "payload_kind": payload_type_media_kind(codec),
-        "can_transmit_audio": is_transmittable_audio_codec(
-            codec,
-            enabled_codecs=compatible_codecs,
-        ),
-        "priority_score": codec_priority_score(
-            codec,
-            priority_scores=priority_scores,
-        ),
-        "rate": codec.rate,
-        "channels": codec.channel,
-        "preferred_source_sample_rate": availability.get(
-            "preferred_source_sample_rate"
-        ),
-        "is_dynamic": is_dynamic,
-        "fmtp": fmtp_list,
-        "fmtp_supported": fmtp_supported,
-        "codec_supported": bool(supported),
-        "protocol_supported": None,
-        "supported": bool(supported),
-        "available": bool(availability.get("available", supported)),
-        "availability_reason": availability.get("reason"),
-        "library": availability.get("library"),
-        "default_payload_type": preferred_payload_type,
-        "rtpmap": (
-            rtpmap_for_payload_type(payload_type, codec)
-            if payload_type is not None
-            else None
-        ),
-        "source": source,
-    }
-
-
-def _prioritize_payload_types(
-    payload_types: List[PayloadType],
-    priority_scores: Optional[Dict[Any, int]] = None,
-) -> List[PayloadType]:
-    indexed = list(enumerate(payload_types))
-    indexed.sort(
-        key=lambda item: (
-            -codec_priority_score(
-                item[1],
-                priority_scores=priority_scores,
-            ),
-            item[0],
-        )
-    )
-    return [payload_type for _idx, payload_type in indexed]
-
-
-def supported_codecs(
-    include_unavailable: bool = False,
-    priority_scores: Optional[Dict[Any, int]] = None,
-    enabled_codecs: Optional[Any] = None,
-) -> List[Dict[str, Any]]:
-    """Return codecs supported by this PyVoIP build/configuration."""
-    if include_unavailable:
-        from pyVoIP.codecs import known_payload_types
-
-        codecs = known_payload_types(include_events=True)
-    else:
-        codecs = (
-            getattr(pyVoIP, "RTPCompatibleCodecs", [])
-            if enabled_codecs is None
-            else list(enabled_codecs)
-        )
-
-    return [
-        codec_info(
-            codec,
-            payload_type=default_payload_type(codec),
-            priority_scores=priority_scores,
-            enabled_codecs=enabled_codecs,
-        )
-        for codec in _prioritize_payload_types(
-            list(codecs),
-            priority_scores=priority_scores,
-        )
-    ]
 
 
 class RTPPacketManager:
@@ -1076,30 +905,6 @@ class RTPClient:
         return self._codec_adapter(self.preference).source_frame_size(
             duration_ms
         )
-
-    def selected_codec_info(self) -> Dict[str, Any]:
-        """Return telemetry for the codec selected for this RTP client."""
-        info = codec_info(
-            self.preference,
-            payload_type=self.preference_payload_type,
-            media_type="audio",
-            source="active-call",
-            supported=True,
-            priority_scores=self.codec_priority_scores,
-            enabled_codecs=self.enabled_codecs,
-        )
-        info["rtp"] = {
-            "local": {"ip": self.inIP, "port": self.inPort},
-            "remote": {"ip": self.outIP, "port": self.outPort},
-            "transmit_type": str(self.sendrecv),
-        }
-        info["public_audio_format"] = {
-            "sample_rate": self.audio_sample_rate,
-            "sample_width": self.audio_sample_width,
-            "channels": self.audio_channels,
-            "encoding": "unsigned-8bit-linear",
-        }
-        return info
 
     def _find_telephone_event_payload_type(self) -> Optional[int]:
         for payload_type, codec in self.assoc.items():

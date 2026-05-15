@@ -853,45 +853,6 @@ class VoIPCall:
     def send_dtmf_sequence(self, digits: str) -> bool:
         return self.send_dtmf(digits)
 
-    def active_codecs(self) -> List[Dict[str, Any]]:
-        """Return codecs currently selected by this call's RTP client(s)."""
-        active = []
-        for client in self._rtp_clients_snapshot():
-            selected_codec_info = getattr(client, "selected_codec_info", None)
-            if callable(selected_codec_info):
-                active.append(selected_codec_info())
-        return active
-
-    def remote_supported_codecs(self) -> List[Dict[str, Any]]:
-        """Return codecs advertised by the remote endpoint's SDP."""
-        if self.remote_sip_message is None:
-            return []
-        return self.remote_sip_message.supported_codecs()
-
-    def codec_support_report(self) -> Dict[str, Any]:
-        """Compare the remote SDP codecs against PyVoIP support."""
-        active_codecs = self.active_codecs()
-        if self.remote_sip_message is None:
-            pyvoip_codecs = RTP.supported_codecs()
-            return {
-                "remote": [],
-                "pyvoip": pyvoip_codecs,
-                "local": pyvoip_codecs,
-                "compatible": [],
-                "unsupported": [],
-                "good": [],
-                "missing": [],
-                "pyvoip_missing_from_remote": pyvoip_codecs,
-                "remote_has_sdp": False,
-                "transmittable_audio": [],
-                "call_compatible": [],
-                "can_start_call": None,
-                "active_codecs": active_codecs,
-            }
-        report = self.remote_sip_message.codec_support_report()
-        report["active_codecs"] = active_codecs
-        return report
-
     def _finalize_ended_call(self) -> None:
         try:
             self.phone.release_ports(call=self)
@@ -1680,12 +1641,6 @@ class VoIPPhone:
             "encoding": "unsigned-8bit-linear",
         }
 
-    def supported_codecs(self) -> List[Dict[str, Any]]:
-        return RTP.supported_codecs(priority_scores=self.codec_priorities)
-
-    def codec_availability(self, refresh: bool = False) -> List[Dict[str, Any]]:
-        return pyVoIP.codec_availability(refresh=refresh)
-
     def refresh_supported_codecs(self) -> List[RTP.PayloadType]:
         return pyVoIP.refresh_supported_codecs()
 
@@ -1696,10 +1651,6 @@ class VoIPPhone:
     def reset_codec_priorities(self) -> List[RTP.PayloadType]:
         self.codec_priorities.clear()
         return self._prioritized_enabled_codecs()
-
-    def local_supported_codecs(self) -> List[Dict[str, Any]]:
-        """Return codecs supported by this PyVoIP build/configuration."""
-        return self.supported_codecs()
 
     def _prioritized_enabled_codecs(self) -> List[RTP.PayloadType]:
         indexed = list(enumerate(pyVoIP.RTPCompatibleCodecs))
@@ -1738,152 +1689,6 @@ class VoIPPhone:
                 payload_type = 96
 
         offer_codecs[payload_type] = codec
-
-    def local_codec_offer(self) -> List[Dict[str, Any]]:
-        """Return the audio codecs this phone would offer in an INVITE.
-
-        This is local-only and is available before the SIP client is started.
-        Dynamic payload choices, such as telephone-event, are shown as they
-        would be advertised by VoIPPhone.call().
-        """
-        offer_codecs: Dict[int, RTP.PayloadType] = {}
-        for codec in self._prioritized_enabled_codecs():
-            if RTP.is_transmittable_audio_codec(codec):
-                self._add_codec_to_offer(offer_codecs, codec)
-
-        if RTP.PayloadType.EVENT in pyVoIP.RTPCompatibleCodecs:
-            self._add_codec_to_offer(offer_codecs, RTP.PayloadType.EVENT)
-
-        offer = []
-        for payload_type, codec in offer_codecs.items():
-            info = RTP.codec_info(
-                codec,
-                payload_type=payload_type,
-                media_type="audio",
-                source="local-offer",
-                supported=codec in pyVoIP.RTPCompatibleCodecs,
-                priority_scores=self.codec_priorities,
-            )
-            info["protocol"] = RTP.RTPProtocol.AVP.value
-            info["protocol_supported"] = True
-            info["bandwidth_supported"] = True
-            info["public_audio_sample_rate"] = (
-                self.audio_sample_rate
-                or info.get("preferred_source_sample_rate")
-                or info.get("rate")
-            )
-            info["supported"] = bool(
-                info["codec_supported"]
-                and info["protocol_supported"]
-                and info["bandwidth_supported"]
-            )
-            offer.append(info)
-        return offer
-
-    def _local_codec_report(self) -> Dict[str, Any]:
-        local_codecs = self.local_supported_codecs()
-        local_offer = self.local_codec_offer()
-        local_transmittable_audio = [
-            codec
-            for codec in local_offer
-            if codec.get("supported") and codec.get("can_transmit_audio")
-        ]
-        return {
-            "local": local_codecs,
-            "pyvoip": local_codecs,
-            "local_offer": local_offer,
-            "local_transmittable_audio": local_transmittable_audio,
-            "local_can_start_call": bool(local_transmittable_audio),
-            "audio_format": self.audio_format(),
-        }
-
-    def remote_supported_codecs(
-        self,
-        target: str,
-        media_type: Optional[str] = "audio",
-        *,
-        timeout: Optional[float] = None,
-    ) -> List[Dict[str, Any]]:
-        """Probe a remote target with SIP OPTIONS and return its SDP codecs.
-
-        The phone must already be started so SIP signalling is available. Some
-        providers and endpoints reply to OPTIONS without SDP; in that case the
-        returned list is empty even though a later INVITE may still negotiate
-        media successfully.
-        """
-        response = self.sip.options(target, timeout=timeout)
-        return response.supported_codecs(media_type=media_type)
-
-    def codec_support_report(
-        self,
-        target: Optional[str] = None,
-        media_type: Optional[str] = "audio",
-        *,
-        timeout: Optional[float] = None,
-    ) -> Dict[str, Any]:
-        """Return local and, when requested, remote pre-call codec details.
-
-        If ``target`` is omitted, the result is purely local and works before
-        ``start()``. If ``target`` is provided, the phone sends SIP OPTIONS and
-        includes remote SDP codecs when the peer supplies them.
-        """
-        report = self._local_codec_report()
-        if target is None:
-            report.update(
-                {
-                    "target": None,
-                    "target_uri": None,
-                    "source": "local",
-                    "response": None,
-                    "remote": [],
-                    "compatible": [],
-                    "unsupported": [],
-                    "good": [],
-                    "missing": [],
-                    "pyvoip_missing_from_remote": report["local"],
-                    "remote_has_sdp": False,
-                    "transmittable_audio": [],
-                    "call_compatible": [],
-                    "can_start_call": report["local_can_start_call"],
-                }
-            )
-            return report
-
-        target_uri = self.sip._normalize_request_target(target)
-        response = self.sip.options(target_uri, timeout=timeout)
-        remote_report = response.codec_support_report(media_type=media_type)
-        report.update(remote_report)
-        status_code = int(response.status)
-        report.update(
-            {
-                "target": target,
-                "target_uri": target_uri,
-                "source": "sip-options",
-                "response": {
-                    "status_code": status_code,
-                    "phrase": response.status.phrase,
-                    "heading": str(response.heading, "utf8", errors="replace"),
-                    "has_sdp": bool(response.body.get("m")),
-                },
-            }
-        )
-        if not report.get("remote_has_sdp"):
-            report["can_start_call"] = None
-        return report
-
-    def available_codecs(
-        self,
-        target: Optional[str] = None,
-        media_type: Optional[str] = "audio",
-        *,
-        timeout: Optional[float] = None,
-    ) -> Dict[str, Any]:
-        """Alias for codec_support_report() with a discoverability-focused name."""
-        return self.codec_support_report(
-            target=target,
-            media_type=media_type,
-            timeout=timeout,
-        )
 
     def _default_audio_offer(self) -> Dict[int, RTP.PayloadType]:
         codecs: Dict[int, RTP.PayloadType] = {}

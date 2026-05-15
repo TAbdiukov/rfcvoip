@@ -45,7 +45,6 @@ __all__ = [
     "Counter",
     "InvalidAccountInfoError",
     "SIPClient",
-    "codec_support_report",
     "codec_bandwidth_supported",
     "SIPMessage",
     "SIPMessageType",
@@ -56,7 +55,6 @@ __all__ = [
     "extract_sdp_body",
     "SIPStatus",
     "SIPTransport",
-    "sip_supported_codecs",
 ]
 
 
@@ -810,16 +808,6 @@ class SIPMessage:
         data += _redact_sensitive_sip_headers(raw_text)
 
         return data
-
-    def supported_codecs(
-        self, media_type: Optional[str] = "audio"
-    ) -> List[Dict[str, Any]]:
-        return sip_supported_codecs(self, media_type=media_type)
-
-    def codec_support_report(
-        self, media_type: Optional[str] = "audio"
-    ) -> Dict[str, Any]:
-        return codec_support_report(self, media_type=media_type)
 
     def parse(self, data: bytes) -> None:
         try:
@@ -1625,219 +1613,6 @@ def _bandwidth_context(
     }
 
 
-def _media_protocol_supported(media: Dict[str, Any]) -> bool:
-    protocol = media.get("protocol")
-    return protocol in (pyVoIP.RTP.RTPProtocol.AVP, "RTP/AVP")
-
-def _fmtp_settings(attributes: Dict[str, Any]) -> List[str]:
-    fmtp = attributes.get("fmtp", {})
-    if isinstance(fmtp, dict):
-        settings = fmtp.get("settings", [])
-        return [str(setting) for setting in settings]
-    return []
-
-def _unknown_codec_info(
-    *,
-    media: Dict[str, Any],
-    payload_type: Optional[int],
-    name: str,
-    rate: Optional[int],
-    channels: Optional[int],
-    fmtp: List[str],
-    source: str,
-    session_bandwidth: Any = None,
-    media_bandwidth: Any = None,
-) -> Dict[str, Any]:
-    return {
-        "media_type": media.get("type"),
-        "payload_type": payload_type,
-        "name": name,
-        "description": None,
-        "payload_kind": "unknown",
-        "can_transmit_audio": False,
-        "rate": rate,
-        "channels": channels,
-        "is_dynamic": payload_type is None or payload_type >= 96,
-        "fmtp": list(fmtp),
-        "fmtp_supported": False,
-        "codec_supported": False,
-        "protocol_supported": _media_protocol_supported(media),
-        "supported": False,
-        "available": False,
-        "availability_reason": "Codec is not known to PyVoIP.",
-        "library": None,
-        "priority_score": 0,
-        "default_payload_type": None,
-        "rtpmap": None,
-        "bandwidth_supported": True,
-        "bandwidth": _bandwidth_context(
-            session_bandwidth=session_bandwidth,
-            media_bandwidth=media_bandwidth,
-        ),
-        "source": source,
-        "protocol": _protocol_value(media.get("protocol")),
-    }
-
-
-def _codec_info_from_media(
-    media: Dict[str, Any], method: str, *, session_bandwidth: Any = None
-) -> Dict[str, Any]:
-    media_bandwidth = _bandwidths_to_list(media.get("bandwidth", []))
-    session_bandwidth = _bandwidths_to_list(session_bandwidth)
-    attributes = media.get("attributes", {}).get(str(method), {})
-    if not isinstance(attributes, dict):
-        attributes = {}
-
-    rtpmap = attributes.get("rtpmap", {})
-    if not isinstance(rtpmap, dict):
-        rtpmap = {}
-
-    fmtp = _fmtp_settings(attributes)
-    payload_type = _safe_int(method)
-    codec = None
-    source = "unknown"
-    name = str(method)
-    rate = None
-    channels = None
-
-    if rtpmap:
-        source = "rtpmap"
-        name = str(rtpmap.get("name") or name)
-        rate = _safe_int(rtpmap.get("frequency"))
-        channels = _safe_int(rtpmap.get("encoding"))
-        try:
-            codec = pyVoIP.RTP.payload_type_from_name(
-                name,
-                rate=rate,
-                channels=channels,
-            )
-        except ValueError:
-            codec = None
-
-    if codec is None and payload_type is not None:
-        try:
-            codec = pyVoIP.RTP.PayloadType(payload_type)
-            source = "static"
-        except ValueError:
-            pass
-
-    if codec is None:
-        return _unknown_codec_info(
-            media=media,
-            payload_type=payload_type,
-            name=name,
-            rate=rate,
-            channels=channels,
-            fmtp=fmtp,
-            source=source,
-            session_bandwidth=session_bandwidth,
-            media_bandwidth=media_bandwidth,
-        )
-
-    codec_supported = codec in getattr(pyVoIP, "RTPCompatibleCodecs", [])
-    protocol_supported = _media_protocol_supported(media)
-    fmtp_supported = pyVoIP.RTP.codec_fmtp_supported(codec, fmtp)
-    bandwidth_supported = codec_bandwidth_supported(
-        codec,
-        session_bandwidth=session_bandwidth,
-        media_bandwidth=media_bandwidth,
-    )
-    info = pyVoIP.RTP.codec_info(
-        codec,
-        payload_type=payload_type,
-        media_type=media.get("type"),
-        fmtp=fmtp,
-        source=source,
-        supported=(
-            codec_supported
-            and protocol_supported
-            and fmtp_supported
-            and bandwidth_supported
-        ),
-    )
-    info["codec_supported"] = codec_supported
-    info["protocol_supported"] = protocol_supported
-    info["fmtp_supported"] = fmtp_supported
-    if rate is not None:
-        info["rate"] = rate
-    if channels is not None:
-        info["channels"] = channels
-    info["bandwidth_supported"] = bandwidth_supported
-    info["required_bandwidth_bps"] = _codec_required_bandwidth_bps(codec)
-    info["bandwidth"] = _bandwidth_context(
-        session_bandwidth=session_bandwidth,
-        media_bandwidth=media_bandwidth,
-        codec=codec,
-    )
-    info["protocol"] = _protocol_value(media.get("protocol"))
-    return info
-
-
-def sip_supported_codecs(
-    message: SIPMessage,
-    media_type: Optional[str] = "audio",
-) -> List[Dict[str, Any]]:
-    """Return codecs advertised by a parsed SIP message's SDP body.
-
-    ``media_type`` defaults to ``"audio"``.  Pass ``None`` to return codecs
-    from every media section in the SDP body.
-    """
-    session_bandwidth = _bandwidths_to_list(message.body.get("b", []))
-    codecs = []
-    for media in message.body.get("m", []):
-        if media_type is not None and media.get("type") != media_type:
-            continue
-        for method in media.get("methods", []):
-            codecs.append(
-                _codec_info_from_media(
-                    media, str(method), session_bandwidth=session_bandwidth
-                )
-            )
-    return codecs
-
-def _codec_name_key(codec: Dict[str, Any]) -> str:
-    name = str(codec.get("name") or "").lower()
-    rate = codec.get("rate")
-    return f"{name}/{rate}" if rate not in (None, "") else name
-
-def codec_support_report(
-    message: SIPMessage,
-    media_type: Optional[str] = "audio",
-) -> Dict[str, Any]:
-    """Compare a SIP message's SDP codecs against PyVoIP support."""
-    remote = sip_supported_codecs(message, media_type=media_type)
-    pyvoip_codecs = pyVoIP.RTP.supported_codecs()
-    compatible = [codec for codec in remote if codec.get("supported")]
-    unsupported = [codec for codec in remote if not codec.get("supported")]
-    remote_names = {_codec_name_key(codec) for codec in remote}
-    pyvoip_missing_from_remote = [
-        codec
-        for codec in pyvoip_codecs
-        if _codec_name_key(codec) not in remote_names
-    ]
-    remote_has_sdp = bool(message.body.get("m"))
-    transmittable_audio = [
-        codec
-        for codec in compatible
-        if codec.get("media_type") == "audio"
-        and codec.get("can_transmit_audio")
-    ]
-
-    return {
-        "remote": remote,
-        "pyvoip": pyvoip_codecs,
-        "compatible": compatible,
-        "unsupported": unsupported,
-        "good": compatible,
-        "missing": unsupported,
-        "pyvoip_missing_from_remote": pyvoip_missing_from_remote,
-        "remote_has_sdp": remote_has_sdp,
-        "transmittable_audio": transmittable_audio,
-        "call_compatible": transmittable_audio,
-        "can_start_call": bool(transmittable_audio) if remote_has_sdp else None,
-    }
-
-
 class SIPClient:
     def __init__(
         self,
@@ -1949,6 +1724,17 @@ class SIPClient:
             Callable[[Dict[str, Any]], None]
         ] = None
         self.subscriptions: Dict[str, SIPSubscription] = {}
+        self.telemetry: Dict[str, Any] = {
+            "auth": {"last_digest": None, "history": []},
+            "sip": {
+                "server": self.server,
+                "server_host": self.server_host,
+                "server_port": self.server_port,
+                "proxy": self.proxy,
+                "proxy_port": self.proxy_port,
+                "transport": self.signal_transport().value,
+            },
+        }
 
     @staticmethod
     def _extract_uri(value: str) -> str:
@@ -4602,7 +4388,7 @@ class SIPClient:
             header_name or challenge.authentication_header
         )
         try:
-            return build_digest_auth_header(
+            auth_line = build_digest_auth_header(
                 auth,
                 header_name=header_name,
                 username=auth_user,
@@ -4611,8 +4397,59 @@ class SIPClient:
                 uri=uri,
                 body=body,
             )
+            self._record_digest_auth(
+                auth_line,
+                challenge=challenge,
+                header_name=header_name,
+                method=method,
+                uri=uri,
+            )
+            return auth_line
         except SIPAuthError as ex:
             raise SIPParseError(str(ex)) from ex
+
+    def _record_digest_auth(
+        self,
+        auth_line: str,
+        *,
+        challenge: SIPMessage,
+        header_name: str,
+        method: str,
+        uri: str,
+    ) -> None:
+        from pyVoIP.SIPAuth import normalize_digest_algorithm
+
+        auth_value = auth_line.split(":", 1)[1] if ":" in auth_line else auth_line
+        params = _parse_digest_params(auth_value)
+        challenge_header = self._authorization_challenge_header(header_name)
+        selected_challenge = self._select_auth_challenge(
+            challenge,
+            challenge_header,
+        )
+        algorithm = params.get("algorithm") or selected_challenge.get("algorithm")
+        if algorithm:
+            algorithm = normalize_digest_algorithm(algorithm)
+
+        entry = {
+            "at": time.time(),
+            "header": header_name,
+            "challenge_header": challenge_header,
+            "method": method,
+            "uri": uri,
+            "realm": params.get("realm") or selected_challenge.get("realm"),
+            "username": params.get("username"),
+            "algorithm": algorithm,
+            "qop": params.get("qop"),
+            "nonce_count": params.get("nc"),
+            "cnonce_used": bool(params.get("cnonce")),
+            "opaque_present": bool(params.get("opaque")),
+            "body_hash_used": params.get("qop") == "auth-int",
+        }
+        auth_telemetry = self.telemetry.setdefault("auth", {})
+        auth_telemetry["last_digest"] = entry
+        history = auth_telemetry.setdefault("history", [])
+        history.append(entry)
+        del history[:-20]
 
     def bye(self, request: SIPMessage) -> None:
         message = self.gen_bye(request)
