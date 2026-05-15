@@ -3,6 +3,7 @@
 ## 2.8.8+RFC
 
 - Standalone Telemetry module.
+- SIP: Modularize SIPSubscription
 
 ## 2.8.7+RFC
 
