@@ -1,8 +1,8 @@
 import pytest
 
-from pyVoIP import RTP, SIP
-from pyVoIP.VoIP import VoIPPhone
-from pyVoIP import RTPCompatibleCodecs
+from rfcvoip import RTP, SIP
+from rfcvoip.VoIP import VoIPPhone
+from rfcvoip import RTPCompatibleCodecs
 
 
 

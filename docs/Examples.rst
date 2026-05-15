@@ -1,20 +1,22 @@
 Examples
 ########
 
-Here we will go over a few basic phone setups.
+These examples focus on the high-level ``VoIPPhone`` and ``VoIPCall`` API.
+The lower-level SIP and RTP modules are documented separately.
 
-Setup
-*****
+Basic setup
+***********
 
-PyVoIP uses callback functions to initiate phone calls.  In the example below, our callback function is named ``answer``.  The callback takes one argument, which is a :ref:`VoIPCall` instance.
+rfcvoip uses a callback for incoming calls. The callback receives a
+``VoIPCall`` instance. A phone with no callback automatically rejects incoming
+calls as busy.
 
-We are also importing :ref:`VoIPPhone` and :ref:`InvalidStateError<invalidstateerror>`.  VoIPPhone is the main class for our `softphone <https://en.wikipedia.org/wiki/Softphone>`_.  An InvalidStateError is thrown when you try to perform an impossible command.  For example, denying the call when the phone is already answered, answering when it's already answered, etc.
-
-The following will create a phone that answers and automatically hangs up:
+The following phone answers an incoming call and immediately hangs up:
 
 .. code-block:: python
-   
-  from pyVoIP.VoIP import VoIPPhone, InvalidStateError
+
+  from rfcvoip.VoIP import InvalidStateError, VoIPPhone
+
 
   def answer(call):
       try:
@@ -22,104 +24,233 @@ The following will create a phone that answers and automatically hangs up:
           call.hangup()
       except InvalidStateError:
           pass
-  
+
+
   if __name__ == "__main__":
-      phone = VoIPPhone(<SIP server IP>, <SIP server port>, <SIP server username>, <SIP server password>, myIP=<Your computer's local IP>, callCallback=answer)
+      phone = VoIPPhone(
+          "sip.example.net",
+          5060,
+          "1000",
+          "password",
+          myIP="192.0.2.10",
+          callCallback=answer,
+      )
       phone.start()
-      input('Press enter to disable the phone')
-      phone.stop()
-    
-Announcement Board
-******************
-
-Let's say you want to make a phone that when you call it, it plays an announcement message, then hangs up.  We can accomplish this with the builtin libraries `wave <https://docs.python.org/3/library/wave.html>`_, `audioop <https://docs.python.org/3/library/audioop.html>`_, `time <https://docs.python.org/3/library/time.html>`_, and by importing :ref:`CallState<callstate>`.
-
-.. code-block:: python
-
-  from pyVoIP.VoIP import VoIPPhone, InvalidStateError, CallState
-  import time
-  import wave
-  
-  def answer(call):
-      try:
-          f = wave.open('announcment.wav', 'rb')
-          frames = f.getnframes()
-          data = f.readframes(frames)
-          f.close()
-      
-          call.answer()
-          call.write_audio(data)  # This writes the audio data to the transmit buffer, this must be bytes.
-      
-          stop = time.time() + (frames / 8000)  # frames/8000 is the length of the audio in seconds. 8000 is the hertz of PCMU.
-      
-          while time.time() <= stop and call.state == CallState.ANSWERED:
-              time.sleep(0.1)
-          call.hangup()
-      except InvalidStateError:
-          pass
-      except:
-          call.hangup()
-  
-      
-  if __name__ == "__main__":
-      phone = VoIPPhone(<SIP Server IP>, <SIP Server Port>, <SIP Server Username>, <SIP Server Password>, myIP=<Your computers local IP>, callCallback=answer)
-      phone.start()
-      input('Press enter to disable the phone')
+      input("Press enter to disable the phone")
       phone.stop()
 
-Something important to note is our wait function.  We are currently using:
+Use keyword arguments for optional SIP features:
 
 .. code-block:: python
 
-  stop = time.time() + (frames / 8000)  # The number of frames/8000 is the length of the audio in seconds.
-      
-  while time.time() <= stop and call.state == CallState.ANSWERED:
-      time.sleep(0.1)
+  phone = VoIPPhone(
+      "sip.example.net",
+      5060,
+      "1000",
+      "password",
+      myIP="192.0.2.10",
+      auth_username="1000-auth",
+      proxy="sip:proxy.example.net;transport=tcp",
+      transport="tcp",
+      callCallback=answer,
+  )
 
-This could be replaced with ``time.sleep(frames / 8000)``.  However, doing so will not cause the thread to automatically close if the user hangs up, or if ``VoIPPhone().stop()`` is called; using the while loop method will fix this issue.  The ``time.sleep(0.1)`` inside the while loop is also important.  Supplementing ``time.sleep(0.1)`` for ``pass`` will cause your CPU to ramp up while running the loop, making the RTP (audio being sent out and received) lag.  This can make the voice audibly slow or choppy.
+Playing an announcement
+***********************
 
-*Note: Audio must be 8 bit, 8000Hz, and Mono/1 channel.  You can accomplish this in a free program called* `Audacity <https://www.audacityteam.org/>`_.  *To make an audio recording Mono, go to Tracks > Mix > Mix Stereo Down to Mono.  To make an audio recording 8000 Hz, go to Tracks > Resample... and select 8000, then ensure that your 'Project Rate' in the bottom left is also set to 8000.  To make an audio recording 8 bit, go to File > Export > Export as WAV, then change 'Save as type:' to 'Other uncompressed files', then set 'Header:' to 'WAV (Microsoft)', then set the 'Encoding:' to 'Unsigned 8-bit PCM'*
+The public audio API accepts unsigned 8-bit linear mono bytes. The negotiated
+codec chooses the default sample rate. Use ``call.audio_frame_size()`` or
+``call.audio_format()`` when you need to calculate frame sizes dynamically.
 
-IVR/Phone Menus
-****************
-
-We can use the following code to create `IVR Menus <https://en.wikipedia.org/wiki/Interactive_voice_response>`_.  Currently, we cannot make 'breaking' IVR menus.  Breaking IVR menus in this context means, a user selecting an option mid-prompt will cancel the prompt, and start the next action.  Support for breaking IVR's will be made in the future.  For now, here is the code for a non-breaking IVR:
+This example plays a WAV file, waits until playback should be finished, and
+then hangs up. The loop exits early if the remote party hangs up or the phone
+is stopped.
 
 .. code-block:: python
 
-  from pyVoIP.VoIP import VoIPPhone, InvalidStateError, CallState
   import time
   import wave
-  
+
+  from rfcvoip.VoIP import CallState, InvalidStateError, VoIPPhone
+
+
   def answer(call):
       try:
-          f = wave.open('prompt.wav', 'rb')
-          frames = f.getnframes()
-          data = f.readframes(frames)
-          f.close()
-      
+          with wave.open("announcement.wav", "rb") as wav:
+              data = wav.readframes(wav.getnframes())
+              frames = wav.getnframes()
+              sample_rate = wav.getframerate()
+
           call.answer()
           call.write_audio(data)
-      
+
+          stop = time.time() + (frames / sample_rate)
+          while time.time() <= stop and call.state == CallState.ANSWERED:
+              time.sleep(0.1)
+
+          call.hangup()
+      except InvalidStateError:
+          pass
+      except Exception:
+          if call.state == CallState.ANSWERED:
+              call.hangup()
+
+
+  if __name__ == "__main__":
+      phone = VoIPPhone(
+          "sip.example.net",
+          5060,
+          "1000",
+          "password",
+          myIP="192.0.2.10",
+          callCallback=answer,
+      )
+      phone.start()
+      input("Press enter to disable the phone")
+      phone.stop()
+
+For the simplest legacy G.711 flow, use 8000 Hz, 8-bit, mono WAV audio. If you
+enable wideband codecs, confirm that the audio sample rate you provide matches
+``call.audio_format()["sample_rate"]`` or pass ``audio_sample_rate=8000`` to
+``VoIPPhone`` to keep a fixed 8000 Hz application audio pipeline.
+
+IVR and DTMF
+************
+
+DTMF received through RTP telephone-event is stored on the call and can be read
+with ``get_dtmf``. The method defaults to one character and returns an empty
+string when no key is available.
+
+.. code-block:: python
+
+  import time
+  import wave
+
+  from rfcvoip.VoIP import CallState, InvalidStateError, VoIPPhone
+
+
+  def answer(call):
+      try:
+          with wave.open("prompt.wav", "rb") as wav:
+              prompt = wav.readframes(wav.getnframes())
+
+          call.answer()
+          call.write_audio(prompt)
+
           while call.state == CallState.ANSWERED:
-              dtmf = call.get_dtmf()
-              if dtmf == "1":
-                  # Do something
+              digit = call.get_dtmf()
+              if digit == "1":
+                  call.write_audio(b"\x80" * call.audio_frame_size())
                   call.hangup()
-              elif dtmf == "2":
-                  # Do something else
+              elif digit == "2":
+                  call.send_dtmf("9")
                   call.hangup()
               time.sleep(0.1)
       except InvalidStateError:
           pass
-      except:
-          call.hangup()
-      
-  if __name__ == '__main__':
-      phone = VoIPPhone(<SIP Server IP>, <SIP Server Port>, <SIP Server Username>, <SIP Server Password>, myIP=<Your computers local IP>, callCallback=answer)
+      except Exception:
+          if call.state == CallState.ANSWERED:
+              call.hangup()
+
+
+  if __name__ == "__main__":
+      phone = VoIPPhone(
+          "sip.example.net",
+          5060,
+          "1000",
+          "password",
+          myIP="192.0.2.10",
+          callCallback=answer,
+      )
       phone.start()
-      input('Press enter to disable the phone')
+      input("Press enter to disable the phone")
       phone.stop()
 
-Please note that ``get_dtmf()`` is actually ``get_dtmf(length=1)``, and as it is technically an ``io.StringBuffer()``, it will return ``""`` instead of ``None``.  This may be important if you wanted an 'if anything else, do that' clause.  Lastly, VoIPCall stores all DTMF keys pressed since the call was established; meaning, users can press any key they want before the prompt even finishes, or may press a wrong key before the prompt even starts.
+Outbound calls
+**************
 
+``VoIPPhone.call`` originates a call and returns a ``VoIPCall``. The call may
+start in ``DIALING`` or ``RINGING``. When a 200 OK with compatible SDP arrives,
+rfcvoip sends ACK, creates RTP clients, and moves the call to ``ANSWERED``.
+
+.. code-block:: python
+
+  import time
+
+  from rfcvoip.VoIP import CallState, VoIPPhone
+
+
+  phone = VoIPPhone(
+      "sip.example.net",
+      5060,
+      "1000",
+      "password",
+      myIP="192.0.2.10",
+  )
+  phone.start()
+
+  call = phone.call("1001")
+  while call.state in (CallState.DIALING, CallState.RINGING):
+      time.sleep(0.05)
+
+  if call.state == CallState.ANSWERED:
+      call.write_audio(b"\x80" * call.audio_frame_size())
+      call.send_dtmf("123#")
+      call.hangup()
+
+  phone.stop()
+
+Codec priorities
+****************
+
+Codec order affects both local SDP offers and the selected RTP codec when a
+remote endpoint advertises more than one compatible payload.
+
+.. code-block:: python
+
+  from rfcvoip import RTP
+  from rfcvoip.VoIP import VoIPPhone
+
+
+  phone = VoIPPhone(
+      "sip.example.net",
+      5060,
+      "1000",
+      "password",
+      myIP="192.0.2.10",
+      codec_priorities={
+          RTP.PayloadType.PCMU: 1000,
+          RTP.PayloadType.PCMA: 900,
+      },
+      audio_sample_rate=8000,
+  )
+
+You can also adjust priorities after construction:
+
+.. code-block:: python
+
+  phone.set_codec_priority(RTP.PayloadType.PCMU, 1200)
+  phone.reset_codec_priorities()
+
+Telemetry
+*********
+
+Telemetry helpers expose codec negotiation, SIP auth, and call state without
+including passwords or digest responses.
+
+.. code-block:: python
+
+  from rfcvoip import Telemetry
+
+
+  print(Telemetry.report(phone))
+  print(Telemetry.get(phone, "auth.last_digest.algorithm", default="none"))
+
+SIP OPTIONS can be used to inspect a remote endpoint when the server returns
+SDP in the OPTIONS response:
+
+.. code-block:: python
+
+  report = Telemetry.phone_codec_report(phone, target="1001")
+  for codec in report["remote"]:
+      print(codec["name"], codec["supported"])

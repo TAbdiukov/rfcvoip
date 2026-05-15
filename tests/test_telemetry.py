@@ -1,6 +1,6 @@
-import pyVoIP
-from pyVoIP import Telemetry
-from pyVoIP.SIP import SIPMessage
+import rfcvoip
+from rfcvoip import Telemetry
+from rfcvoip.SIP import SIPMessage
 
 
 class DummySIPClient:
@@ -123,12 +123,12 @@ def test_codec_availability_single_codec_refresh(monkeypatch):
         calls.append(True)
 
     monkeypatch.setattr(
-        "pyVoIP.codecs.refresh_codec_availability",
+        "rfcvoip.codecs.refresh_codec_availability",
         fake_refresh,
     )
 
     result = Telemetry.codec_availability(
-        pyVoIP.RTP.PayloadType.PCMU,
+        rfcvoip.RTP.PayloadType.PCMU,
         refresh=True,
     )
 

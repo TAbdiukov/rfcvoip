@@ -1,5 +1,5 @@
-from pyVoIP.SIP import SIPMessage
-from pyVoIP.VoIP import VoIPPhone
+from rfcvoip.SIP import SIPMessage
+from rfcvoip.VoIP import VoIPPhone
 
 
 def _invite_with_sdp(*sdp_lines: str) -> SIPMessage:
@@ -32,7 +32,7 @@ def _basic_sdp(*extra_lines: str):
 
 
 def _pcmu_from_report(message: SIPMessage):
-    from pyVoIP import Telemetry
+    from rfcvoip import Telemetry
 
     report = Telemetry.codec_support_report(message)
     return next(codec for codec in report["remote"] if codec["name"] == "PCMU")

@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 def read_version() -> str:
-    version_path = ROOT / "pyVoIP" / "_version.py"
+    version_path = ROOT / "rfcvoip" / "_version.py"
     module = ast.parse(
         version_path.read_text(encoding="utf-8"),
         filename=str(version_path),
@@ -31,21 +31,21 @@ with open(ROOT / "README.md", "r", encoding="utf-8") as f:
     long_description = f.read()
 
 setup(
-    name="pyVoIP",
+    name="rfcvoip",
     version=read_version(),
-    description="PyVoIP is a pure python VoIP/SIP/RTP library.",
+    description="rfcvoip is a maintained, protocol-focused VoIP/SIP/RTP library.",
     install_requires=[
         'audioop-lts>=0.2.1; python_version>="3.13"',
         "dnspython>=2.2.1",
     ],
     long_description=long_description,
     long_description_content_type="text/markdown",
-    author="Tayler Porter",
-    author_email="taylerporter@gmail.com",
-    url="https://github.com/tayler6000/pyVoIP",
+    author="Tim Abdiukov; Tayler Porter and PyVoIP contributors",
+    url="https://github.com/TAbdiukov/rfcvoip",
     project_urls={
-        "Bug Tracker": "https://github.com/tayler6000/pyVoIP/issues",
-        "Documentation": "https://pyvoip.readthedocs.io/",
+        "Bug Tracker": "https://github.com/TAbdiukov/rfcvoip/issues",
+        "Documentation": "https://rfcvoip.readthedocs.io/",
+        "Original PyVoIP": "https://github.com/tayler6000/pyVoIP",
     },
     extras_require={
         "opus": ["discord.py>=2.0"],
@@ -65,6 +65,6 @@ setup(
         "Topic :: Communications :: Telephony",
     ],
     packages=find_packages(exclude=("tests", "tests.*")),
-    package_data={"pyVoIP": ["py.typed"]},
+    package_data={"rfcvoip": ["py.typed"]},
     python_requires=">=3.8",
 )

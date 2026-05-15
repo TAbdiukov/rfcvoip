@@ -1,5 +1,5 @@
-import pyVoIP.SIPTransport as sip_transport
-from pyVoIP.SIPTransport import SIPResolver, SIPTransport
+import rfcvoip.SIPTransport as sip_transport
+from rfcvoip.SIPTransport import SIPResolver, SIPTransport
 
 
 class _FailingDNS:

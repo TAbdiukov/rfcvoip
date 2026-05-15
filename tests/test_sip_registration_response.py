@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from pyVoIP import SIP
+from rfcvoip import SIP
 
 
 class FakePhone:
@@ -93,7 +93,7 @@ def test_register_response_wait_ignores_unrelated_and_provisional():
         ]
     )
 
-    with patch("pyVoIP.SIP.select.select", side_effect=_fake_select(fake_socket)):
+    with patch("rfcvoip.SIP.select.select", side_effect=_fake_select(fake_socket)):
         response = client._wait_for_transaction_response(
             request, action="Registering"
         )
@@ -107,7 +107,7 @@ def test_register_response_wait_times_out_after_provisional_only():
     request = client.gen_first_response()
     fake_socket.packets.append(_response_for(request, "100 Trying"))
 
-    with patch("pyVoIP.SIP.select.select", side_effect=_fake_select(fake_socket)):
+    with patch("rfcvoip.SIP.select.select", side_effect=_fake_select(fake_socket)):
         with pytest.raises(TimeoutError, match="only sent provisional"):
             client._wait_for_transaction_response(
                 request, action="Registering"
@@ -119,6 +119,6 @@ def test_trying_timeout_check_times_out_without_unbound_local_error():
     request = client.gen_first_response()
     response = SIP.SIPMessage(_response_for(request, "100 Trying"))
 
-    with patch("pyVoIP.SIP.select.select", side_effect=_fake_select(fake_socket)):
+    with patch("rfcvoip.SIP.select.select", side_effect=_fake_select(fake_socket)):
         with pytest.raises(TimeoutError, match="still TRYING"):
             client.trying_timeout_check(response)

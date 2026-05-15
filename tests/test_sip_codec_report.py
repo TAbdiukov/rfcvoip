@@ -1,4 +1,4 @@
-from pyVoIP.SIP import SIPMessage
+from rfcvoip.SIP import SIPMessage
 
 
 def _sip_response_with_sdp(sdp: bytes) -> bytes:
@@ -17,12 +17,12 @@ def _sip_response_with_sdp(sdp: bytes) -> bytes:
 
 
 def test_sip_message_reports_supported_sdp_codecs():
-    from pyVoIP import Telemetry
+    from rfcvoip import Telemetry
 
     sdp = (
         "v=0\r\n"
-        "o=pyVoIP 1 1 IN IP4 127.0.0.1\r\n"
-        "s=pyVoIP test\r\n"
+        "o=rfcvoip 1 1 IN IP4 127.0.0.1\r\n"
+        "s=rfcvoip test\r\n"
         "c=IN IP4 127.0.0.1\r\n"
         "t=0 0\r\n"
         "m=audio 4000 RTP/AVP 0 8 101\r\n"

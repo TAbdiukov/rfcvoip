@@ -1,9 +1,9 @@
 from threading import Lock
 from types import SimpleNamespace
 
-import pyVoIP
-from pyVoIP.SIP import RetryRequiredError, SIPClient
-from pyVoIP.VoIP.status import PhoneStatus
+import rfcvoip
+from rfcvoip.SIP import RetryRequiredError, SIPClient
+from rfcvoip.VoIP.status import PhoneStatus
 
 
 def _client_with_deregister(monkeypatch, outcomes):
@@ -20,8 +20,8 @@ def _client_with_deregister(monkeypatch, outcomes):
         return outcome
 
     client._SIPClient__deregister = fake_deregister
-    monkeypatch.setattr(pyVoIP, "REGISTER_FAILURE_THRESHOLD", 3)
-    monkeypatch.setattr("pyVoIP.SIP.time.sleep", lambda _: None)
+    monkeypatch.setattr(rfcvoip, "REGISTER_FAILURE_THRESHOLD", 3)
+    monkeypatch.setattr("rfcvoip.SIP.time.sleep", lambda _: None)
     return client, calls
 
 

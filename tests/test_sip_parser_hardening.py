@@ -1,7 +1,7 @@
 import pytest
 
-from pyVoIP.SIP import SIPMessage, SIPParseError
-from pyVoIP.SIPTransport import (
+from rfcvoip.SIP import SIPMessage, SIPParseError
+from rfcvoip.SIPTransport import (
     ResolvedSIPTarget,
     SIPConnection,
     SIPFramingError,

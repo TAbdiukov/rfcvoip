@@ -1,193 +1,292 @@
-VoIP - The Bridge Between SIP and RTP
-#####################################
+VoIP - High-level phone and call API
+####################################
 
-The VoIP module coordinates between the SIP and RTP modules in order to create an effective Voice over Internet Protocol system.  The VoIP system is made for your convenience, and if you have a particularly intricate situation, you can use the SIP and RTP modules independently and create your own version of the VoIP module.  If you choose to use the VoIP module, this section will explain how.
+The VoIP module coordinates SIP signaling and RTP media. Most applications use
+``VoIPPhone`` and ``VoIPCall`` rather than constructing ``SIPClient`` or
+``RTPClient`` directly.
 
 Errors
-********
+******
 
-There are two errors under ``pyVoIP.VoIP``.
+*exception* VoIP. **InvalidStateError**
+  Raised when a call operation is not valid for the current state, such as
+  answering a non-ringing call or hanging up a call that is not answered.
 
-.. _invalidstateerror:
+*exception* VoIP. **InvalidRangeError**
+  Raised for invalid RTP port ranges, invalid audio sample rates, or invalid
+  port request counts.
 
-*exception* VoIP.\ **InvalidStateError**
-  This is thrown by :ref:`VoIPCall` when you try to perform an action that cannot be performed during the current :ref:`CallState<callstate>`.  For example denying a call that has already been answered, hanging up a call that hasn't been answered yet, or has already been ended.
-
-*exception* VoIP.\ **InvalidRangeError**
-  This is thrown by :ref:`VoIPPhone` when you define the rtpPort ranges as rtpPortLow > rtpPortHigh.  However, this is not checked by :ref:`VoIPCall`, so if you are using your own class instead of VoIPPhone, make sure these ranges are correct.
-
-*exception* VoIP.\ **NoPortsAvailableError**
-  This is thrown when a call is attempting to be initiated but no ports are available.
+*exception* VoIP. **NoPortsAvailableError**
+  Raised when no RTP ports are available.
 
 Enums
-***********
+*****
 
 .. _callstate:
 
-VoIP.\ **CallState**
-  CallState is an Enum with four attributes.
+VoIP. **CallState**
+  ``DIALING``
+    Outbound INVITE has been sent and the call has not connected.
 
-  CallState.\ **DIALING**
-    This CallState is used to describe when a :term:`user` has originated a call to a :term:`client`, but it has yet to be answered.
+  ``RINGING``
+    Incoming call is waiting for answer, or outbound call has received ringing
+    or session progress.
 
-  CallState.\ **RINGING**
-    This CallState is used to describe when a :term:`client` is calling, but the call has yet to be answered.
+  ``ANSWERED``
+    Call is active and RTP clients have been started.
 
-    In this state, you can use ``VoIPCall.answer()`` or ``VoIPCall.deny()``.
+  ``ENDED``
+    Call is locally ended. No call-control actions are valid.
 
-  CallState.\ **ANSWERED**
-    This CallState is used to describe when a call has been answered and is active.
+.. _phonestatus:
 
-    In this state, you can use ``VoIPCall.hangup()``.
+VoIP. **PhoneStatus**
+  ``INACTIVE``
+    Phone is stopped.
 
-  CallState.\ **ENDED**
-    This CallState is used to describe when a call has been terminated.
+  ``REGISTERING``
+    Phone is starting or refreshing registration.
 
-    In this state, you can not use any functions.
+  ``REGISTERED``
+    Phone is registered and ready.
 
-.. _phonestatus
+  ``DEREGISTERING``
+    Phone is stopping.
 
-VoIP.\ **PhoneStatus**
-  PhoneStatus is an Enum with five attributes.
-
-  PhoneStatus.\ **INACTIVE**
-    This PhoneStatus is used when ``VoIPPhone.start()`` has not been called, or after the phone has fully stopped after calling ``VoIPPhone.stop()``.
-
-  PhoneStatus.\ **REGISTERING**
-    This PhoneStatus is used when ``VoIPPhone.start()`` has been called, but has not finished starting.
-
-  PhoneStatus.\ **REGISTERED**
-    This PhoneStatus is used when ``VoIPPhone`` has finished starting successfully, and is ready for use.
-
-  PhoneStatus.\ **DEREGISTERING**
-    This PhoneStatus is used when ``VoIPPhone.stop()`` has been called, but has not finished stopping.
-
-  PhoneStatus.\ **FAILED**
-    This PhoneStatus is used when ``VoIPPhone.start()`` has been called, but failed to start due to an error.
-
-Classes
-********
-
-.. _VoIPCall:
-
-VoIPCall
-=========
-
-The VoIPCall class is used to represent a single VoIP Session, which may be to multiple :term:`clients<client>`.
-
-*class* VoIP.\ **VoIPCall**\ (phone: :ref:`VoIPPhone`, request: :ref:`SIPMessage`, session_id: int, myIP: str, rtpPortLow: int, rtpPortHigh: int)
-      The *phone* argument is the initating instance of :ref:`VoIPPhone`.
-
-      The *callstate* arguement is the initiating :ref:`CallState<callstate>`.
-
-      The *request* argument is the :ref:`SIPMessage` representation of the SIP INVITE request from the VoIP server.
-
-      The *session_id* argument is a unique code used to identify the session with `SDP <https://tools.ietf.org/html/rfc4566#section-5.2>`_ when answering the call.
-
-      The *myIP* argument is the IP address it will pass to :ref:`RTPClient`'s to bind to.
-
-      The *ms* arguement is a dictionary with int as the key and a :ref:`PayloadType<payload-type>` as the value.  This is only used when originating the call.
-
-
-    **dtmfCallback**\ (code: str) -> None
-      *Deprecated.* Please use ``dtmf_callback`` instead.
-
-    **dtmf_callback**\ (code: str) -> None
-      This method is called by :ref:`RTPClient`'s when a telephone-event DTMF message is received.  The *code* argument is a string.  It should be an Event in complinace with `RFC 4733 Section 3.2 <https://tools.ietf.org/html/rfc4733#section-3.2>`_.
-
-    **getDTMF**\ (length=1) -> str
-      *Deprecated.* Please use ``get_dtmf`` instead.
-
-    **get_dtmf**\ (length=1) -> str
-      This method can be called get the next pressed DTMF key.  DTMF's are stored in an ``io.StringIO`` and act as a stack.  Meaning if the :term:`client` presses the numbers 1-9-5 you'll have the following output:
-
-      .. code-block:: python
-
-        VoIPCall.get_dtmf()
-        >>> '1'
-        VoIPCall.get_dtmf(length=2)
-        >>> '95'
-        VoIPCall.get_dtmf()
-        >>> ''
-
-      As you can see, calling this method when there a key has not been pressed returns an empty string.
-
-    **answer**\ () -> None
-      Answers the call if the phone's state is CallState.RINGING.
-
-    **answered**\ (request: :ref:`SIPMessage`) -> None
-      This function is called by :ref:`SIPClient` when a call originated by the :term:`user` has been answered by the :term:`client`.
-
-    **deny**\ () -> None
-      Denies the call if the phone's state is CallState.RINGING.
-
-    **hangup**\ () -> None
-      Ends the call if the phone's state is CallState.ANSWERED.
-
-    **bye**\ () -> None
-      Ends the call but does not send a SIP BYE message to the SIP server.  This function is used to end the call on the server side when the client ended the call.  **THE** :term:`USER<user>` **SHOUND NOT CALL THIS FUNCTION OR THE** :term:`CLIENT<client>` **WILL BE LEFT ON THE LINE WITH NO RESPONSE. CALL HANGUP() INSTEAD.**
-
-    **writeAudio**\ (data: bytes) -> None
-      *Deprecated.* Please use ``write_audio`` instead.
-
-    **write_audio**\ (data: bytes) -> None
-      Writes linear/raw audio data to the transmit buffer before being encoded and sent.  The *data* argument MUST be bytes.  **This audio must be linear/not encoded,** :ref:`RTPClient` **will encode it before transmitting.**
-
-    **readAudio**\ (length=160, blocking=True) -> bytes
-      *Deprecated.* Please use ``read_audio`` instead.
-
-    **read_audio**\ (length=160, blocking=True) -> bytes
-      Reads linear/raw audio data from the received buffer.  Returns *length* amount of bytes.  Default length is 160 as that is the amount of bytes sent per PCMU/PCMA packet.  When *blocking* is set to true, this function will not return until data is available.  When *blocking* is set to false and data is not available, this function will return ``b"\x80" * length``.
+  ``FAILED``
+    Phone stopped after registration or startup failure.
 
 .. _VoIPPhone:
 
 VoIPPhone
-=========
+*********
 
-The VoIPPhone class is used to manage the :ref:`SIPClient` class and create :ref:`VoIPCall`'s when there is an incoming call.  It then passes the VoIPCall as the argument in the callback.
+*class* VoIP. **VoIPPhone**\ (
+    server,
+    port,
+    username,
+    password,
+    myIP="0.0.0.0",
+    callCallback=None,
+    sipPort=5060,
+    rtpPortLow=10000,
+    rtpPortHigh=20000,
+    auth_username=None,
+    proxy=None,
+    proxyPort=None,
+    proxy_port=None,
+    transport=None,
+    tls_context=None,
+    tls_server_name=None,
+    codec_priorities=None,
+    audio_sample_rate=None,
+)
 
-*class* VoIP.\ **VoIPPhone**\ (server: str, port: int, username: str, password: str, myIP="0.0.0.0", callCallback: Optional[Callable[[VoIPCall], None]] = None, sipPort=5060, rtpPortLow=10000, rtpPortHigh=20000, auth_username: Optional[str] = None)
-    The *server* argument is your PBX/VoIP server's IP, represented as a string.
+Required arguments:
 
-    The *port* argument is your PBX/VoIP server's port, represented as an integer.
+``server`` and ``port``
+  SIP registrar or target. ``server`` may be a host, SIP URI, or SIPS URI.
 
-    The *username* argument is your SIP account username on the PBX/VoIP server, represented as a string.
+``username`` and ``password``
+  SIP account credentials.
 
-    The *password* argument is your SIP account password on the PBX/VoIP server, represented as a string.
+Common optional arguments:
 
-    The *callCallback* argument is your callback function that VoIPPhone will run when you receive a call.  The callback must take one argument, which will be a :ref:`VoIPCall`.  If left as None, the VoIPPhone will automatically respond to all incoming calls as Busy.
+``myIP``
+  Local IP address advertised in SIP Contact and SDP and used for SIP/RTP
+  binding. Use an address family compatible with remote RTP SDP.
 
-    The *myIP* argument is used to bind SIP and RTP ports to receive incoming calls.  The default is 0.0.0.0.
+``callCallback``
+  Callable receiving a ``VoIPCall`` for inbound calls. If omitted, inbound
+  calls are answered with ``486 Busy Here``.
 
-    The *sipPort* argument is the port SIP will bind to to receive SIP requests.  The default for this protocol is port 5060, but any port can be used.
+``sipPort``
+  Local SIP signaling port.
 
-    The *rtpPortLow* and *rtpPortHigh* arguments are used to generate random ports to use for audio transfer.  Per RFC 4566 Sections `5.7 <https://tools.ietf.org/html/rfc4566#section-5.7>`_ and `5.14 <https://tools.ietf.org/html/rfc4566#section-5.14>`_, it can take multiple ports to fully communicate with other :term:`clients<client>`, as such a large range is recommended.  If an invalid range is given, a :ref:`InvalidStateError<invalidstateerror>` will be thrown.
+``rtpPortLow`` and ``rtpPortHigh``
+  Range used for RTP media sockets.
 
-	auth_username: Optional[str] = None
-		Optional authentication identity used for Proxy-Authorization challenges.
-		If omitted, the normal username is used.
+``auth_username``
+  Digest authentication username when different from the public SIP username.
 
-  **callback**\ (request: :ref:`SIPMessage`) -> None
-    This method is called by the :ref:`SIPClient` when an INVITE or BYE request is received.  This function then creates a :ref:`VoIPCall` or terminates it respectively.  When a VoIPCall is created, it will then pass it to the *callCallback* function as an argument.  If *callCallback* is set to None, this function replies as BUSY. **This function should not be called by the** :term:`user`.
+``proxy`` and ``proxy_port`` / ``proxyPort``
+  Outbound SIP proxy.
 
-  **getStatus**\ () -> PhoneStatus
-    *Deprecated.* Please use ``get_status`` instead.
+``transport``
+  ``udp``, ``tcp``, or ``tls``.
 
-  **get_status**\ () -> PhoneStatus
-    This method returns the :ref:`PhoneStatus<phonestatus>`.
+``tls_context`` and ``tls_server_name``
+  TLS configuration for TLS signaling.
 
-  **request_port**\ (blocking=True) -> int
-    This method is called when a new port is needed to use in a :ref:`VoIPCall`.  If blocking is set to True, this will wait until a port is available.  Otherwise, it will raise NoPortsAvailableError.
+``codec_priorities``
+  Per-phone codec priority overrides. Larger scores are preferred.
 
-  **release_ports**\ (call: Optional[VoIPCall] = None) -> None
-    This method is called when a call ends.  If call is provided, it will only release the ports used by that :ref:`VoIPCall`.  Otherwise, it will iterate through all active calls, and release all ports that are no longer in use.
+``audio_sample_rate``
+  Fixed public audio sample rate. When omitted, rfcvoip uses the selected
+  codec's preferred source sample rate.
+
+Lifecycle:
 
   **start**\ () -> None
-    This method starts the :ref:`SIPClient` class.  On failure, this will automatically call stop().
+    Starts SIP signaling and registration.
 
-  **stop**\ () -> None
-    This method ends all currently ongoing calls, then stops the :ref:`SIPClient` class
+  **stop**\ (failed=False) -> None
+    Ends active calls, deregisters, closes SIP/RTP sockets, and updates phone
+    status.
 
-  **call**\ (number: str) -> :ref:`VoIPCall`
-    Originates a call using PCMU and telephone-event. The *number* argument must be a string, and it returns a :ref:`VoIPCall` class in CallState.DIALING.  You should use a while loop to wait until the CallState is ANSWERED.
+  **fatal**\ () -> None
+    Stops the phone and marks it failed.
 
+  **get_status**\ () -> PhoneStatus
+    Returns current phone status.
+
+Calling:
+
+  **call**\ (number: str) -> VoIPCall
+    Originates an outbound call. Local SDP offer includes enabled
+    transmittable audio codecs plus telephone-event when available.
+
+  **callback**\ (request: SIPMessage) -> None
+    Internal entry point used by ``SIPClient`` for call-control messages.
+
+RTP ports:
+
+  **request_port**\ (blocking=True) -> int
+    Reserves one RTP port.
+
+  **request_ports**\ (count, blocking=True) -> list[int]
+    Reserves contiguous RTP ports.
+
+  **reserve_ports**\ (ports, allow_existing=None) -> list[int]
+    Reserves specific ports.
+
+  **release_ports**\ (call=None) -> None
+    Releases unused ports, or ports owned by a specific call.
+
+Codec and audio helpers:
+
+  **refresh_supported_codecs**\ () -> list[PayloadType]
+    Refreshes optional codec availability.
+
+  **set_codec_priority**\ (codec, score) -> list[PayloadType]
+    Sets a per-phone codec priority override.
+
+  **reset_codec_priorities**\ () -> list[PayloadType]
+    Clears per-phone codec priority overrides.
+
+  **public_audio_frame_size**\ (duration_ms=20) -> int
+    Returns bytes for the phone's public audio format before negotiation.
+
+  **audio_format**\ () -> dict
+    Returns public audio format metadata.
+
+Negotiation behavior:
+
+* Inbound calls with unsupported RTP profiles, incompatible address families,
+  no assignable audio ports, video-only media, or no compatible transmittable
+  audio codec are rejected with ``488 Not Acceptable Here``.
+* Outbound calls ACK final INVITE responses. If a 200 OK contains incompatible
+  SDP, rfcvoip sends BYE when possible and ends the local call.
+* Media direction is negotiated from local desired direction and remote SDP
+  direction.
+* Multiple media connections require contiguous local RTP ports so the answer
+  can advertise ``m=audio port/count`` correctly.
+
+.. _VoIPCall:
+
+VoIPCall
+********
+
+*class* VoIP. **VoIPCall**\ (
+    phone,
+    callstate,
+    request,
+    session_id,
+    myIP,
+    ms=None,
+    sendmode="sendonly",
+)
+
+``VoIPCall`` is normally created by ``VoIPPhone``. It stores the SIP request,
+Call-ID, RTP clients, negotiated media, DTMF buffer, and assigned ports.
+
+Attributes:
+
+``state``
+  Current ``CallState``.
+
+``call_id``
+  SIP Call-ID.
+
+``request``
+  Original SIP INVITE or generated outbound INVITE.
+
+``remote_sip_message``
+  Remote SDP message for inbound ringing calls or answered outbound calls.
+
+``session_id``
+  SDP session id used in answers.
+
+``RTPClients``
+  Active RTP clients for the call.
+
+Call control:
+
+  **answer**\ () -> None
+    Answers a ringing inbound call, starts RTP clients, and sends 200 OK with
+    SDP.
+
+  **answered**\ (request: SIPMessage) -> None
+    Internal handler for successful outbound INVITE responses.
+
+  **deny**\ () -> None
+    Rejects a ringing inbound call with busy.
+
+  **cancel**\ () -> None
+    Cancels a dialing or ringing outbound call.
+
+  **hangup**\ () -> None
+    Stops RTP and sends BYE for an answered call.
+
+  **bye**\ () -> None
+    Internal handler for remote BYE. User code should call ``hangup`` instead.
+
+  **renegotiate**\ (request: SIPMessage) -> None
+    Handles in-dialog INVITE when compatible with the current RTP setup.
+
+Audio:
+
+  **write_audio**\ (data: bytes) -> None
+    Queues public audio bytes for every RTP client.
+
+  **read_audio**\ (length=None, blocking=True) -> bytes
+    Reads decoded public audio. If multiple RTP clients exist, audio is mixed.
+    If the call is not answered, silence is returned.
+
+  **audio_frame_size**\ (duration_ms=20) -> int
+    Returns the number of public audio bytes for one frame.
+
+  **audio_format**\ () -> dict
+    Returns call audio format metadata.
+
+DTMF:
+
+  **dtmf_callback**\ (code: str) -> None
+    Internal callback used by RTP telephone-event handling.
+
+  **get_dtmf**\ (length=1) -> str
+    Reads queued DTMF digits. Returns ``""`` when no digit is available.
+
+  **send_dtmf**\ (digits: str) -> bool
+    Queues outbound telephone-event DTMF for active RTP clients.
+
+  **send_dtmf_sequence**\ (digits: str) -> bool
+    Alias for ``send_dtmf``.
+
+SDP:
+
+  **gen_ms**\ () -> dict
+    Builds the local SDP media map for an answer and starts RTP clients.
+
+Deprecated camelCase aliases remain available for compatibility and emit
+``DeprecationWarning``.

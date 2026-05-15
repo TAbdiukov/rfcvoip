@@ -1,4 +1,4 @@
-from pyVoIP.RTP import RTPClient, PayloadType, TransmitType
+from rfcvoip.RTP import RTPClient, PayloadType, TransmitType
 
 
 def test_rtp_client_stop_before_start_is_safe():

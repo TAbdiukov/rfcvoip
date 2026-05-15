@@ -1,7 +1,7 @@
 import unittest
 import warnings
 
-from pyVoIP.VoIP.VoIP import CallState, VoIPCall
+from rfcvoip.VoIP.VoIP import CallState, VoIPCall
 
 
 class FakePhone:

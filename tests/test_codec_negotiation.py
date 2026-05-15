@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from pyVoIP import RTP, SIP
-from pyVoIP.VoIP.VoIP import CallState, VoIPCall, VoIPPhone
+from rfcvoip import RTP, SIP
+from rfcvoip.VoIP.VoIP import CallState, VoIPCall, VoIPPhone
 
 
 class DummyPhone:

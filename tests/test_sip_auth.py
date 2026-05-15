@@ -1,4 +1,4 @@
-from pyVoIP.SIPAuth import (
+from rfcvoip.SIPAuth import (
     build_digest_auth_header,
     choose_digest_challenge,
     compute_digest_response,

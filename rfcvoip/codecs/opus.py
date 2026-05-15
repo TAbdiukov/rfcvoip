@@ -4,7 +4,7 @@ import ctypes
 import ctypes.util
 import threading
 
-from pyVoIP.codecs.base import CodecAvailability, RTPCodec
+from rfcvoip.codecs.base import CodecAvailability, RTPCodec
 
 
 OPUS_APPLICATION_VOIP = 2048
@@ -182,7 +182,7 @@ class OpusCodec(RTPCodec):
 
     @classmethod
     def rtpmap(cls, payload_type: int) -> str:
-        # RFC-style Opus SDP commonly advertises opus/48000/2. PyVoIP still
+        # RFC-style Opus SDP commonly advertises opus/48000/2. rfcvoip still
         # exposes mono 8 kHz audio to user code and downmixes internally.
         return f"{payload_type} opus/48000/2"
 

@@ -5,7 +5,7 @@ import io
 import struct
 import threading
 
-from pyVoIP.codecs.base import CodecAvailability, RTPCodec
+from rfcvoip.codecs.base import CodecAvailability, RTPCodec
 
 
 _PYSILK_MODULE = None
@@ -164,7 +164,7 @@ class SilkCodec(RTPCodec):
         if max_average_bps < min_bps:
             return False
 
-        # PyVoIP's current adapter does not carry per-peer fmtp into the codec
+        # rfcvoip's current adapter does not carry per-peer fmtp into the codec
         # instance, so reject caps lower than the encoder setting we will use.
         return max_average_bps >= min(cls.bit_rate, max_bps)
 

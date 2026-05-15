@@ -1,5 +1,5 @@
-from pyVoIP import RTP, SIP
-from pyVoIP.VoIP import VoIPPhone
+from rfcvoip import RTP, SIP
+from rfcvoip.VoIP import VoIPPhone
 
 
 def _invite(*protocols: str) -> SIP.SIPMessage:

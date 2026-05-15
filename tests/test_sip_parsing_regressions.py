@@ -1,4 +1,4 @@
-from pyVoIP.SIP import SIPMessage
+from rfcvoip.SIP import SIPMessage
 
 
 def test_folded_digest_header_is_unfolded():

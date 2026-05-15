@@ -20,7 +20,7 @@ class CodecAvailability:
 class RTPCodec:
     """Runtime codec implementation.
 
-    PyVoIP's public audio API reads/writes unsigned 8-bit mono samples.  The
+    rfcvoip's public audio API reads/writes unsigned 8-bit mono samples.  The
     sample rate is configurable per RTP client.  Codecs convert between that
     public sample rate and their RTP/native clock internally.
     """
@@ -71,7 +71,7 @@ class RTPCodec:
         sample_width: int = 1,
         channels: int = 1,
     ) -> None:
-        """Configure PyVoIP's public audio format for this codec instance.
+        """Configure rfcvoip's public audio format for this codec instance.
 
         Only the sample rate is currently variable.  The public byte stream
         remains unsigned 8-bit mono for compatibility with existing callers.
@@ -90,7 +90,7 @@ class RTPCodec:
             raise ValueError("Audio sample rate must be positive.")
         if sample_width != 1 or channels != 1:
             raise ValueError(
-                "PyVoIP public audio currently supports unsigned 8-bit mono; "
+                "rfcvoip public audio currently supports unsigned 8-bit mono; "
                 "only the sample rate is configurable."
             )
 

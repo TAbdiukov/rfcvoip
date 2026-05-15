@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from pyVoIP.SIP import SIPClient
+from rfcvoip.SIP import SIPClient
 
 
 class DummyPhone:

@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 
-PACKAGE_NAME = "pyVoIP"
+PACKAGE_NAME = "rfcvoip"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = PROJECT_ROOT / PACKAGE_NAME
 

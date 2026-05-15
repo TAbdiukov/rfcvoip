@@ -1,11 +1,11 @@
-import pyVoIP
+import rfcvoip
 
-from pyVoIP import RTP
-from pyVoIP.codecs import create_codec
+from rfcvoip import RTP
+from rfcvoip.codecs import create_codec
 
 
 def test_supported_codecs_include_builtin_g711_and_telephone_event():
-    from pyVoIP import Telemetry
+    from rfcvoip import Telemetry
 
     codecs = Telemetry.local_supported_codecs()
     names = {codec["name"] for codec in codecs}

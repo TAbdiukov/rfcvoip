@@ -1,5 +1,5 @@
-from pyVoIP import SIP
-from pyVoIP.VoIP.VoIP import VoIPPhone
+from rfcvoip import SIP
+from rfcvoip.VoIP.VoIP import VoIPPhone
 
 
 def _invite_with_sdp(body: str) -> SIP.SIPMessage:

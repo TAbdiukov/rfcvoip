@@ -2,9 +2,9 @@ import threading
 import warnings
 from types import SimpleNamespace
 
-import pyVoIP
-from pyVoIP import RTP, SIP
-from pyVoIP.VoIP.VoIP import CallState, VoIPCall, VoIPPhone
+import rfcvoip
+from rfcvoip import RTP, SIP
+from rfcvoip.VoIP.VoIP import CallState, VoIPCall, VoIPPhone
 
 
 def _invite_response(call_id: str = "race-call@example.test") -> SIP.SIPMessage:
@@ -71,7 +71,7 @@ def test_unrelated_invite_response_is_not_queued_during_call_construction():
 
 
 def test_rtp_client_nsd_is_event_backed_but_public_name_is_preserved():
-    pyVoIP.refresh_supported_codecs()
+    rfcvoip.refresh_supported_codecs()
     client = RTP.RTPClient(
         {0: RTP.PayloadType.PCMU},
         "127.0.0.1",
@@ -165,7 +165,7 @@ def test_voip_call_lazy_state_lock_supports_object_new_doubles():
 
 
 def test_active_codecs_works_for_object_new_call_doubles():
-    from pyVoIP import Telemetry
+    from rfcvoip import Telemetry
 
     class FakeRTPClient:
         def selected_codec_info(self):

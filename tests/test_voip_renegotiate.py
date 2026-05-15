@@ -1,9 +1,9 @@
 import unittest
 from types import SimpleNamespace
 
-from pyVoIP import SIP
-from pyVoIP.VoIP.VoIP import VoIPCall
-from pyVoIP.VoIP.VoIP import VoIPPhone
+from rfcvoip import SIP
+from rfcvoip.VoIP.VoIP import VoIPCall
+from rfcvoip.VoIP.VoIP import VoIPPhone
 
 
 class FakePhone:

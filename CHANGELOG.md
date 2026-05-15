@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.9.0+RFC
+
+- New project name: rfcvoip, derived from PyVoIP
+- Update documentation
+
 ## 2.8.8+RFC
 
 - Standalone Telemetry module.
@@ -221,12 +226,12 @@
 ## 2.7.7+RFC
 
 - SIP Experimental: Add TCP/TLS SIP transport with RFC 3263-compliant resolution (NAPTR/SRV, `;transport=` support, and TLS via SIPS)
-- SIP: RFC 3261-compliant compact headers support (supersedes [PyVOIP#309](https://github.com/tayler6000/pyVoIP/pull/309))
-- SIP: RFC 5621-compliant multipart SDP support (Robust MIME walker supports recursive data; much supersedes [PyVOIP#259](https://github.com/tayler6000/pyVoIP/pull/259))
+- SIP: RFC 3261-compliant compact headers support (supersedes [PyVoIP#309](https://github.com/tayler6000/PyVoIP/pull/309))
+- SIP: RFC 5621-compliant multipart SDP support (Robust MIME walker supports recursive data; much supersedes [PyVoIP#259](https://github.com/tayler6000/PyVoIP/pull/259))
 - SIP: More robust proxy hangling, update docs
-- PyVOIP: Fix phantom calls due to ambiguous INVITE handling.
-- RTP: Fix call deny flow crashing (methodically fixes [PyVOIP#243](https://github.com/tayler6000/pyVoIP/issues/243))
-- Docs: Fix 'ANSWERED' typo (fixes: [PyVOIP#310](https://github.com/tayler6000/pyVoIP/issues/310))
+- PyVoIP: Fix phantom calls due to ambiguous INVITE handling.
+- RTP: Fix call deny flow crashing (methodically fixes [PyVoIP#243](https://github.com/tayler6000/PyVoIP/issues/243))
+- Docs: Fix 'ANSWERED' typo (fixes: [PyVoIP#310](https://github.com/tayler6000/PyVoIP/issues/310))
 
 ## 2.7.6+RFC
 
@@ -254,7 +259,7 @@
 - SIP: ACK unmatched final INVITE responses after local call state is gone.
 - SIP: Fix unbounded retry/recursion in SIP deregistration
 - VoIP: Improve "no compatible codecs" codec-negotiation
-- pyVOIP: Overall improve IPv4/IPv6 RTP address-family handling
+- PyVoIP: Overall improve IPv4/IPv6 RTP address-family handling
 - SIP: Do check IPv4/IPv6
 - SIP&VoIP: If no codecs are compatible then send error to PBX
 - SIP: Fix unsupported SIP request handling
@@ -271,19 +276,19 @@
 
 ## 2.7.3+RFC
 
-- PyVOIP-RFC: Fix double free() for ports.
-- PyVOIP-RFC: Bump version to 2.x.. (since PyVOIP v2 changes were backported)
-- PyVOIP-RFC: Consolidate version handling
+- PyVoIP-RFC: Fix double free() for ports.
+- PyVoIP-RFC: Bump version to 2.x.. (since PyVoIP v2 changes were backported)
+- PyVoIP-RFC: Consolidate version handling
 - Fix changelog
 - SIP: More thorough subscription support
 - VoIP: Add DTMF support
-- VoIP: Backport authentication support from pyVoIP 2.x.x
+- VoIP: Backport authentication support from PyVoIP 2.x.x
 - VoIP: Hangup call support
 - SIP: call cancellations
-- PyVOIP-RFC: Fix workflows
-- PyVOIP-RFC: Begin using telemetry for workflows
+- PyVoIP-RFC: Fix workflows
+- PyVoIP-RFC: Begin using telemetry for workflows
 - Debug: Add detailed outbound call telemetry (Call-ID, session ID, last SIP response, RTP ports, worker thread state)
-- Debug: Timestamp pyVoIP debug output and trace INVITE progress/auth/final responses in more detail
+- Debug: Timestamp PyVoIP debug output and trace INVITE progress/auth/final responses in more detail
 - VoIP: Preserve fast final INVITE responses so they can still be inspected after the VoIPCall object is created
 
 ## 1.7.0+RFC

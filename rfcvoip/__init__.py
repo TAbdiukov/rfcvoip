@@ -9,7 +9,7 @@ __all__ = [
 
 from datetime import datetime, timezone
 
-from pyVoIP._version import __version__, version_info
+from rfcvoip._version import __version__, version_info
 
 DEBUG = False
 
@@ -30,17 +30,17 @@ REGISTER_FAILURE_THRESHOLD = 3
 def debug(s, e=None):
     stamp = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     if DEBUG:
-        print(f"[pyVoIP {stamp}] {s}")
+        print(f"[rfcvoip {stamp}] {s}")
     elif e is not None:
-        print(f"[pyVoIP {stamp}] {e}")
+        print(f"[rfcvoip {stamp}] {e}")
 
 
 # noqa because import will fail if debug is not defined
-from pyVoIP.RTP import PayloadType  # noqa: E402
+from rfcvoip.RTP import PayloadType  # noqa: E402
 
 
 def _build_rtp_compatible_codecs():
-    from pyVoIP.codecs import enabled_payload_types
+    from rfcvoip.codecs import enabled_payload_types
 
     return enabled_payload_types(include_events=True)
 
@@ -64,7 +64,7 @@ def refresh_supported_codecs():
     """Refresh optional codec availability and return enabled payload types."""
     global RTPCompatibleCodecs
 
-    from pyVoIP.codecs import enabled_payload_types, refresh_codec_availability
+    from rfcvoip.codecs import enabled_payload_types, refresh_codec_availability
 
     refresh_codec_availability()
     RTPCompatibleCodecs = enabled_payload_types(include_events=True)
@@ -75,8 +75,8 @@ def set_codec_priority(payload_type, score):
     """Override a codec priority score and refresh the enabled codec order."""
     global RTPCompatibleCodecs
 
-    from pyVoIP.codecs import enabled_payload_types
-    from pyVoIP.codecs import set_codec_priority as _set_codec_priority
+    from rfcvoip.codecs import enabled_payload_types
+    from rfcvoip.codecs import set_codec_priority as _set_codec_priority
 
     _set_codec_priority(payload_type, score)
     RTPCompatibleCodecs = enabled_payload_types(include_events=True)
@@ -87,7 +87,7 @@ def reset_codec_priorities():
     """Reset codec priority overrides and refresh the enabled codec order."""
     global RTPCompatibleCodecs
 
-    from pyVoIP.codecs import enabled_payload_types, reset_codec_priorities as _reset
+    from rfcvoip.codecs import enabled_payload_types, reset_codec_priorities as _reset
 
     _reset()
     RTPCompatibleCodecs = enabled_payload_types(include_events=True)
@@ -96,14 +96,14 @@ def reset_codec_priorities():
 
 def codec_priority_score(payload_type):
     """Return the current priority score for one payload type."""
-    from pyVoIP.codecs import codec_priority_score as _codec_priority_score
+    from rfcvoip.codecs import codec_priority_score as _codec_priority_score
 
     return _codec_priority_score(payload_type)
 
 
 def codec_priorities(include_events=True):
     """Return current codec priority scores keyed by codec name."""
-    from pyVoIP.codecs import codec_priorities as _codec_priorities
+    from rfcvoip.codecs import codec_priorities as _codec_priorities
 
     return {
         str(codec): score
@@ -117,7 +117,7 @@ def __getattr__(name):
     if name == "Telemetry":
         import importlib
 
-        module = importlib.import_module("pyVoIP.Telemetry")
+        module = importlib.import_module("rfcvoip.Telemetry")
         globals()[name] = module
         return module
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

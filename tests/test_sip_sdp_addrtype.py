@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from pyVoIP import RTP
-from pyVoIP.SIP import SIPClient
+from rfcvoip import RTP
+from rfcvoip.SIP import SIPClient
 
 
 class DummyPhone:
@@ -53,7 +53,7 @@ def test_gen_invite_uses_ip4_in_sdp_for_ipv4_myip():
         call_id="call-123",
     )
 
-    assert "o=pyVoIP 123 125 IN IP4 192.0.2.10\r\n" in invite
+    assert "o=rfcvoip 123 125 IN IP4 192.0.2.10\r\n" in invite
     assert "c=IN IP4 192.0.2.10\r\n" in invite
 
 
@@ -68,7 +68,7 @@ def test_gen_invite_uses_ip6_in_sdp_for_ipv6_myip():
         call_id="call-123",
     )
 
-    assert "o=pyVoIP 123 125 IN IP6 2001:db8::10\r\n" in invite
+    assert "o=rfcvoip 123 125 IN IP6 2001:db8::10\r\n" in invite
     assert "c=IN IP6 2001:db8::10\r\n" in invite
 
 
@@ -84,5 +84,5 @@ def test_gen_answer_uses_ip6_in_sdp_for_ipv6_myip():
         sendtype=RTP.TransmitType.SENDRECV,
     )
 
-    assert "o=pyVoIP 456 458 IN IP6 2001:db8::10\r\n" in answer
+    assert "o=rfcvoip 456 458 IN IP6 2001:db8::10\r\n" in answer
     assert "c=IN IP6 2001:db8::10\r\n" in answer

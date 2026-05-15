@@ -1,5 +1,5 @@
-from pyVoIP import RTP
-from pyVoIP.VoIP.VoIP import CallState, VoIPCall, VoIPPhone
+from rfcvoip import RTP
+from rfcvoip.VoIP.VoIP import CallState, VoIPCall, VoIPPhone
 
 
 class DummyRequest:

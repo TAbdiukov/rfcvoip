@@ -1,0 +1,26 @@
+rfcvoip
+
+rfcvoip is a modified and substantially extended derivative of the original
+PyVoIP project.
+
+Copyright (C) 2026 Tim Abdiukov
+Copyright (C) 2020-2025 Tayler Porter and PyVoIP contributors
+
+Original project:
+  PyVoIP by TJ Porter / Tayler Porter
+  https://github.com/tayler6000/pyVoIP
+
+Modification notice:
+  rfcvoip renames the project from pyVoIP, preserves the original contributors'
+  attribution, and includes substantial changes made through 2026, including
+  protocol-accuracy improvements, SIP/RTP/SDP hardening, codec abstraction,
+  optional Opus and SILK support, telemetry, TCP/TLS/SIPS support, digest
+  authentication improvements, and more than 200 bug fixes.
+
+License:
+  This project is distributed under the GNU General Public License version 3.
+  See LICENSE for the full license text.
+
+No warranty:
+  This program is distributed WITHOUT ANY WARRANTY; without even the implied
+  warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.

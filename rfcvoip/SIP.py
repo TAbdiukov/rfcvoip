@@ -4,9 +4,9 @@ from email.parser import BytesParser
 from enum import Enum, IntEnum
 from threading import Event, Lock, RLock, Thread
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
-from pyVoIP.util import acquired_lock_and_unblocked_socket
-from pyVoIP.SIPSubscription import SIPSubscription
-from pyVoIP.SIPAuth import (
+from rfcvoip.util import acquired_lock_and_unblocked_socket
+from rfcvoip.SIPSubscription import SIPSubscription
+from rfcvoip.SIPAuth import (
     SIPAuthError,
     build_digest_auth_header,
     choose_digest_challenge,
@@ -14,7 +14,7 @@ from pyVoIP.SIPAuth import (
     parse_digest_params as _parse_digest_params,
     redact_sensitive_sip_headers as _redact_sensitive_sip_headers,
 )
-from pyVoIP.SIPTransport import (
+from rfcvoip.SIPTransport import (
     ResolvedSIPTarget,
     SIPConnection,
     SIPFramingError,
@@ -23,8 +23,8 @@ from pyVoIP.SIPTransport import (
     format_hostport,
     split_hostport,
 )
-from pyVoIP.VoIP.status import PhoneStatus
-import pyVoIP
+from rfcvoip.VoIP.status import PhoneStatus
+import rfcvoip
 import hashlib
 import ipaddress
 import socket
@@ -38,8 +38,8 @@ import warnings
 
 
 if TYPE_CHECKING:
-    from pyVoIP.VoIP import VoIPPhone
-    from pyVoIP import RTP
+    from rfcvoip.VoIP import VoIPPhone
+    from rfcvoip import RTP
 
 
 __all__ = [
@@ -59,7 +59,7 @@ __all__ = [
 ]
 
 
-debug = pyVoIP.debug
+debug = rfcvoip.debug
 
 
 class InvalidAccountInfoError(Exception):
@@ -717,8 +717,8 @@ class SIPMessage:
     }
 
     def __init__(self, data: bytes):
-        self.SIPCompatibleVersions = pyVoIP.SIPCompatibleVersions
-        self.SIPCompatibleMethods = pyVoIP.SIPCompatibleMethods
+        self.SIPCompatibleVersions = rfcvoip.SIPCompatibleVersions
+        self.SIPCompatibleMethods = rfcvoip.SIPCompatibleMethods
         self.heading = b""
         self.type: Optional[SIPMessageType] = None
         self.status = SIPStatus(491)
@@ -900,7 +900,7 @@ class SIPMessage:
     @staticmethod
     def _parse_sdp_rtp_protocol(protocol: str):
         try:
-            return pyVoIP.RTP.RTPProtocol(protocol)
+            return rfcvoip.RTP.RTPProtocol(protocol)
         except ValueError:
             return protocol
 
@@ -1183,7 +1183,7 @@ class SIPMessage:
                         or attribute == "sendonly"
                         or attribute == "inactive"
                     ):
-                        transmit_type = pyVoIP.RTP.TransmitType(attribute)
+                        transmit_type = rfcvoip.RTP.TransmitType(attribute)
                         media_sections = self.body.get("m", [])
                         if media_sections:
                             media_sections[-1]["transmit_type"] = transmit_type
@@ -1462,7 +1462,7 @@ def _protocol_value(protocol: Any) -> str:
 def _sdp_media_spec_details(media_spec: Any) -> Tuple[str, int, Dict[Any, Any]]:
     """Normalize legacy and structured local SDP media specifications.
 
-    Historically pyVoIP passed ``{port: {payload: codec}}`` to ``gen_invite``
+    Historically rfcvoip passed ``{port: {payload: codec}}`` to ``gen_invite``
     and ``gen_answer``.  Multi-connection media sections need a little more
     metadata so a single ``m=`` line can advertise ``port/count`` while still
     preserving the old public shape.
@@ -1525,7 +1525,7 @@ def _enforceable_bandwidth_limit_bps(
 def _codec_required_bandwidth_bps(codec: Any) -> Optional[int]:
     """Return a registered codec's payload bitrate requirement, if fixed."""
     try:
-        from pyVoIP.codecs import codec_required_bandwidth_bps as required_bps
+        from rfcvoip.codecs import codec_required_bandwidth_bps as required_bps
 
         return required_bps(codec)
     except Exception:
@@ -1807,10 +1807,10 @@ class SIPClient:
     def _contact_uri(self, *, user: Optional[str] = None) -> str:
         """Return this UA's SIP Contact URI.
 
-        pyVoIP currently listens for SIP signaling over UDP only.  The SIP URI
+        rfcvoip currently listens for SIP signaling over UDP only.  The SIP URI
         transport parameter is therefore advertised explicitly so registrars,
         notifiers, and dialog peers route subsequent requests back over the
-        transport pyVoIP can actually receive.
+        transport rfcvoip can actually receive.
 
         Keep the local port explicit even when it is the default SIP port
         5060.  RFC 3261 URI comparison does not require an omitted default
@@ -2189,9 +2189,9 @@ class SIPClient:
         )
         request += f"Call-ID: {call_id}\r\n"
         request += f"CSeq: {self.optionsCounter.next()} OPTIONS\r\n"
-        request += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
+        request += f"Allow: {(', '.join(rfcvoip.SIPCompatibleMethods))}\r\n"
         request += "Accept: application/sdp\r\n"
-        request += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        request += f"User-Agent: rfcvoip {rfcvoip.__version__}\r\n"
         if auth_line:
             request += auth_line
         request += "Content-Length: 0\r\n\r\n"
@@ -2339,8 +2339,8 @@ class SIPClient:
         request += f"Expires: {max(0, int(expires))}\r\n"
         if subscription.accept:
             request += "Accept: " + ", ".join(subscription.accept) + "\r\n"
-        request += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
-        request += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        request += f"Allow: {(', '.join(rfcvoip.SIPCompatibleMethods))}\r\n"
+        request += f"User-Agent: rfcvoip {rfcvoip.__version__}\r\n"
         if auth_line:
             request += auth_line
         request += "Content-Length: 0\r\n\r\n"
@@ -2472,12 +2472,12 @@ class SIPClient:
             response += f"Contact: {contact_header}\r\n"
         elif contact:
             response += self._contact_header()
-        response += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        response += f"User-Agent: rfcvoip {rfcvoip.__version__}\r\n"
         if supported:
             response += self._gen_supported_header()
         if warning is not None:
             response += f"Warning: {warning}\r\n"
-        response += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
+        response += f"Allow: {(', '.join(rfcvoip.SIPCompatibleMethods))}\r\n"
         for header in extra_headers or []:
             response += header
             if not header.endswith("\r\n"):
@@ -3081,10 +3081,10 @@ class SIPClient:
             response += cseq_line + "\r\n"
         if contact_line:
             response += contact_line + "\r\n"
-        response += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        response += f"User-Agent: rfcvoip {rfcvoip.__version__}\r\n"
         response += self._gen_supported_header()
         response += 'Warning: 399 GS "Unable to accept call"\r\n'
-        response += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
+        response += f"Allow: {(', '.join(rfcvoip.SIPCompatibleMethods))}\r\n"
         response += "Content-Length: 0\r\n\r\n"
         return response
 
@@ -3491,10 +3491,10 @@ class SIPClient:
         regRequest += f"Call-ID: {self._get_register_call_id()}\r\n"
         regRequest += f"CSeq: {self.registerCounter.next()} REGISTER\r\n"
         regRequest += self._contact_header(include_instance=True)
-        regRequest += f'Allow: {(", ".join(pyVoIP.SIPCompatibleMethods))}\r\n'
+        regRequest += f'Allow: {(", ".join(rfcvoip.SIPCompatibleMethods))}\r\n'
         regRequest += "Max-Forwards: 70\r\n"
         regRequest += "Allow-Events: org.3gpp.nwinitdereg\r\n"
-        regRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        regRequest += f"User-Agent: rfcvoip {rfcvoip.__version__}\r\n"
         # Supported: 100rel, replaces, from-change, gruu
         regRequest += (
             "Expires: "
@@ -3529,7 +3529,7 @@ class SIPClient:
         subRequest += f"CSeq: {self.subscribeCounter.next()} SUBSCRIBE\r\n"
         subRequest += self._contact_header(include_instance=True)
         subRequest += "Max-Forwards: 70\r\n"
-        subRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        subRequest += f"User-Agent: rfcvoip {rfcvoip.__version__}\r\n"
         subRequest += f"Expires: {self.default_expires * 2}\r\n"
         subRequest += "Event: message-summary\r\n"
         subRequest += "Accept: application/simple-message-summary\r\n"
@@ -3578,10 +3578,10 @@ class SIPClient:
         regRequest += f"Call-ID: {call_id}\r\n"
         regRequest += f"CSeq: {self.registerCounter.next()} REGISTER\r\n"
         regRequest += self._contact_header(include_instance=True)
-        regRequest += f'Allow: {(", ".join(pyVoIP.SIPCompatibleMethods))}\r\n'
+        regRequest += f'Allow: {(", ".join(rfcvoip.SIPCompatibleMethods))}\r\n'
         regRequest += "Max-Forwards: 70\r\n"
         regRequest += "Allow-Events: org.3gpp.nwinitdereg\r\n"
-        regRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        regRequest += f"User-Agent: rfcvoip {rfcvoip.__version__}\r\n"
         regRequest += (
             "Expires: "
             + f"{self.default_expires if not deregister else 0}\r\n"
@@ -3653,10 +3653,10 @@ class SIPClient:
 
         body = "v=0\r\n"
         body += (
-            f"o=pyVoIP {sess_id} {sess_id} "
+            f"o=rfcvoip {sess_id} {sess_id} "
             + f"IN {addr_type} {self.myIP}\r\n"
         )
-        body += f"s=pyVoIP {pyVoIP.__version__}\r\n"
+        body += f"s=rfcvoip {rfcvoip.__version__}\r\n"
         body += f"c=IN {addr_type} {self.myIP}\r\n"
         body += "t=0 0\r\n"
         body += "m=audio 0 RTP/AVP"
@@ -3666,10 +3666,10 @@ class SIPClient:
         for payload_type, codec in offer_codecs.items():
             body += (
                 "a=rtpmap:"
-                + pyVoIP.RTP.rtpmap_for_payload_type(payload_type, codec)
+                + rfcvoip.RTP.rtpmap_for_payload_type(payload_type, codec)
                 + "\r\n"
             )
-            for fmtp in pyVoIP.RTP.fmtp_for_payload_type(payload_type, codec):
+            for fmtp in rfcvoip.RTP.fmtp_for_payload_type(payload_type, codec):
                 body += f"a=fmtp:{payload_type} {fmtp}\r\n"
         return body
 
@@ -3743,11 +3743,11 @@ class SIPClient:
         addr_type = self._sdp_address_type(self.myIP)
         body = "v=0\r\n"
         body += (
-            f"o=pyVoIP {sess_id} {int(sess_id)+2} "
+            f"o=rfcvoip {sess_id} {int(sess_id)+2} "
             + f"IN {addr_type} {self.myIP}\r\n"
         )
 
-        body += f"s=pyVoIP {pyVoIP.__version__}\r\n"
+        body += f"s=rfcvoip {rfcvoip.__version__}\r\n"
         body += f"c=IN {addr_type} {self.myIP}\r\n"
         body += "t=0 0\r\n"
         for x, media_spec in ms.items():
@@ -3763,10 +3763,10 @@ class SIPClient:
                 codec = codecs[m]
                 body += (
                     "a=rtpmap:"
-                    + pyVoIP.RTP.rtpmap_for_payload_type(m, codec)
+                    + rfcvoip.RTP.rtpmap_for_payload_type(m, codec)
                     + "\r\n"
                 )
-                for fmtp in pyVoIP.RTP.fmtp_for_payload_type(m, codec):
+                for fmtp in rfcvoip.RTP.fmtp_for_payload_type(m, codec):
                     body += f"a=fmtp:{m} {fmtp}\r\n"
             body += "a=ptime:20\r\n"
             body += "a=maxptime:150\r\n"
@@ -3813,11 +3813,11 @@ class SIPClient:
         addr_type = self._sdp_address_type(self.myIP)
         body = "v=0\r\n"
         body += (
-            f"o=pyVoIP {sess_id} {int(sess_id)+2} "
+            f"o=rfcvoip {sess_id} {int(sess_id)+2} "
             + f"IN {addr_type} {self.myIP}\r\n"
         )
 
-        body += f"s=pyVoIP {pyVoIP.__version__}\r\n"
+        body += f"s=rfcvoip {rfcvoip.__version__}\r\n"
         body += f"c=IN {addr_type} {self.myIP}\r\n"
         body += "t=0 0\r\n"
         for x, media_spec in ms.items():
@@ -3833,10 +3833,10 @@ class SIPClient:
                 codec = codecs[m]
                 body += (
                     "a=rtpmap:"
-                    + pyVoIP.RTP.rtpmap_for_payload_type(m, codec)
+                    + rfcvoip.RTP.rtpmap_for_payload_type(m, codec)
                     + "\r\n"
                 )
-                for fmtp in pyVoIP.RTP.fmtp_for_payload_type(m, codec):
+                for fmtp in rfcvoip.RTP.fmtp_for_payload_type(m, codec):
                     body += f"a=fmtp:{m} {fmtp}\r\n"
             body += "a=ptime:20\r\n"
             body += "a=maxptime:150\r\n"
@@ -3857,9 +3857,9 @@ class SIPClient:
         invRequest += f"From: <{self._registrar_uri(user=self.username)}>;tag={tag}\r\n"
         invRequest += f"Call-ID: {call_id}\r\n"
         invRequest += f"CSeq: {self.inviteCounter.next()} INVITE\r\n"
-        invRequest += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
+        invRequest += f"Allow: {(', '.join(rfcvoip.SIPCompatibleMethods))}\r\n"
         invRequest += "Content-Type: application/sdp\r\n"
-        invRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        invRequest += f"User-Agent: rfcvoip {rfcvoip.__version__}\r\n"
         invRequest += f"Content-Length: {len(body_bytes)}\r\n\r\n"
         invRequest += body
 
@@ -3887,7 +3887,7 @@ class SIPClient:
         cancel_request += (
             f"CSeq: {request.headers['CSeq']['check']} CANCEL\r\n"
         )
-        cancel_request += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        cancel_request += f"User-Agent: rfcvoip {rfcvoip.__version__}\r\n"
         cancel_request += "Content-Length: 0\r\n\r\n"
         return cancel_request
 
@@ -3933,8 +3933,8 @@ class SIPClient:
         byeRequest += f"CSeq: {cseq} BYE\r\n"
         byeRequest += "Max-Forwards: 70\r\n"
         byeRequest += self._contact_header()
-        byeRequest += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
-        byeRequest += f"Allow: {(', '.join(pyVoIP.SIPCompatibleMethods))}\r\n"
+        byeRequest += f"User-Agent: rfcvoip {rfcvoip.__version__}\r\n"
+        byeRequest += f"Allow: {(', '.join(rfcvoip.SIPCompatibleMethods))}\r\n"
         byeRequest += "Content-Length: 0\r\n\r\n"
 
         return byeRequest
@@ -3992,7 +3992,7 @@ class SIPClient:
         ackMessage += "\r\n"
         ackMessage += f"Call-ID: {request.headers['Call-ID']}\r\n"
         ackMessage += f"CSeq: {request.headers['CSeq']['check']} ACK\r\n"
-        ackMessage += f"User-Agent: pyVoIP {pyVoIP.__version__}\r\n"
+        ackMessage += f"User-Agent: rfcvoip {rfcvoip.__version__}\r\n"
         ackMessage += "Content-Length: 0\r\n\r\n"
 
         return ackMessage
@@ -4371,7 +4371,7 @@ class SIPClient:
         method: str,
         uri: str,
     ) -> None:
-        from pyVoIP.SIPAuth import normalize_digest_algorithm
+        from rfcvoip.SIPAuth import normalize_digest_algorithm
 
         auth_value = auth_line.split(":", 1)[1] if ":" in auth_line else auth_line
         params = _parse_digest_params(auth_value)
@@ -4400,7 +4400,7 @@ class SIPClient:
             "body_hash_used": params.get("qop") == "auth-int",
         }
         try:
-            from pyVoIP import Telemetry as telemetry
+            from rfcvoip import Telemetry as telemetry
             telemetry.record_digest_auth(self, entry)
             return
         except Exception:
@@ -4427,7 +4427,7 @@ class SIPClient:
 
     def deregister(self) -> bool:
         attempts = 0
-        max_attempts = max(1, pyVoIP.REGISTER_FAILURE_THRESHOLD)
+        max_attempts = max(1, rfcvoip.REGISTER_FAILURE_THRESHOLD)
 
         while attempts < max_attempts:
             try:
@@ -4505,7 +4505,7 @@ class SIPClient:
                 self.phone._status = PhoneStatus.REGISTERED
                 self.registerFailures = 0
 
-            if self.registerFailures >= pyVoIP.REGISTER_FAILURE_THRESHOLD:
+            if self.registerFailures >= rfcvoip.REGISTER_FAILURE_THRESHOLD:
                 debug("Too many registration failures, stopping.")
                 self.stop()
                 if self.fatalCallback is not None:
@@ -4517,7 +4517,7 @@ class SIPClient:
         except Exception as e:
             debug(f"REGISTRATION ERROR: {e}")
             self.registerFailures += 1
-            if self.registerFailures >= pyVoIP.REGISTER_FAILURE_THRESHOLD:
+            if self.registerFailures >= rfcvoip.REGISTER_FAILURE_THRESHOLD:
                 self.stop()
                 if self.fatalCallback is not None:
                     self.fatalCallback()

@@ -1,4 +1,4 @@
-from pyVoIP.VoIP import status
+from rfcvoip.VoIP import status
 
 PhoneStatus = status.PhoneStatus
 
@@ -22,7 +22,7 @@ def __getattr__(name):
         "VoIPCall",
         "VoIPPhone",
     }:
-        from pyVoIP.VoIP.VoIP import (
+        from rfcvoip.VoIP.VoIP import (
             CallState,
             InvalidRangeError,
             InvalidStateError,

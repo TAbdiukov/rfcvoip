@@ -1,9 +1,9 @@
-from pyVoIP.RTP import PayloadType, RTPClient, TransmitType
-from pyVoIP.VoIP.VoIP import VoIPCall
+from rfcvoip.RTP import PayloadType, RTPClient, TransmitType
+from rfcvoip.VoIP.VoIP import VoIPCall
 
 
 def test_rtp_client_exposes_selected_codec_telemetry():
-    from pyVoIP import Telemetry
+    from rfcvoip import Telemetry
 
     client = RTPClient(
         {0: PayloadType.PCMU, 101: PayloadType.EVENT},
@@ -31,7 +31,7 @@ def test_rtp_client_exposes_selected_codec_telemetry():
 
 
 def test_voip_call_codec_report_includes_active_codecs():
-    from pyVoIP import Telemetry
+    from rfcvoip import Telemetry
 
     class FakeRTPClient:
         def selected_codec_info(self):

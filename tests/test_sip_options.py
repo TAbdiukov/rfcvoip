@@ -1,5 +1,5 @@
-from pyVoIP import RTP
-from pyVoIP.SIP import SIPClient, SIPMessage
+from rfcvoip import RTP
+from rfcvoip.SIP import SIPClient, SIPMessage
 
 
 class _Phone:

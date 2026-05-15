@@ -1,6 +1,6 @@
-from pyVoIP import RTP
-from pyVoIP.SIP import SIPMessage
-from pyVoIP.VoIP import CallState, VoIPCall, VoIPPhone
+from rfcvoip import RTP
+from rfcvoip.SIP import SIPMessage
+from rfcvoip.VoIP import CallState, VoIPCall, VoIPPhone
 
 
 def _invite_message(call_id: str = "test-call-id") -> SIPMessage:

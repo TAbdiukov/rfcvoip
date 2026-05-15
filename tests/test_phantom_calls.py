@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from pyVoIP import SIP
-from pyVoIP.VoIP.VoIP import CallState, VoIPPhone
+from rfcvoip import SIP
+from rfcvoip.VoIP.VoIP import CallState, VoIPPhone
 
 
 class DeadThread:

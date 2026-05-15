@@ -1,7 +1,7 @@
 import pytest
 
-from pyVoIP import SIP
-from pyVoIP.VoIP.VoIP import VoIPPhone
+from rfcvoip import SIP
+from rfcvoip.VoIP.VoIP import VoIPPhone
 
 
 class FakeSocket:

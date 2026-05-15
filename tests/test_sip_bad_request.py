@@ -3,9 +3,9 @@ import threading
 
 import pytest
 
-from pyVoIP.SIP import SIPClient
-from pyVoIP.SIP import SIPRequestError
-from pyVoIP.VoIP.status import PhoneStatus
+from rfcvoip.SIP import SIPClient
+from rfcvoip.SIP import SIPRequestError
+from rfcvoip.VoIP.status import PhoneStatus
 
 
 class DummyPhone:

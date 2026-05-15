@@ -2,8 +2,8 @@ from importlib import import_module
 import pkgutil
 from typing import Dict, List, Optional, Tuple, Type
 
-from pyVoIP.RTP import PayloadType
-from pyVoIP.codecs.base import CodecAvailability, RTPCodec
+from rfcvoip.RTP import PayloadType
+from rfcvoip.codecs.base import CodecAvailability, RTPCodec
 
 
 def _normalize_payload_type(payload_type) -> PayloadType:

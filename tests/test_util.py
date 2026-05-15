@@ -1,4 +1,4 @@
-from pyVoIP.util import acquired_lock_and_unblocked_socket
+from rfcvoip.util import acquired_lock_and_unblocked_socket
 from threading import Lock
 from socket import socket
 import pytest

@@ -1,6 +1,6 @@
 import unittest
 
-from pyVoIP.SIP import SIPClient, SIPMessage
+from rfcvoip.SIP import SIPClient, SIPMessage
 
 
 class FakeSocket:

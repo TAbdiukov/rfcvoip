@@ -223,7 +223,7 @@ class SIPResolver:
     ) -> ResolvedSIPTarget:
         uri = self.parse_uri(value)
 
-        # The legacy pyVoIP API passes server/proxy as a host and port as a
+        # The legacy rfcvoip API passes server/proxy as a host and port as a
         # separate argument.  Treat that separate port as explicit only when
         # the caller did not provide a SIP URI.  SIP URIs without a port are
         # allowed to run the RFC 3263 DNS procedures.

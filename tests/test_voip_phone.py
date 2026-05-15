@@ -1,8 +1,8 @@
-from pyVoIP.VoIP import VoIPPhone
+from rfcvoip.VoIP import VoIPPhone
 
 
 def test_voip_phone_local_codec_offer_contains_audio_and_events():
-    from pyVoIP import Telemetry
+    from rfcvoip import Telemetry
 
     phone = VoIPPhone(
         "127.0.0.1",

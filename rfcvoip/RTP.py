@@ -5,7 +5,7 @@ from collections import deque
 import audioop
 import io
 import ipaddress
-import pyVoIP
+import rfcvoip
 import random
 import socket
 import threading
@@ -39,7 +39,7 @@ __all__ = [
     "TransmitType",
 ]
 
-debug = pyVoIP.debug
+debug = rfcvoip.debug
 
 _DTMF_EVENT_TO_CHAR = [
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "#", "A", "B", "C", "D",
@@ -203,7 +203,7 @@ _AUDIO_PAYLOAD_TYPES = frozenset(
         PayloadType.SILK_8000,
         # RFC 3551 defines MP2T as both audio and video.  It is classified as
         # audio here for reporting, but it is intentionally not transmittable
-        # because PyVoIP does not implement an MP2T encoder.
+        # because rfcvoip does not implement an MP2T encoder.
         PayloadType.MP2T,
     )
 )
@@ -221,7 +221,7 @@ _VIDEO_PAYLOAD_TYPES = frozenset(
 )
 
 def payload_type_media_kind(codec: PayloadType) -> str:
-    """Return PyVoIP's broad media classification for an RTP payload type.
+    """Return rfcvoip's broad media classification for an RTP payload type.
 
     This is deliberately separate from SDP media sections.  A payload such as
     ``telephone-event`` appears inside an ``m=audio`` section, but it is not an
@@ -235,7 +235,7 @@ def payload_type_media_kind(codec: PayloadType) -> str:
         return "audio/video"
 
     try:
-        from pyVoIP.codecs import codec_payload_kind
+        from rfcvoip.codecs import codec_payload_kind
 
         payload_kind = codec_payload_kind(codec)
         if payload_kind:
@@ -288,7 +288,7 @@ def codec_priority_score(
                 continue
 
     try:
-        from pyVoIP.codecs import codec_priority_score as _priority_score
+        from rfcvoip.codecs import codec_priority_score as _priority_score
 
         return _priority_score(codec)
     except Exception:
@@ -297,20 +297,20 @@ def codec_priority_score(
 
 def set_codec_priority(codec: PayloadType, score: int) -> None:
     """Override a codec priority score for this process."""
-    from pyVoIP.codecs import set_codec_priority as _set_codec_priority
+    from rfcvoip.codecs import set_codec_priority as _set_codec_priority
 
     _set_codec_priority(codec, score)
-    refresh = getattr(pyVoIP, "refresh_supported_codecs", None)
+    refresh = getattr(rfcvoip, "refresh_supported_codecs", None)
     if callable(refresh):
         refresh()
 
 
 def reset_codec_priorities() -> None:
     """Reset all codec priority overrides to their defaults."""
-    from pyVoIP.codecs import reset_codec_priorities as _reset_codec_priorities
+    from rfcvoip.codecs import reset_codec_priorities as _reset_codec_priorities
 
     _reset_codec_priorities()
-    refresh = getattr(pyVoIP, "refresh_supported_codecs", None)
+    refresh = getattr(rfcvoip, "refresh_supported_codecs", None)
     if callable(refresh):
         refresh()
 
@@ -319,7 +319,7 @@ def prioritize_payload_type_map(
     assoc: Dict[int, PayloadType],
     priority_scores: Optional[Dict[Any, int]] = None,
 ) -> Dict[int, PayloadType]:
-    """Return ``assoc`` ordered by PyVoIP codec priority.
+    """Return ``assoc`` ordered by rfcvoip codec priority.
 
     Ties preserve the input order, which keeps remote SDP order meaningful when
     local scores are equal.
@@ -341,9 +341,9 @@ def codec_fmtp_supported(
     codec: PayloadType,
     fmtp: Optional[List[str]] = None,
 ) -> bool:
-    """Return whether PyVoIP can satisfy negotiated FMTP constraints."""
+    """Return whether rfcvoip can satisfy negotiated FMTP constraints."""
     try:
-        from pyVoIP.codecs import codec_fmtp_supported as _codec_fmtp_supported
+        from rfcvoip.codecs import codec_fmtp_supported as _codec_fmtp_supported
 
         return _codec_fmtp_supported(codec, fmtp or [])
     except Exception:
@@ -352,7 +352,7 @@ def codec_fmtp_supported(
 
 def default_payload_type(codec: PayloadType) -> Optional[int]:
     try:
-        from pyVoIP.codecs import default_payload_type as _default_payload_type
+        from rfcvoip.codecs import default_payload_type as _default_payload_type
 
         return _default_payload_type(codec)
     except Exception:
@@ -364,7 +364,7 @@ def default_payload_type(codec: PayloadType) -> Optional[int]:
 
 def rtpmap_for_payload_type(payload_type: int, codec: PayloadType) -> str:
     try:
-        from pyVoIP.codecs import rtpmap_for_codec
+        from rfcvoip.codecs import rtpmap_for_codec
 
         rtpmap = rtpmap_for_codec(codec, int(payload_type))
         if rtpmap:
@@ -379,7 +379,7 @@ def rtpmap_for_payload_type(payload_type: int, codec: PayloadType) -> str:
 
 def fmtp_for_payload_type(payload_type: int, codec: PayloadType) -> List[str]:
     try:
-        from pyVoIP.codecs import fmtp_for_codec
+        from rfcvoip.codecs import fmtp_for_codec
 
         return fmtp_for_codec(codec)
     except Exception:
@@ -392,9 +392,9 @@ def is_transmittable_audio_codec(
     codec: PayloadType,
     enabled_codecs: Optional[Any] = None,
 ) -> bool:
-    """Return whether PyVoIP can encode ``codec`` as the main audio stream."""
+    """Return whether rfcvoip can encode ``codec`` as the main audio stream."""
     compatible_codecs = (
-        getattr(pyVoIP, "RTPCompatibleCodecs", ())
+        getattr(rfcvoip, "RTPCompatibleCodecs", ())
         if enabled_codecs is None
         else enabled_codecs
     )
@@ -402,7 +402,7 @@ def is_transmittable_audio_codec(
         return False
 
     try:
-        from pyVoIP.codecs import codec_can_transmit_audio
+        from rfcvoip.codecs import codec_can_transmit_audio
 
         return codec_can_transmit_audio(codec)
     except Exception:
@@ -460,7 +460,7 @@ def select_transmittable_audio_codec(
 
 def _rtpmap_channel_count(codec: PayloadType) -> int:
     try:
-        from pyVoIP.codecs import codec_class
+        from rfcvoip.codecs import codec_class
 
         cls = codec_class(codec)
         channels = (
@@ -656,7 +656,7 @@ class RTPPacketManager:
 
 class RTPMessage:
     def __init__(self, data: bytes, assoc: Dict[int, PayloadType]):
-        self.RTPCompatibleVersions = pyVoIP.RTPCompatibleVersions
+        self.RTPCompatibleVersions = rfcvoip.RTPCompatibleVersions
         self.assoc = assoc
         # Setting defaults to stop mypy from complaining
         self.version = 0
@@ -824,7 +824,7 @@ class RTPClient:
             ) from ex
         if self.audio_sample_width != 1 or self.audio_channels != 1:
             raise RTPParseError(
-                "PyVoIP public audio currently supports unsigned 8-bit mono; "
+                "rfcvoip public audio currently supports unsigned 8-bit mono; "
                 "only the sample rate is configurable."
             )
 
@@ -850,7 +850,7 @@ class RTPClient:
     @staticmethod
     def _preferred_source_sample_rate(codec: PayloadType) -> int:
         try:
-            from pyVoIP.codecs import codec_class
+            from rfcvoip.codecs import codec_class
 
             cls = codec_class(codec)
             if cls is not None:
@@ -887,7 +887,7 @@ class RTPClient:
         if adapter is not None:
             return adapter
 
-        from pyVoIP.codecs import create_codec
+        from rfcvoip.codecs import create_codec
 
         adapter = create_codec(
             codec,
@@ -1245,7 +1245,7 @@ class RTPClient:
     @property
     def trans_delay_reduction(self) -> float:
         try:
-            reduction = float(pyVoIP.TRANSMIT_DELAY_REDUCTION) + 1.0
+            reduction = float(rfcvoip.TRANSMIT_DELAY_REDUCTION) + 1.0
         except (TypeError, ValueError):
             return 1.0
         return reduction if reduction > 0 else 1.0

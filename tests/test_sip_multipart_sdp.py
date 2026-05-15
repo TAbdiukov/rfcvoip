@@ -1,12 +1,12 @@
 import pytest
 
-from pyVoIP.SIP import SIPMessage, SIPMessageType, SIPStatus
+from rfcvoip.SIP import SIPMessage, SIPMessageType, SIPStatus
 
 
 SDP = (
     "v=0\r\n"
     "o=- 1 1 IN IP4 192.0.2.20\r\n"
-    "s=pyVoIP test\r\n"
+    "s=rfcvoip test\r\n"
     "c=IN IP4 192.0.2.20\r\n"
     "t=0 0\r\n"
     "m=audio 4000 RTP/AVP 0 8 101\r\n"
@@ -105,7 +105,7 @@ def test_application_sdp_body_is_parsed(content_type):
 
 
 def test_multipart_mixed_sdp_part_is_extracted_from_request():
-    boundary = "pyvoip-mixed-boundary"
+    boundary = "rfcvoip-mixed-boundary"
     body = _multipart(
         boundary,
         [
@@ -124,7 +124,7 @@ def test_multipart_mixed_sdp_part_is_extracted_from_request():
 
 
 def test_multipart_alternative_sdp_part_is_extracted():
-    boundary = "pyvoip-alternative-boundary"
+    boundary = "rfcvoip-alternative-boundary"
     body = _multipart(
         boundary,
         [
@@ -141,7 +141,7 @@ def test_multipart_alternative_sdp_part_is_extracted():
 
 
 def test_multipart_sdp_part_is_extracted_from_response():
-    boundary = "pyvoip-response-boundary"
+    boundary = "rfcvoip-response-boundary"
     body = _multipart(
         boundary,
         [
@@ -160,8 +160,8 @@ def test_multipart_sdp_part_is_extracted_from_response():
 
 
 def test_nested_multipart_sdp_part_is_extracted():
-    inner_boundary = "pyvoip-inner-boundary"
-    outer_boundary = "pyvoip-outer-boundary"
+    inner_boundary = "rfcvoip-inner-boundary"
+    outer_boundary = "rfcvoip-outer-boundary"
 
     inner = _multipart(
         inner_boundary,
@@ -190,7 +190,7 @@ def test_nested_multipart_sdp_part_is_extracted():
 
 
 def test_multipart_with_no_sdp_part_does_not_parse_structured_sdp():
-    boundary = "pyvoip-no-sdp-boundary"
+    boundary = "rfcvoip-no-sdp-boundary"
     body = _multipart(
         boundary,
         [

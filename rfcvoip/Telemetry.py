@@ -5,7 +5,7 @@ import re
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
-import pyVoIP
+import rfcvoip
 
 
 __all__ = [
@@ -48,7 +48,7 @@ _PROCESS_TELEMETRY: Dict[str, Any] = {
     }
 }
 
-# Frontends often wrap the real pyVoIP objects.
+# Frontends often wrap the real rfcvoip objects.
 # Authentication telemetry is recorded on SIPClient, so auth lookups must walk
 # a small but explicit set of wrapper attributes.
 _TELEMETRY_SOURCE_ATTRS = (
@@ -78,7 +78,7 @@ def _empty_auth_snapshot(**extra: Any) -> Dict[str, Any]:
 
 
 def _iter_source_candidates(source: Any, *, max_depth: int = 4):
-    """Yield ``source`` and likely wrapped pyVoIP objects without cycles."""
+    """Yield ``source`` and likely wrapped rfcvoip objects without cycles."""
     seen = set()
 
     def visit(obj: Any, depth: int):
@@ -195,7 +195,7 @@ def _is_sip_client_like(source: Any) -> bool:
 
 
 def _unwrap_snapshot_source(source: Any) -> Any:
-    """Prefer the real pyVoIP phone/SIP/call object inside frontend wrappers."""
+    """Prefer the real rfcvoip phone/SIP/call object inside frontend wrappers."""
     if source is None or isinstance(source, dict):
         return source
 
@@ -267,7 +267,7 @@ def _enforceable_bandwidth_limit_bps(
 
 def _codec_required_bandwidth_bps(codec: Any) -> Optional[int]:
     try:
-        from pyVoIP.codecs import codec_required_bandwidth_bps as required_bps
+        from rfcvoip.codecs import codec_required_bandwidth_bps as required_bps
 
         return required_bps(codec)
     except Exception:
@@ -305,7 +305,7 @@ def _bandwidth_context(
 
 
 def _media_protocol_supported(media: Dict[str, Any]) -> bool:
-    from pyVoIP import RTP
+    from rfcvoip import RTP
 
     protocol = media.get("protocol")
     return protocol in (RTP.RTPProtocol.AVP, RTP.RTPProtocol.AVP.value, "RTP/AVP")
@@ -326,10 +326,10 @@ def _codec_name_key(codec: Dict[str, Any]) -> str:
 
 
 def _codec_availability_details(codec: Any) -> Dict[str, Any]:
-    from pyVoIP import RTP
+    from rfcvoip import RTP
 
     try:
-        from pyVoIP.codecs import codec_availability as _availability
+        from rfcvoip.codecs import codec_availability as _availability
 
         return dict(_availability(codec))
     except Exception as ex:
@@ -364,12 +364,12 @@ def codec_availability(
     """
     if codec is not None:
         if refresh:
-            from pyVoIP.codecs import refresh_codec_availability
+            from rfcvoip.codecs import refresh_codec_availability
 
             refresh_codec_availability()
         return _codec_availability_details(codec)
 
-    from pyVoIP.codecs import availability_report
+    from rfcvoip.codecs import availability_report
 
     return list(availability_report(refresh=refresh))
 
@@ -380,20 +380,20 @@ def codec_info(
     *,
     media_type: Optional[str] = None,
     fmtp: Optional[List[str]] = None,
-    source: str = "pyvoip",
+    source: str = "rfcvoip",
     supported: Optional[bool] = None,
     priority_scores: Optional[Dict[Any, int]] = None,
     enabled_codecs: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Return a serializable telemetry record for one RTP codec."""
-    from pyVoIP import RTP
+    from rfcvoip import RTP
 
     availability = _codec_availability_details(codec)
     preferred_payload_type = RTP.default_payload_type(codec)
     fmtp_list = list(fmtp or [])
     fmtp_supported = RTP.codec_fmtp_supported(codec, fmtp_list)
     compatible_codecs = (
-        getattr(pyVoIP, "RTPCompatibleCodecs", [])
+        getattr(rfcvoip, "RTPCompatibleCodecs", [])
         if enabled_codecs is None
         else enabled_codecs
     )
@@ -463,7 +463,7 @@ def _prioritize_payload_types(
     payload_types: List[Any],
     priority_scores: Optional[Dict[Any, int]] = None,
 ) -> List[Any]:
-    from pyVoIP import RTP
+    from rfcvoip import RTP
 
     indexed = list(enumerate(payload_types))
     indexed.sort(
@@ -481,16 +481,16 @@ def local_supported_codecs(
     priority_scores: Optional[Dict[Any, int]] = None,
     enabled_codecs: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
-    """Return local codec telemetry for this PyVoIP build/configuration."""
-    from pyVoIP import RTP
+    """Return local codec telemetry for this rfcvoip build/configuration."""
+    from rfcvoip import RTP
 
     if include_unavailable:
-        from pyVoIP.codecs import known_payload_types
+        from rfcvoip.codecs import known_payload_types
 
         codecs = known_payload_types(include_events=True)
     else:
         codecs = (
-            getattr(pyVoIP, "RTPCompatibleCodecs", [])
+            getattr(rfcvoip, "RTPCompatibleCodecs", [])
             if enabled_codecs is None
             else list(enabled_codecs)
         )
@@ -551,7 +551,7 @@ def _unknown_codec_info(
         "protocol_supported": _media_protocol_supported(media),
         "supported": False,
         "available": False,
-        "availability_reason": "Codec is not known to PyVoIP.",
+        "availability_reason": "Codec is not known to rfcvoip.",
         "library": None,
         "priority_score": 0,
         "default_payload_type": None,
@@ -572,7 +572,7 @@ def _codec_info_from_media(
     *,
     session_bandwidth: Any = None,
 ) -> Dict[str, Any]:
-    from pyVoIP import RTP
+    from rfcvoip import RTP
 
     media_bandwidth = _bandwidths_to_list(media.get("bandwidth", []))
     session_bandwidth = _bandwidths_to_list(session_bandwidth)
@@ -626,7 +626,7 @@ def _codec_info_from_media(
             media_bandwidth=media_bandwidth,
         )
 
-    codec_supported = codec in getattr(pyVoIP, "RTPCompatibleCodecs", [])
+    codec_supported = codec in getattr(rfcvoip, "RTPCompatibleCodecs", [])
     protocol_supported = _media_protocol_supported(media)
     fmtp_supported = RTP.codec_fmtp_supported(codec, fmtp)
     bandwidth_supported = _codec_bandwidth_supported(
@@ -691,7 +691,7 @@ def codec_support_report(
     message: Any,
     media_type: Optional[str] = "audio",
 ) -> Dict[str, Any]:
-    """Compare a SIP message's SDP codecs against PyVoIP support."""
+    """Compare a SIP message's SDP codecs against rfcvoip support."""
     remote = sip_supported_codecs(message, media_type=media_type)
     pyvoip_codecs = local_supported_codecs()
     compatible = [codec for codec in remote if codec.get("supported")]
@@ -709,7 +709,7 @@ def codec_support_report(
 
     return {
         "remote": remote,
-        "pyvoip": pyvoip_codecs,
+        "rfcvoip": pyvoip_codecs,
         "compatible": compatible,
         "unsupported": unsupported,
         "good": compatible,
@@ -727,10 +727,10 @@ def _phone_priority_scores(phone: Optional[Any] = None) -> Dict[Any, int]:
 
 
 def _prioritized_enabled_codecs(phone: Optional[Any] = None) -> List[Any]:
-    from pyVoIP import RTP
+    from rfcvoip import RTP
 
     priority_scores = _phone_priority_scores(phone)
-    indexed = list(enumerate(getattr(pyVoIP, "RTPCompatibleCodecs", [])))
+    indexed = list(enumerate(getattr(rfcvoip, "RTPCompatibleCodecs", [])))
     indexed.sort(
         key=lambda item: (
             -RTP.codec_priority_score(item[1], priority_scores=priority_scores),
@@ -741,7 +741,7 @@ def _prioritized_enabled_codecs(phone: Optional[Any] = None) -> List[Any]:
 
 
 def _add_codec_to_offer(offer_codecs: Dict[int, Any], codec: Any) -> None:
-    from pyVoIP import RTP
+    from rfcvoip import RTP
 
     payload_type = RTP.default_payload_type(codec)
     if payload_type is None:
@@ -766,7 +766,7 @@ def _add_codec_to_offer(offer_codecs: Dict[int, Any], codec: Any) -> None:
 
 def local_codec_offer(phone: Optional[Any] = None) -> List[Dict[str, Any]]:
     """Return the audio codecs a phone would offer in an INVITE."""
-    from pyVoIP import RTP
+    from rfcvoip import RTP
 
     offer_codecs: Dict[int, Any] = {}
     priority_scores = _phone_priority_scores(phone)
@@ -776,7 +776,7 @@ def local_codec_offer(phone: Optional[Any] = None) -> List[Dict[str, Any]]:
         if RTP.is_transmittable_audio_codec(codec):
             _add_codec_to_offer(offer_codecs, codec)
 
-    if RTP.PayloadType.EVENT in getattr(pyVoIP, "RTPCompatibleCodecs", []):
+    if RTP.PayloadType.EVENT in getattr(rfcvoip, "RTPCompatibleCodecs", []):
         _add_codec_to_offer(offer_codecs, RTP.PayloadType.EVENT)
 
     offer = []
@@ -786,7 +786,7 @@ def local_codec_offer(phone: Optional[Any] = None) -> List[Dict[str, Any]]:
             payload_type=payload_type,
             media_type="audio",
             source="local-offer",
-            supported=codec in getattr(pyVoIP, "RTPCompatibleCodecs", []),
+            supported=codec in getattr(rfcvoip, "RTPCompatibleCodecs", []),
             priority_scores=priority_scores,
         )
         info["protocol"] = RTP.RTPProtocol.AVP.value
@@ -824,7 +824,7 @@ def local_codec_report(phone: Optional[Any] = None) -> Dict[str, Any]:
             audio_format = audio_format_fn()
     return {
         "local": local_codecs,
-        "pyvoip": local_codecs,
+        "rfcvoip": local_codecs,
         "local_offer": offer,
         "local_transmittable_audio": local_transmittable_audio,
         "local_can_start_call": bool(local_transmittable_audio),
@@ -968,7 +968,7 @@ def call_codec_report(call: Any) -> Dict[str, Any]:
         )
         return {
             "remote": [],
-            "pyvoip": pyvoip_codecs,
+            "rfcvoip": pyvoip_codecs,
             "local": pyvoip_codecs,
             "compatible": [],
             "unsupported": [],
@@ -988,7 +988,7 @@ def call_codec_report(call: Any) -> Dict[str, Any]:
 
 def _normalize_digest_algorithm_for_display(value: Any) -> str:
     try:
-        from pyVoIP.SIPAuth import normalize_digest_algorithm
+        from rfcvoip.SIPAuth import normalize_digest_algorithm
 
         return normalize_digest_algorithm(value)
     except Exception:
@@ -1030,7 +1030,7 @@ def _digest_params_from_header_value(value: Any) -> Dict[str, str]:
             if val is not None
         }
     try:
-        from pyVoIP.SIPAuth import parse_digest_params
+        from rfcvoip.SIPAuth import parse_digest_params
 
         return parse_digest_params(str(value or ""))
     except Exception:
@@ -1288,7 +1288,7 @@ def phone_snapshot(phone: Any, media_type: Optional[str] = "audio") -> Dict[str,
 
     return {
         "type": "phone",
-        "package": {"name": "pyVoIP", "version": getattr(pyVoIP, "__version__", None)},
+        "package": {"name": "rfcvoip", "version": getattr(rfcvoip, "__version__", None)},
         "generated_at": time.time(),
         "phone": {
             "status": status_value,
@@ -1322,7 +1322,7 @@ def snapshot(source: Optional[Any] = None, *, media_type: Optional[str] = "audio
     if source is None:
         return {
             "type": "package",
-            "package": {"name": "pyVoIP", "version": getattr(pyVoIP, "__version__", None)},
+            "package": {"name": "rfcvoip", "version": getattr(rfcvoip, "__version__", None)},
             "generated_at": time.time(),
             "auth": auth_snapshot(None),
             "codecs": local_codec_report(None),
@@ -1338,7 +1338,7 @@ def snapshot(source: Optional[Any] = None, *, media_type: Optional[str] = "audio
         snap = sip_client_snapshot(source)
         return {
             "type": "sip-client",
-            "package": {"name": "pyVoIP", "version": getattr(pyVoIP, "__version__", None)},
+            "package": {"name": "rfcvoip", "version": getattr(rfcvoip, "__version__", None)},
             "generated_at": time.time(),
             "sip": snap,
             "auth": snap.get("auth"),
@@ -1346,14 +1346,14 @@ def snapshot(source: Optional[Any] = None, *, media_type: Optional[str] = "audio
     if source.__class__.__name__ == "RTPClient":
         return {
             "type": "rtp-client",
-            "package": {"name": "pyVoIP", "version": getattr(pyVoIP, "__version__", None)},
+            "package": {"name": "rfcvoip", "version": getattr(rfcvoip, "__version__", None)},
             "generated_at": time.time(),
             "codecs": {"active_codecs": [rtp_client_codec_info(source)]},
         }
 
     return {
         "type": "object",
-        "package": {"name": "pyVoIP", "version": getattr(pyVoIP, "__version__", None)},
+        "package": {"name": "rfcvoip", "version": getattr(rfcvoip, "__version__", None)},
         "generated_at": time.time(),
         "object_type": source.__class__.__name__,
         "auth": auth_snapshot(source),
@@ -1384,7 +1384,7 @@ def get(
 
     Example: ``get(phone, "auth.last_digest.algorithm")``. Authentication
     paths are resolved through :func:`auth_snapshot`, so callers may pass a
-    pyVoIP object or a frontend wrapper that owns ``_phone``/``_call``.
+    rfcvoip object or a frontend wrapper that owns ``_phone``/``_call``.
     """
     tokens = _path_tokens(path)
     if tokens and tokens[0] == "auth" and not isinstance(source, dict):
@@ -1492,7 +1492,7 @@ def report(
         platform = "telegram"
 
     data = snapshot(source, media_type=media_type)
-    lines = [_bold("📡 pyVoIP telemetry", platform)]
+    lines = [_bold("📡 rfcvoip telemetry", platform)]
 
     phone = data.get("phone") or {}
     sip = data.get("sip") or {}

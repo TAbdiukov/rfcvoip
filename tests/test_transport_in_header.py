@@ -1,4 +1,4 @@
-from pyVoIP import RTP, SIP
+from rfcvoip import RTP, SIP
 
 
 class DummyPhone:

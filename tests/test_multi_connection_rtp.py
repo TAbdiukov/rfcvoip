@@ -1,7 +1,7 @@
 from threading import Lock
 
-from pyVoIP import RTP, SIP
-from pyVoIP.VoIP.VoIP import (
+from rfcvoip import RTP, SIP
+from rfcvoip.VoIP.VoIP import (
     CallState,
     VoIPCall,
     _expanded_media_connections,
@@ -111,7 +111,7 @@ def test_expands_sdp_connection_address_count():
 def test_incoming_multi_connection_media_creates_one_rtp_client_per_target(
     monkeypatch,
 ):
-    monkeypatch.setattr("pyVoIP.VoIP.VoIP.RTP.RTPClient", FakeRTPClient)
+    monkeypatch.setattr("rfcvoip.VoIP.VoIP.RTP.RTPClient", FakeRTPClient)
     message = _sip_invite_with_sdp(_multi_connection_sdp())
 
     call = VoIPCall(

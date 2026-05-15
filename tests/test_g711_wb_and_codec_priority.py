@@ -1,6 +1,6 @@
-import pyVoIP
-from pyVoIP import RTP
-from pyVoIP.codecs import create_codec
+import rfcvoip
+from rfcvoip import RTP
+from rfcvoip.codecs import create_codec
 
 
 def test_pcmu_wb_encodes_g7111_r1_core_payload():
@@ -36,7 +36,7 @@ def test_wideband_mode_set_must_allow_r1_for_transmit():
 
 
 def test_codec_priority_controls_negotiated_selection():
-    pyVoIP.reset_codec_priorities()
+    rfcvoip.reset_codec_priorities()
 
     assoc = {
         0: RTP.PayloadType.PCMU,
@@ -46,9 +46,9 @@ def test_codec_priority_controls_negotiated_selection():
     assert payload_type == 112
     assert codec == RTP.PayloadType.PCMU_WB
 
-    pyVoIP.set_codec_priority(RTP.PayloadType.PCMU, 1200)
+    rfcvoip.set_codec_priority(RTP.PayloadType.PCMU, 1200)
     payload_type, codec = RTP.select_transmittable_audio_codec(assoc)
     assert payload_type == 0
     assert codec == RTP.PayloadType.PCMU
 
-    pyVoIP.reset_codec_priorities()
+    rfcvoip.reset_codec_priorities()

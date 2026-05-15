@@ -1,4 +1,4 @@
-from pyVoIP.RTP import RTPPacketManager
+from rfcvoip.RTP import RTPPacketManager
 
 
 def assert_lock_released(packet_manager):

@@ -1,8 +1,8 @@
-import pyVoIP
-from pyVoIP import RTP
-from pyVoIP.RTP import RTPPacketManager
-from pyVoIP.SIP import SIPMessage
-from pyVoIP.VoIP.VoIP import _payload_type_from_media_method
+import rfcvoip
+from rfcvoip import RTP
+from rfcvoip.RTP import RTPPacketManager
+from rfcvoip.SIP import SIPMessage
+from rfcvoip.VoIP.VoIP import _payload_type_from_media_method
 
 
 def test_rtp_packet_manager_drops_huge_forward_gap():
@@ -53,5 +53,5 @@ def test_media_level_direction_is_stored_on_media_section():
 
     message = SIPMessage(raw)
 
-    assert message.body["m"][0]["transmit_type"] == pyVoIP.RTP.TransmitType.SENDONLY
+    assert message.body["m"][0]["transmit_type"] == rfcvoip.RTP.TransmitType.SENDONLY
 

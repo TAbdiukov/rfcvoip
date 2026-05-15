@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from pyVoIP.SIP import SIPClient
-from pyVoIP.SIP import SIPMessage
+from rfcvoip.SIP import SIPClient
+from rfcvoip.SIP import SIPMessage
 
 
 def _client(**kwargs):

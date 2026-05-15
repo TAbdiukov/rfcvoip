@@ -2,7 +2,7 @@ import py_compile
 from pathlib import Path
 
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "pyVoIP"
+PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "rfcvoip"
 
 
 def test_whole_package_compiles(tmp_path):

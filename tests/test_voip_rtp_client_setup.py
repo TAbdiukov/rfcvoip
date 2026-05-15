@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-import pyVoIP.RTP as RTP
-from pyVoIP.VoIP.VoIP import VoIPCall
+import rfcvoip.RTP as RTP
+from rfcvoip.VoIP.VoIP import VoIPCall
 
 
 class DummyRTPClient:

@@ -1,6 +1,6 @@
-from pyVoIP import SIP
-import pyVoIP.VoIP.VoIP as voip_module
-from pyVoIP.VoIP.VoIP import VoIPPhone
+from rfcvoip import SIP
+import rfcvoip.VoIP.VoIP as voip_module
+from rfcvoip.VoIP.VoIP import VoIPPhone
 
 
 class FakeTimer:

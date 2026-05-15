@@ -1,12 +1,12 @@
 from enum import Enum
-from pyVoIP import SIP, RTP
-from pyVoIP.VoIP.status import PhoneStatus
+from rfcvoip import SIP, RTP
+from rfcvoip.VoIP.status import PhoneStatus
 from threading import Thread, Lock, RLock
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import audioop
 import ipaddress
 import io
-import pyVoIP
+import rfcvoip
 import random
 import time
 import warnings
@@ -21,7 +21,7 @@ __all__ = [
     "VoIPPhone",
 ]
 
-debug = pyVoIP.debug
+debug = rfcvoip.debug
 _VALID_DTMF_DIGITS = frozenset("0123456789*#ABCD")
 
 
@@ -430,7 +430,7 @@ class VoIPCall:
                 for m in assoc:
                     codec = assoc[m]
                     if (
-                        codec in pyVoIP.RTPCompatibleCodecs
+                        codec in rfcvoip.RTPCompatibleCodecs
                         and RTP.codec_fmtp_supported(
                             codec,
                             _media_fmtp_settings(i, m),
@@ -1062,7 +1062,7 @@ class VoIPCall:
             media_bandwidth = i.get("bandwidth", [])
             for payload_type, codec in assoc.items():
                 if (
-                    codec in pyVoIP.RTPCompatibleCodecs
+                    codec in rfcvoip.RTPCompatibleCodecs
                     and RTP.codec_fmtp_supported(
                         codec,
                         _media_fmtp_settings(i, payload_type),
@@ -1362,7 +1362,7 @@ class VoIPPhone:
         self.audio_channels = 1
         self.callCallback = callCallback
         self._status = PhoneStatus.INACTIVE
-        pyVoIP.refresh_supported_codecs()
+        rfcvoip.refresh_supported_codecs()
 
         # "recvonly", "sendrecv", "sendonly", "inactive"
         self.sendmode = "sendrecv"
@@ -1520,7 +1520,7 @@ class VoIPPhone:
         setattr(request, "_pyvoip_ack_sent", True)
 
     def callback(self, request: SIP.SIPMessage) -> None:
-        if request.type == pyVoIP.SIP.SIPMessageType.MESSAGE:
+        if request.type == rfcvoip.SIP.SIPMessageType.MESSAGE:
             if request.method == "INVITE":
                 self._callback_MSG_Invite(request)
             elif request.method == "BYE":
@@ -1572,7 +1572,7 @@ class VoIPPhone:
         if isinstance(require, str) and "100rel" in require.lower():
             warnings.warn(
                 "Received reliable provisional response (Require: 100rel). "
-                "pyVoIP does not implement PRACK; calls may stall at 18x/183.",
+                "rfcvoip does not implement PRACK; calls may stall at 18x/183.",
                 RuntimeWarning,
                 stacklevel=2,
             )
@@ -1642,7 +1642,7 @@ class VoIPPhone:
         }
 
     def refresh_supported_codecs(self) -> List[RTP.PayloadType]:
-        return pyVoIP.refresh_supported_codecs()
+        return rfcvoip.refresh_supported_codecs()
 
     def set_codec_priority(self, codec: RTP.PayloadType, score: int) -> List[RTP.PayloadType]:
         self.codec_priorities[codec] = int(score)
@@ -1653,7 +1653,7 @@ class VoIPPhone:
         return self._prioritized_enabled_codecs()
 
     def _prioritized_enabled_codecs(self) -> List[RTP.PayloadType]:
-        indexed = list(enumerate(pyVoIP.RTPCompatibleCodecs))
+        indexed = list(enumerate(rfcvoip.RTPCompatibleCodecs))
         indexed.sort(
             key=lambda item: (
                 -RTP.codec_priority_score(
@@ -1698,7 +1698,7 @@ class VoIPPhone:
                 continue
             self._add_codec_to_offer(codecs, codec)
 
-        if RTP.PayloadType.EVENT in pyVoIP.RTPCompatibleCodecs:
+        if RTP.PayloadType.EVENT in rfcvoip.RTPCompatibleCodecs:
             self._add_codec_to_offer(codecs, RTP.PayloadType.EVENT)
 
         if not any(RTP.is_transmittable_audio_codec(codec) for codec in codecs.values()):
@@ -1746,7 +1746,7 @@ class VoIPPhone:
                 except (KeyError, ValueError):
                     continue
 
-                if codec not in pyVoIP.RTPCompatibleCodecs:
+                if codec not in rfcvoip.RTPCompatibleCodecs:
                     continue
                 if not RTP.codec_fmtp_supported(
                     codec,

@@ -1,4 +1,4 @@
-from pyVoIP.SIP import SIPClient
+from rfcvoip.SIP import SIPClient
 
 
 class _Phone:

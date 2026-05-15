@@ -1,6 +1,6 @@
 import audioop
 
-from pyVoIP.codecs.base import CodecAvailability, RTPCodec
+from rfcvoip.codecs.base import CodecAvailability, RTPCodec
 
 
 class PCMUCodec(RTPCodec):
