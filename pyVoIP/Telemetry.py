@@ -928,6 +928,16 @@ def call_active_codecs(call: Any) -> List[Dict[str, Any]]:
     """Return codecs selected by a call's RTP clients."""
     active = []
     for client in _rtp_clients_snapshot(call):
+        legacy_selected_codec_info = getattr(client, "selected_codec_info", None)
+        if callable(legacy_selected_codec_info):
+            try:
+                info = legacy_selected_codec_info()
+                if isinstance(info, dict):
+                    active.append(dict(info))
+                    continue
+            except Exception:
+                pass
+
         try:
             active.append(rtp_client_codec_info(client))
         except Exception as ex:

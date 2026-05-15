@@ -5,7 +5,9 @@ from pyVoIP.codecs import create_codec
 
 
 def test_supported_codecs_include_builtin_g711_and_telephone_event():
-    codecs = pyVoIP.supported_codecs()
+    from pyVoIP import Telemetry
+
+    codecs = Telemetry.local_supported_codecs()
     names = {codec["name"] for codec in codecs}
 
     assert {"PCMU", "PCMA", "telephone-event"} <= names

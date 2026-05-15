@@ -2,6 +2,8 @@ from pyVoIP.VoIP import VoIPPhone
 
 
 def test_voip_phone_local_codec_offer_contains_audio_and_events():
+    from pyVoIP import Telemetry
+
     phone = VoIPPhone(
         "127.0.0.1",
         5060,
@@ -12,7 +14,7 @@ def test_voip_phone_local_codec_offer_contains_audio_and_events():
         rtpPortHigh=10010,
     )
 
-    offer = phone.local_codec_offer()
+    offer = Telemetry.local_codec_offer(phone)
     names = {codec["name"] for codec in offer}
 
     assert "PCMU" in names

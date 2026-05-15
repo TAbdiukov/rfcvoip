@@ -32,7 +32,9 @@ def _basic_sdp(*extra_lines: str):
 
 
 def _pcmu_from_report(message: SIPMessage):
-    report = message.codec_support_report()
+    from pyVoIP import Telemetry
+
+    report = Telemetry.codec_support_report(message)
     return next(codec for codec in report["remote"] if codec["name"] == "PCMU")
 
 

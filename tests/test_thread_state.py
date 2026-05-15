@@ -165,6 +165,8 @@ def test_voip_call_lazy_state_lock_supports_object_new_doubles():
 
 
 def test_active_codecs_works_for_object_new_call_doubles():
+    from pyVoIP import Telemetry
+
     class FakeRTPClient:
         def selected_codec_info(self):
             return {"name": "PCMU", "payload_type": 0}
@@ -173,7 +175,7 @@ def test_active_codecs_works_for_object_new_call_doubles():
     call.remote_sip_message = None
     call.RTPClients = [FakeRTPClient()]
 
-    assert call.active_codecs() == [{"name": "PCMU", "payload_type": 0}]
+    assert Telemetry.call_active_codecs(call) == [{"name": "PCMU", "payload_type": 0}]
 
 
 def test_write_audio_uses_rtp_client_snapshot_when_list_mutates():

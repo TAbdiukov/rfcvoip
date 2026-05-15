@@ -17,6 +17,8 @@ def _sip_response_with_sdp(sdp: bytes) -> bytes:
 
 
 def test_sip_message_reports_supported_sdp_codecs():
+    from pyVoIP import Telemetry
+
     sdp = (
         "v=0\r\n"
         "o=pyVoIP 1 1 IN IP4 127.0.0.1\r\n"
@@ -32,7 +34,7 @@ def test_sip_message_reports_supported_sdp_codecs():
     ).encode("utf-8")
 
     message = SIPMessage(_sip_response_with_sdp(sdp))
-    codecs = message.supported_codecs()
+    codecs = Telemetry.sip_supported_codecs(message)
     names_by_payload = {
         codec["payload_type"]: codec["name"] for codec in codecs
     }
@@ -41,7 +43,7 @@ def test_sip_message_reports_supported_sdp_codecs():
     assert names_by_payload[8] == "PCMA"
     assert names_by_payload[101] == "telephone-event"
 
-    report = message.codec_support_report()
+    report = Telemetry.codec_support_report(message)
     assert report["remote_has_sdp"] is True
     assert report["can_start_call"] is True
     assert any(
