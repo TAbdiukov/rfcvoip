@@ -5,6 +5,7 @@
 - New project name: rfcvoip, derived from PyVoIP
 - **Breaking change**: from now on, packages must use `rfcvoip` import instead of `rfcvoip`
 - Update documentation
+- Shields in README
 
 ## 2.8.8+RFC
 
