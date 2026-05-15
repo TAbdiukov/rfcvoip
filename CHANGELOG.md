@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.9.1+RFC
+
+- Remove a limiting document of CONTRIBUTING
+
 ## 2.9.0+RFC
 
 - New project name: rfcvoip, derived from PyVoIP
