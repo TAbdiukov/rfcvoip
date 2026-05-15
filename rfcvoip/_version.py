@@ -1,7 +1,7 @@
 __all__ = ["__version__", "version_info"]
 
 
-__version__ = "2.8.8+RFC"
+__version__ = "2.9.0+RFC"
 version_info = tuple(
     int(part) if part.isdigit() else part
     for part in __version__.split("+", 1)[0].split(".")

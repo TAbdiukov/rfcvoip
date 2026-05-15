@@ -3,10 +3,12 @@
 ## 2.9.0+RFC
 
 - New project name: rfcvoip, derived from PyVoIP
+- **Breaking change**: from now on, packages must use `rfcvoip` import instead of `rfcvoip`
 - Update documentation
 
 ## 2.8.8+RFC
 
+- EOL: last version where `pyVOIP` import is used instead of `rfcvoip`
 - Standalone Telemetry module.
 - SIP: Modularize SIPSubscription
 
