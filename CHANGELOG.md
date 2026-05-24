@@ -2,6 +2,11 @@
 
 ## 2.9.1+RFC
 
+- Add DTMF sequence normalization and call-level RFC 4733 dispatch helpers.
+- VoIP: route outbound DTMF sequence sending through `VoIPCall.send_dtmf_sequence()`
+- RTP: add native `RTPClient.send_dtmf_sequence()` support
+- RTP: expose `normalize_dtmf_sequence()` and `normalize_dtmf_digit()` for frontend/backend reuse
+- RTP: add shared DTMF normalization helpers and queued multi-digit RTP telephone-event dispatch
 - Remove a limiting document of CONTRIBUTING
 
 ## 2.9.0+RFC

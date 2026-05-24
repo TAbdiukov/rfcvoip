@@ -22,7 +22,6 @@ __all__ = [
 ]
 
 debug = rfcvoip.debug
-_VALID_DTMF_DIGITS = frozenset("0123456789*#ABCD")
 
 
 def _media_fmtp_settings(media: Dict[str, Any], method: Any) -> List[str]:
@@ -818,17 +817,36 @@ class VoIPCall:
         )
         return self.send_dtmf(digits)
 
-    def send_dtmf(self, digits: str) -> bool:
-        digits = "".join(ch for ch in str(digits or "").upper() if not ch.isspace())
-        if not digits or any(
-            digit not in _VALID_DTMF_DIGITS for digit in digits
-        ):
+    def send_dtmf(
+        self,
+        digits: str,
+        *,
+        allow_abcd: bool = True,
+    ) -> bool:
+        digits = RTP.normalize_dtmf_sequence(
+            digits,
+            allow_abcd=allow_abcd,
+        )
+        if not digits:
             return False
 
         sent = False
+        fallback_clients = []
+        for client in self._rtp_clients_snapshot():
+            sequence_sender = getattr(client, "send_dtmf_sequence", None)
+            if callable(sequence_sender):
+                try:
+                    result = sequence_sender(digits)
+                except Exception:
+                    continue
+                if result is not False:
+                    sent = True
+                continue
+            fallback_clients.append(client)
+
         for digit in digits:
             digit_sent = False
-            for client in self.RTPClients:
+            for client in fallback_clients:
                 sender = getattr(client, "send_dtmf", None)
                 if not callable(sender):
                     continue
@@ -840,7 +858,7 @@ class VoIPCall:
                     digit_sent = True
                     sent = True
 
-            if not digit_sent:
+            if fallback_clients and not digit_sent:
                 return sent
 
         if sent:
@@ -850,8 +868,13 @@ class VoIPCall:
             )
         return sent
 
-    def send_dtmf_sequence(self, digits: str) -> bool:
-        return self.send_dtmf(digits)
+    def send_dtmf_sequence(
+        self,
+        digits: str,
+        *,
+        allow_abcd: bool = True,
+    ) -> bool:
+        return self.send_dtmf(digits, allow_abcd=allow_abcd)
 
     def _finalize_ended_call(self) -> None:
         try:

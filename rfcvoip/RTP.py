@@ -16,6 +16,7 @@ import warnings
 __all__ = [
     "add_bytes",
     "byte_to_bits",
+    "DTMF_DIGITS",
     "DynamicPayloadType",
     "codec_fmtp_supported",
     "codec_priority_score",
@@ -24,6 +25,8 @@ __all__ = [
     "is_audio_codec",
     "is_transmittable_audio_codec",
     "is_video_codec",
+    "normalize_dtmf_digit",
+    "normalize_dtmf_sequence",
     "payload_type_from_name",
     "payload_type_media_kind",
     "prioritize_payload_type_map",
@@ -45,6 +48,40 @@ _DTMF_EVENT_TO_CHAR = [
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "#", "A", "B", "C", "D",
 ]
 _DTMF_CHAR_TO_EVENT = {char: idx for idx, char in enumerate(_DTMF_EVENT_TO_CHAR)}
+DTMF_DIGITS = "".join(_DTMF_EVENT_TO_CHAR)
+_DTMF_BASIC_DIGITS = frozenset("0123456789*#")
+_DTMF_EXTENDED_DIGITS = frozenset(DTMF_DIGITS)
+
+
+def normalize_dtmf_sequence(
+    value: str,
+    *,
+    allow_abcd: bool = True,
+) -> str:
+    """Return an uppercase DTMF sequence, or ``""`` when invalid.
+
+    Whitespace is ignored so command frontends may pass values such as
+    ``"1 2 #"``.  Any non-DTMF character rejects the entire sequence.
+    """
+    allowed = _DTMF_EXTENDED_DIGITS if allow_abcd else _DTMF_BASIC_DIGITS
+    cleaned = []
+    for char in str(value or "").upper():
+        if char.isspace():
+            continue
+        if char not in allowed:
+            return ""
+        cleaned.append(char)
+    return "".join(cleaned)
+
+
+def normalize_dtmf_digit(
+    value: str,
+    *,
+    allow_abcd: bool = True,
+) -> str:
+    """Return one normalized DTMF digit, or ``""`` when invalid."""
+    digit = normalize_dtmf_sequence(value, allow_abcd=allow_abcd)
+    return digit if len(digit) == 1 else ""
 
 
 def byte_to_bits(byte: bytes) -> str:
@@ -1032,13 +1069,24 @@ class RTPClient:
         return self.send_dtmf(code)
 
     def send_dtmf(self, code: str) -> bool:
-        code = str(code or '').strip().upper()
-        if code not in _DTMF_CHAR_TO_EVENT:
+        code = normalize_dtmf_digit(code)
+        if not code:
+            return False
+        return self.send_dtmf_sequence(code)
+
+    def send_dtmf_sequence(
+        self,
+        digits: str,
+        *,
+        allow_abcd: bool = True,
+    ) -> bool:
+        digits = normalize_dtmf_sequence(digits, allow_abcd=allow_abcd)
+        if not digits:
             return False
         if self._telephone_event_pt is None:
             return False
         with self._dtmf_lock:
-            self._pending_dtmf.append(code)
+            self._pending_dtmf.extend(digits)
         return True
 
     @property
