@@ -1563,7 +1563,7 @@ def report(
         if isinstance(sip, dict):
             target_data = sip.get("target") or {}
             if target_data:
-                target = f"{sip.get('transport') or 'SIP'} {target_data.get('host')}:{target_data.get('port')}"
+                target = f"{sip.get('transport') or 'SIP'}"
         line = f"📞 {_text('Phone', platform)}: {_code(status, platform)}"
         if target:
             line += _text(" | ", platform) + f"{_text('SIP', platform)} {_code(target, platform)}"
@@ -1572,7 +1572,7 @@ def report(
         target_data = sip.get("target") or {}
         target = None
         if target_data:
-            target = f"{sip.get('transport') or 'SIP'} {target_data.get('host')}:{target_data.get('port')}"
+            target = f"{sip.get('transport') or 'SIP'}"
         line = f"📡 {_text('SIP', platform)}: {_code('running' if sip.get('running') else 'stopped', platform)}"
         if target:
             line += _text(" | ", platform) + _code(target, platform)
