@@ -7,6 +7,7 @@
 - RTP: add native `RTPClient.send_dtmf_sequence()` support
 - RTP: expose `normalize_dtmf_sequence()` and `normalize_dtmf_digit()` for frontend/backend reuse
 - RTP: add shared DTMF normalization helpers and queued multi-digit RTP telephone-event dispatch
+- Remove SIP URI/request-target values from telemetry outputs
 - Remove a limiting document of CONTRIBUTING
 
 ## 2.9.0+RFC
