@@ -3969,7 +3969,7 @@ class SIPClient:
         else:
             ack_uri = (
                 request_uri
-                or getattr(request, "_pyvoip_invite_request_uri", None)
+                or getattr(request, "_rfcvoip_invite_request_uri", None)
                 or request.headers["To"]["raw"].lstrip("<").rstrip(">")
             )
             via = self._gen_response_via_header(
@@ -4149,7 +4149,7 @@ class SIPClient:
                 if 180 <= status_code < 200:
                     setattr(
                         response,
-                        "_pyvoip_invite_request_uri",
+                        "_rfcvoip_invite_request_uri",
                         target_uri,
                     )
                     self._set_last_invite_debug(
@@ -4222,7 +4222,7 @@ class SIPClient:
                 # Final response (>=200) â€” don't hang waiting for only 100/180.
                 setattr(
                     response,
-                    "_pyvoip_invite_request_uri",
+                    "_rfcvoip_invite_request_uri",
                     target_uri,
                 )
                 self.queue_pending_invite_response(call_id, response)

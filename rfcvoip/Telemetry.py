@@ -747,12 +747,12 @@ def codec_support_report(
 ) -> Dict[str, Any]:
     """Compare a SIP message's SDP codecs against rfcvoip support."""
     remote = sip_supported_codecs(message, media_type=media_type)
-    pyvoip_codecs = local_supported_codecs()
+    rfcvoip_codecs = local_supported_codecs()
     compatible = [codec for codec in remote if codec.get("supported")]
     unsupported = [codec for codec in remote if not codec.get("supported")]
     remote_names = {_codec_name_key(codec) for codec in remote}
-    pyvoip_missing_from_remote = [
-        codec for codec in pyvoip_codecs if _codec_name_key(codec) not in remote_names
+    rfcvoip_missing_from_remote = [
+        codec for codec in rfcvoip_codecs if _codec_name_key(codec) not in remote_names
     ]
     remote_has_sdp = bool((getattr(message, "body", {}) or {}).get("m"))
     transmittable_audio = [
@@ -763,12 +763,12 @@ def codec_support_report(
 
     return {
         "remote": remote,
-        "rfcvoip": pyvoip_codecs,
+        "rfcvoip": rfcvoip_codecs,
         "compatible": compatible,
         "unsupported": unsupported,
         "good": compatible,
         "missing": unsupported,
-        "pyvoip_missing_from_remote": pyvoip_missing_from_remote,
+        "rfcvoip_missing_from_remote": rfcvoip_missing_from_remote,
         "remote_has_sdp": remote_has_sdp,
         "transmittable_audio": transmittable_audio,
         "call_compatible": transmittable_audio,
@@ -918,7 +918,7 @@ def phone_codec_report(
                 "unsupported": [],
                 "good": [],
                 "missing": [],
-                "pyvoip_missing_from_remote": codec_report["local"],
+                "rfcvoip_missing_from_remote": codec_report["local"],
                 "remote_has_sdp": False,
                 "transmittable_audio": [],
                 "call_compatible": [],
@@ -1015,18 +1015,18 @@ def call_codec_report(call: Any) -> Dict[str, Any]:
     active_codecs = call_active_codecs(call)
     remote_sip_message = getattr(call, "remote_sip_message", None)
     if remote_sip_message is None:
-        pyvoip_codecs = local_supported_codecs(
+        rfcvoip_codecs = local_supported_codecs(
             priority_scores=_phone_priority_scores(getattr(call, "phone", None))
         )
         return {
             "remote": [],
-            "rfcvoip": pyvoip_codecs,
-            "local": pyvoip_codecs,
+            "rfcvoip": rfcvoip_codecs,
+            "local": rfcvoip_codecs,
             "compatible": [],
             "unsupported": [],
             "good": [],
             "missing": [],
-            "pyvoip_missing_from_remote": pyvoip_codecs,
+            "rfcvoip_missing_from_remote": rfcvoip_codecs,
             "remote_has_sdp": False,
             "transmittable_audio": [],
             "call_compatible": [],

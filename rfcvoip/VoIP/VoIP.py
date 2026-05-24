@@ -1494,10 +1494,10 @@ class VoIPPhone:
         target_uri = invite_debug_snapshot.get("target_uri")
         if target_uri and not getattr(
             request,
-            "_pyvoip_invite_request_uri",
+            "_rfcvoip_invite_request_uri",
             None,
         ):
-            setattr(request, "_pyvoip_invite_request_uri", target_uri)
+            setattr(request, "_rfcvoip_invite_request_uri", target_uri)
 
         self.sip.queue_pending_invite_response(call_id, request)
         debug(
@@ -1521,11 +1521,11 @@ class VoIPPhone:
         return True
 
     def _send_ack(self, request: SIP.SIPMessage) -> None:
-        if getattr(request, "_pyvoip_ack_sent", False):
+        if getattr(request, "_rfcvoip_ack_sent", False):
             return
 
         call_id = request.headers.get("Call-ID")
-        request_uri = getattr(request, "_pyvoip_invite_request_uri", None)
+        request_uri = getattr(request, "_rfcvoip_invite_request_uri", None)
         if request_uri is None:
             call = self._get_call(call_id)
             original_request = (
@@ -1540,7 +1540,7 @@ class VoIPPhone:
         ack = self.sip.gen_ack(request, request_uri=request_uri)
         host, port = self.sip.ack_target(request)
         self.sip.send_raw(ack.encode("utf8"), (host, port))
-        setattr(request, "_pyvoip_ack_sent", True)
+        setattr(request, "_rfcvoip_ack_sent", True)
 
     def callback(self, request: SIP.SIPMessage) -> None:
         if request.type == rfcvoip.SIP.SIPMessageType.MESSAGE:
