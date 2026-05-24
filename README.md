@@ -86,24 +86,32 @@ migration is limited to installing the new package and updating imports from
 
 ## Public audio format
 
-rfcvoip exposes audio to user code as unsigned 8-bit linear mono bytes.
+rfcvoip exposes audio to user code as unsigned 8-bit linear bytes. Stereo
+audio is interleaved left/right. The sample width is fixed at 8-bit for API
+compatibility; the public sample rate and channel count can be selected
+automatically from the negotiated codec or fixed by the application.
 
-The sample rate is configurable:
+The public audio format is selected as follows:
 
 - If `VoIPPhone(audio_sample_rate=...)` is provided, that fixed sample rate is
   used.
+- If `VoIPPhone(audio_channels=1)` or `VoIPPhone(audio_channels=2)` is
+  provided, that fixed channel count is used.
 - If `audio_sample_rate=None`, rfcvoip uses the selected codec's preferred
   public sample rate.
-- Before a codec has been negotiated, the fallback public sample rate is
-  8000 Hz unless a fixed sample rate was configured.
+- If `audio_channels=None`, rfcvoip uses the selected codec's preferred public
+  channel count.
+- Before a codec has been negotiated, the fallback public format is 8000 Hz
+  mono unless fixed values were configured.
 
-For example, 20 ms at 8000 Hz is 160 bytes, 20 ms at 16000 Hz is 320 bytes,
-and 20 ms at 48000 Hz is 960 bytes. Use `call.audio_frame_size()` instead of
-hard-coding `160` when your application may negotiate wideband codecs.
+For example, 20 ms at 8000 Hz mono is 160 bytes, 20 ms at 16000 Hz mono is
+320 bytes, and 20 ms at 48000 Hz stereo is 1920 bytes. Use
+`call.audio_frame_size()` instead of hard-coding `160` when your application
+may negotiate wideband or stereo-capable codecs.
 
-PCMU and PCMA remain 8000 Hz RTP codecs on the wire. Wideband and optional
-codecs convert internally between the public audio format and their native RTP
-format.
+PCMU and PCMA remain 8000 Hz mono RTP codecs on the wire. Wideband, stereo,
+and optional codecs convert internally between the public audio format and
+their native RTP format.
 
 ## Quick start
 
@@ -209,9 +217,9 @@ Optional codecs:
 
 PCMA-WB and PCMU-WB are implemented as RFC 5391 / G.711.1 R1 core-layer
 payloads. rfcvoip advertises `mode-set=1`, uses a 16000 Hz RTP clock, and
-keeps the public read/write format as unsigned 8-bit mono with a configurable
-sample rate. Incoming G.711.1 packets in wider modes are decoded from their
-G.711-compatible L0 core layer.
+converts between the negotiated RTP payload and the configured public unsigned
+8-bit audio format. Incoming G.711.1 packets in wider modes are decoded from
+their G.711-compatible L0 core layer.
 
 Codec priority affects local SDP offer order and the selected RTP codec when a
 remote endpoint advertises more than one compatible payload. Larger scores are

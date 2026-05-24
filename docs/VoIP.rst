@@ -80,6 +80,7 @@ VoIPPhone
     tls_server_name=None,
     codec_priorities=None,
     audio_sample_rate=None,
+    audio_channels=None,
 )
 
 Required arguments:
@@ -124,6 +125,11 @@ Common optional arguments:
 ``audio_sample_rate``
   Fixed public audio sample rate. When omitted, rfcvoip uses the selected
   codec's preferred source sample rate.
+
+``audio_channels``
+  Fixed public audio channel count. Supported values are ``1`` for mono and
+  ``2`` for stereo. When omitted, rfcvoip uses the selected codec's preferred
+  source channel count.
 
 Lifecycle:
 
@@ -175,10 +181,12 @@ Codec and audio helpers:
     Clears per-phone codec priority overrides.
 
   **public_audio_frame_size**\ (duration_ms=20) -> int
-    Returns bytes for the phone's public audio format before negotiation.
+    Returns bytes for the phone's public audio format before negotiation,
+    including sample rate and channel count.
 
   **audio_format**\ () -> dict
-    Returns public audio format metadata.
+    Returns public audio format metadata, including sample rate, channel count,
+    fixed/automatic mode fields, and fallback values before negotiation.
 
 Negotiation behavior:
 
@@ -264,10 +272,12 @@ Audio:
     If the call is not answered, silence is returned.
 
   **audio_frame_size**\ (duration_ms=20) -> int
-    Returns the number of public audio bytes for one frame.
+    Returns the number of public audio bytes for one frame, including sample
+    rate and channel count.
 
   **audio_format**\ () -> dict
-    Returns call audio format metadata.
+    Returns call audio format metadata, including the active negotiated public
+    sample rate and channel count.
 
 DTMF:
 

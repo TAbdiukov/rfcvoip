@@ -208,7 +208,7 @@ telephone-event DTMF when that payload is negotiated.
     dtmf=None,
     audio_sample_rate=None,
     audio_sample_width=1,
-    audio_channels=1,
+    audio_channels=None,
     codec_priority_scores=None,
     enabled_codecs=None,
 )
@@ -233,9 +233,14 @@ telephone-event DTMF when that payload is negotiated.
     Public audio sample rate. When omitted, the selected codec's preferred
     source sample rate is used.
 
-  ``audio_sample_width`` and ``audio_channels``
-    Must currently be ``1`` and ``1``. Only the public sample rate is
-    configurable.
+  ``audio_sample_width``
+    Public audio sample width. Must currently be ``1`` for unsigned 8-bit
+    samples.
+
+  ``audio_channels``
+    Public audio channel count. When omitted, the selected codec's preferred
+    source channel count is used. Supported fixed values are ``1`` for mono
+    and ``2`` for stereo.
 
   ``codec_priority_scores`` and ``enabled_codecs``
     Optional per-client codec selection overrides.
@@ -256,7 +261,8 @@ Methods:
     Queues public audio bytes for encoding and transmission.
 
   **audio_frame_size**\ (duration_ms=None) -> int
-    Returns public audio bytes for a frame duration.
+    Returns public audio bytes for a frame duration, including the negotiated
+    or configured sample rate and channel count.
 
   **send_dtmf**\ (code: str) -> bool
     Queues one DTMF character for RTP telephone-event transmission.

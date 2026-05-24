@@ -8,15 +8,19 @@ The enum ``RTP.PayloadType`` describes payload names and RTP clock rates. The
 Public audio format
 *******************
 
-User code reads and writes unsigned 8-bit linear mono bytes. Codecs convert
-between this public format and their RTP/native format internally.
+User code reads and writes unsigned 8-bit linear bytes. Stereo audio is
+interleaved left/right. Codecs convert between this public format and their
+RTP/native format internally.
 
-The public sample rate is selected as follows:
+The public sample rate and channel count are selected as follows:
 
 * If ``VoIPPhone(audio_sample_rate=...)`` is provided, that value is used.
+* If ``VoIPPhone(audio_channels=1)`` or ``VoIPPhone(audio_channels=2)`` is
+  provided, that channel count is used.
 * Otherwise, rfcvoip uses the selected codec's preferred source sample rate.
+* Otherwise, rfcvoip uses the selected codec's preferred source channel count.
 * Before a codec has been negotiated, ``VoIPPhone.public_audio_frame_size``
-  falls back to 8000 Hz unless a fixed sample rate was configured.
+  falls back to 8000 Hz mono unless fixed values were configured.
 
 Use these helpers instead of hard-coding frame lengths:
 
@@ -24,6 +28,9 @@ Use these helpers instead of hard-coding frame lengths:
 
   frame = call.audio_frame_size(duration_ms=20)
   fmt = call.audio_format()
+
+For example, 20 ms at 8000 Hz mono is 160 bytes, 20 ms at 16000 Hz mono is
+320 bytes, and 20 ms at 48000 Hz stereo is 1920 bytes.
 
 Built-in codecs
 ***************
@@ -53,12 +60,14 @@ Opus
     Payload name ``opus``, RTP clock 48000 Hz, default payload 111. Requires
     a loadable ``libopus`` library. The ``opus`` extra installs
     ``discord.py``, which can help provide or load libopus in some
-    environments.
+    environments. In automatic public-audio mode, Opus uses 48000 Hz stereo.
 
 SILK
     Payload names ``SILK/24000``, ``SILK/16000``, ``SILK/12000``, and
     ``SILK/8000``. Requires the optional SILK Python dependency that provides
-    the ``pysilk`` module. The ``silk`` extra installs ``silk-python``.
+    the ``pysilk`` module. The ``silk`` extra installs ``silk-python``. In
+    automatic public-audio mode, SILK uses its negotiated sample rate and mono
+    audio.
 
 The runtime list of enabled codecs is stored in
 ``rfcvoip.RTPCompatibleCodecs``. Optional codecs are only enabled when their

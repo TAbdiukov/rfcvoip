@@ -58,13 +58,15 @@ Use keyword arguments for optional SIP features:
 Playing an announcement
 ***********************
 
-The public audio API accepts unsigned 8-bit linear mono bytes. The negotiated
-codec chooses the default sample rate. Use ``call.audio_frame_size()`` or
-``call.audio_format()`` when you need to calculate frame sizes dynamically.
+The public audio API accepts unsigned 8-bit linear bytes. Stereo audio is
+interleaved left/right. The negotiated codec chooses the default sample rate
+and channel count. Use ``call.audio_frame_size()`` or ``call.audio_format()``
+when you need to calculate frame sizes dynamically.
 
 This example plays a WAV file, waits until playback should be finished, and
 then hangs up. The loop exits early if the remote party hangs up or the phone
-is stopped.
+is stopped. It assumes the WAV data is already unsigned 8-bit PCM and matches
+the call's public sample rate and channel count.
 
 .. code-block:: python
 
@@ -110,9 +112,11 @@ is stopped.
       phone.stop()
 
 For the simplest legacy G.711 flow, use 8000 Hz, 8-bit, mono WAV audio. If you
-enable wideband codecs, confirm that the audio sample rate you provide matches
-``call.audio_format()["sample_rate"]`` or pass ``audio_sample_rate=8000`` to
-``VoIPPhone`` to keep a fixed 8000 Hz application audio pipeline.
+enable wideband or stereo-capable codecs, confirm that the audio data you
+provide matches ``call.audio_format()["sample_rate"]`` and
+``call.audio_format()["channels"]``. To keep a fixed 8000 Hz mono application
+audio pipeline, pass ``audio_sample_rate=8000`` and ``audio_channels=1`` to
+``VoIPPhone``.
 
 IVR and DTMF
 ************
@@ -223,6 +227,7 @@ remote endpoint advertises more than one compatible payload.
           RTP.PayloadType.PCMA: 900,
       },
       audio_sample_rate=8000,
+      audio_channels=1,
   )
 
 You can also adjust priorities after construction:
