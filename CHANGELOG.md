@@ -3,6 +3,7 @@
 ## 2.9.2+RFC
 
 - **Breaking change**: Remove mono-only bottleneck, now it is mono/stereo
+- Remove URL from main telemetry
 
 ## 2.9.1+RFC
 
