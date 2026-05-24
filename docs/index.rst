@@ -15,8 +15,8 @@ Current capabilities include:
   available.
 * SIP digest authentication with MD5, MD5-sess, SHA-256, SHA-256-sess,
   SHA-512-256, and SHA-512-256-sess.
-* RTP audio using PCMU, PCMA, telephone-event DTMF, and optional codecs when
-  their dependencies are available.
+* RTP audio using PCMU, PCMA, telephone-event DTMF, and optional codecs such
+  as G.722, Opus, and SILK when their dependencies are available.
 * Built-in codec negotiation, codec priority tuning, FMTP validation, SDP
   bandwidth checks, telemetry reports, and active call cleanup.
 

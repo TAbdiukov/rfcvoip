@@ -37,7 +37,7 @@ their work while continuing development under the new project name.
 - SIP digest authentication with MD5, MD5-sess, SHA-256, SHA-256-sess,
   SHA-512-256, and SHA-512-256-sess.
 - RTP audio using PCMU, PCMA, PCMU-WB, PCMA-WB, telephone-event DTMF, optional
-  Opus, and optional SILK.
+  G.722, optional Opus, and optional SILK.
 - Codec priority tuning, FMTP validation, SDP bandwidth checks, dynamic payload
   mapping, RTP extension and padding parsing, and robust RTP buffering.
 - Built-in telemetry for SIP authentication, local and remote codecs, active
@@ -56,14 +56,16 @@ Optional codec extras:
 
 ```bash
 pip install "rfcvoip[opus]"
+pip install "rfcvoip[g722]"
 pip install "rfcvoip[silk]"
 pip install "rfcvoip[all]"
 ```
 
-Opus support requires a loadable system `libopus` library. SILK support
-requires the optional `pysilk` backend, provided by the declared SILK extra.
-Unavailable optional codecs are reported as unavailable and are not included in
-SIP offers.
+G.722 support requires the optional `G722` PyPI package, provided by the
+declared G.722 extra. Opus support requires a loadable system `libopus`
+library. SILK support requires the optional `pysilk` backend, provided by the
+declared SILK extra. Unavailable optional codecs are reported as unavailable
+and are not included in SIP offers.
 
 Installing from a source checkout:
 
@@ -212,8 +214,13 @@ Built-in event payloads:
 
 Optional codecs:
 
+- G.722, static payload 9, requiring the `G722` PyPI package.
 - Opus, default dynamic payload 111, requiring loadable `libopus`.
 - SILK at 24000, 16000, 12000, and 8000 Hz, requiring `pysilk`.
+
+G.722 uses the RFC 3551 static payload 9 RTP timestamp clock of 8000 Hz for
+wire compatibility, while encoding 16000 Hz wideband audio internally. In
+automatic public-audio mode, G.722 uses 16000 Hz mono audio.
 
 PCMA-WB and PCMU-WB are implemented as RFC 5391 / G.711.1 R1 core-layer
 payloads. rfcvoip advertises `mode-set=1`, uses a 16000 Hz RTP clock, and

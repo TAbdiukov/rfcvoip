@@ -56,6 +56,13 @@ telephone-event
 Optional codecs
 ***************
 
+G.722
+    Static RTP payload 9. Requires the optional ``G722`` PyPI package. Install
+    it with ``pip install "rfcvoip[g722]"`` or install ``G722`` separately.
+    RFC 3551 keeps G.722 on an 8000 Hz RTP timestamp clock for compatibility,
+    even though the codec encodes 16000 Hz wideband audio. In automatic
+    public-audio mode, G.722 uses 16000 Hz mono.
+
 Opus
     Payload name ``opus``, RTP clock 48000 Hz, default payload 111. Requires
     a loadable ``libopus`` library. The ``opus`` extra installs

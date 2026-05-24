@@ -45,8 +45,8 @@ rfcvoip. **RTPCompatibleVersions**
 rfcvoip. **RTPCompatibleCodecs**
     Runtime list of enabled RTP payload types. This list is built from the
     codec registry and optional dependency availability. It normally contains
-    PCMU, PCMA, PCMU-WB, PCMA-WB, any available optional codecs such as Opus
-    or SILK, and telephone-event.
+    PCMU, PCMA, PCMU-WB, PCMA-WB, any available optional codecs such as G.722,
+    Opus, or SILK, and telephone-event.
 
 Codec helper functions
 **********************
