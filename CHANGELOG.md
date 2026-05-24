@@ -3,7 +3,7 @@
 ## 2.9.2+RFC
 
 - **Breaking change**: Remove mono-only bottleneck, now it is mono/stereo
-- Add G722 codec
+- Add G.722 codec
 - Remove URL from main telemetry
 
 ## 2.9.1+RFC
