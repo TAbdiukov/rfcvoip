@@ -1,5 +1,4 @@
 from typing import List, Optional
-import audioop
 import ctypes
 import ctypes.util
 import threading
@@ -146,13 +145,15 @@ class OpusCodec(RTPCodec):
     name = "opus"
     description = "opus"
     rate = 48000
-    channels = 1
+    channels = 2
     rtpmap_channels = 2
     default_payload_type = 111
     dynamic = True
     priority_score = 1000
     preferred_source_sample_rate = 48000
+    preferred_source_channels = 2
     source_sample_rate = 48000
+    source_channels = 2
     default_fmtp = ["minptime=10;useinbandfec=1"]
     max_data_bytes = 4000
     max_frame_size = 5760
@@ -242,14 +243,14 @@ class OpusCodec(RTPCodec):
     def _to_opus_pcm(self, payload: bytes) -> bytes:
         pcm16_48k = self._source_u8_to_pcm16(payload, self.rate)
 
-        frame_size = len(pcm16_48k) // 2
+        frame_size = len(pcm16_48k) // (2 * self.channels)
         if self._valid_frame_size(frame_size):
             return pcm16_48k
 
         # The transmitter normally feeds 160 bytes = 20 ms @ 8 kHz. Keep a
         # valid Opus frame even if a caller passes an unusual size.
         target_frame_size = 960
-        target_bytes = target_frame_size * 2
+        target_bytes = target_frame_size * self.channels * 2
         return pcm16_48k[:target_bytes].ljust(target_bytes, b"\x00")
 
     def encode(self, payload: bytes) -> bytes:
@@ -257,8 +258,10 @@ class OpusCodec(RTPCodec):
             payload = b"\x80" * self.source_frame_size()
 
         pcm16_48k = self._to_opus_pcm(payload)
-        frame_size = len(pcm16_48k) // 2
-        pcm = (ctypes.c_int16 * frame_size).from_buffer_copy(pcm16_48k)
+        frame_size = len(pcm16_48k) // (2 * self.channels)
+        pcm = (ctypes.c_int16 * (frame_size * self.channels)).from_buffer_copy(
+            pcm16_48k
+        )
         encoded = (ctypes.c_ubyte * self.max_data_bytes)()
 
         encoded_len = self._lib.opus_encode(
@@ -293,7 +296,4 @@ class OpusCodec(RTPCodec):
             ctypes.addressof(pcm),
             decoded_samples * self.channels * 2,
         )
-        if self.channels > 1:
-            pcm16_48k = audioop.tomono(pcm16_48k, 2, 0.5, 0.5)
-
         return self._pcm16_to_source_u8(pcm16_48k, self.rate)

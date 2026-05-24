@@ -572,18 +572,18 @@ class VoIPCall:
         phone = getattr(self, "phone", None)
         audio_sample_rate = getattr(phone, "audio_sample_rate", None)
         audio_sample_width = getattr(phone, "audio_sample_width", 1)
-        audio_channels = getattr(phone, "audio_channels", 1)
+        audio_channels = getattr(phone, "audio_channels", None)
 
         rtp_kwargs = {"dtmf": self.dtmf_callback}
 
         # Keep lightweight tests and older RTPClient-compatible doubles working:
         # the real RTPClient defaults are already equivalent for the common
-        # unsigned 8-bit mono auto-rate case, so only pass the newer audio
-        # format keywords when the phone has a non-default public format.
+        # unsigned 8-bit auto-rate/auto-channel case, so only pass the newer
+        # audio format keywords when the phone has a non-default public format.
         if (
             audio_sample_rate is not None
             or audio_sample_width != 1
-            or audio_channels != 1
+            or audio_channels is not None
         ):
             rtp_kwargs.update(
                 audio_sample_rate=audio_sample_rate,
@@ -1273,9 +1273,14 @@ class VoIPCall:
     def audio_format(self) -> Dict[str, Any]:
         rtp_clients = self._rtp_clients_snapshot()
         sample_rate = (
-            rtp_clients[0].audio_sample_rate
+            max(client.audio_sample_rate for client in rtp_clients)
             if rtp_clients
             else self.phone.audio_sample_rate
+        )
+        channels = (
+            max(client.audio_channels for client in rtp_clients)
+            if rtp_clients
+            else self.phone.audio_channels
         )
         return {
             "sample_rate": sample_rate,
@@ -1283,7 +1288,11 @@ class VoIPCall:
                 "auto" if self.phone.audio_sample_rate is None else "fixed"
             ),
             "sample_width": self.phone.audio_sample_width,
-            "channels": self.phone.audio_channels,
+            "channels": channels,
+            "channels_mode": (
+                "auto" if self.phone.audio_channels is None else "fixed"
+            ),
+            "fallback_channels": channels or 1,
             "encoding": "unsigned-8bit-linear",
         }
 
@@ -1339,6 +1348,7 @@ class VoIPPhone:
         tls_server_name: Optional[str] = None,
         codec_priorities: Optional[Dict[Any, int]] = None,
         audio_sample_rate: Optional[int] = None,
+        audio_channels: Optional[int] = None,
     ):
         if rtpPortLow > rtpPortHigh:
             raise InvalidRangeError("'rtpPortHigh' must be >= 'rtpPortLow'")
@@ -1380,9 +1390,18 @@ class VoIPPhone:
                 raise InvalidRangeError(
                     "'audio_sample_rate' must be positive"
                 )
+        if audio_channels is not None:
+            try:
+                audio_channels = int(audio_channels)
+            except (TypeError, ValueError) as ex:
+                raise InvalidRangeError(
+                    "'audio_channels' must be an integer"
+                ) from ex
+            if audio_channels not in (1, 2):
+                raise InvalidRangeError("'audio_channels' must be 1 or 2")
         self.audio_sample_rate = audio_sample_rate
         self.audio_sample_width = 1
-        self.audio_channels = 1
+        self.audio_channels = audio_channels
         self.callCallback = callCallback
         self._status = PhoneStatus.INACTIVE
         rfcvoip.refresh_supported_codecs()
@@ -1650,7 +1669,8 @@ class VoIPPhone:
         # Before negotiation, auto mode has no selected codec yet.  Use the
         # legacy 8 kHz frame size as the fallback silence/read size.
         sample_rate = self.audio_sample_rate or 8000
-        return max(1, int(round(sample_rate * (duration_ms / 1000.0))))
+        channels = self.audio_channels or 1
+        return max(1, int(round(sample_rate * channels * (duration_ms / 1000.0))))
 
     def audio_format(self) -> Dict[str, Any]:
         return {
@@ -1661,6 +1681,10 @@ class VoIPPhone:
             "fallback_sample_rate": self.audio_sample_rate or 8000,
             "sample_width": self.audio_sample_width,
             "channels": self.audio_channels,
+            "channels_mode": (
+                "auto" if self.audio_channels is None else "fixed"
+            ),
+            "fallback_channels": self.audio_channels or 1,
             "encoding": "unsigned-8bit-linear",
         }
 

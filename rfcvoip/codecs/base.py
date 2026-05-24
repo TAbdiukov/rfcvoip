@@ -20,9 +20,9 @@ class CodecAvailability:
 class RTPCodec:
     """Runtime codec implementation.
 
-    rfcvoip's public audio API reads/writes unsigned 8-bit mono samples.  The
-    sample rate is configurable per RTP client.  Codecs convert between that
-    public sample rate and their RTP/native clock internally.
+    rfcvoip's public audio API reads/writes unsigned 8-bit interleaved samples.
+    The sample rate and channel count are configurable per RTP client.  Codecs
+    convert between that public format and their RTP/native clock internally.
     """
 
     payload_type = None
@@ -73,8 +73,8 @@ class RTPCodec:
     ) -> None:
         """Configure rfcvoip's public audio format for this codec instance.
 
-        Only the sample rate is currently variable.  The public byte stream
-        remains unsigned 8-bit mono for compatibility with existing callers.
+        The public byte stream remains unsigned 8-bit for compatibility with
+        existing callers.  Mono and stereo are supported.
         """
         if sample_rate is None:
             sample_rate = int(self.preferred_source_sample_rate)
@@ -88,10 +88,13 @@ class RTPCodec:
 
         if sample_rate <= 0:
             raise ValueError("Audio sample rate must be positive.")
-        if sample_width != 1 or channels != 1:
+        if sample_width != 1:
             raise ValueError(
-                "rfcvoip public audio currently supports unsigned 8-bit mono; "
-                "only the sample rate is configurable."
+                "rfcvoip public audio currently supports unsigned 8-bit samples."
+            )
+        if channels not in (1, 2):
+            raise ValueError(
+                "rfcvoip public audio currently supports mono or stereo only."
             )
 
         self.source_sample_rate = sample_rate
@@ -137,17 +140,45 @@ class RTPCodec:
         )
 
     def output_offset(self, timestamp: int) -> int:
-        if self.rate == self.source_sample_rate:
-            return timestamp
-        return int((timestamp * self.source_sample_rate) / self.rate)
+        samples = timestamp
+        if self.rate != self.source_sample_rate:
+            samples = int((timestamp * self.source_sample_rate) / self.rate)
+        return samples * self.source_sample_width * self.source_channels
 
-    def _source_u8_to_pcm16(self, payload: bytes, target_rate: int) -> bytes:
-        """Convert public unsigned 8-bit mono audio to signed 16-bit PCM."""
+    @staticmethod
+    def _convert_pcm16_channels(
+        pcm16: bytes,
+        source_channels: int,
+        target_channels: int,
+    ) -> bytes:
+        if source_channels not in (1, 2) or target_channels not in (1, 2):
+            raise ValueError("Only mono and stereo PCM16 conversion is supported.")
+        if source_channels == target_channels:
+            return pcm16
+        if source_channels == 1 and target_channels == 2:
+            return audioop.tostereo(pcm16, 2, 1.0, 1.0)
+        return audioop.tomono(pcm16, 2, 0.5, 0.5)
+
+    def _source_u8_to_pcm16(
+        self,
+        payload: bytes,
+        target_rate: int,
+        target_channels: Optional[int] = None,
+    ) -> bytes:
+        """Convert public unsigned 8-bit audio to signed 16-bit PCM."""
         if not payload:
             payload = b"\x80" * self.source_frame_size()
 
+        target_channels = (
+            self.channels if target_channels is None else int(target_channels)
+        )
         signed8 = audioop.bias(payload, 1, -128)
         pcm16 = audioop.lin2lin(signed8, 1, 2)
+        pcm16 = self._convert_pcm16_channels(
+            pcm16,
+            self.source_channels,
+            target_channels,
+        )
 
         source_rate = int(self.source_sample_rate)
         target_rate = int(target_rate)
@@ -155,7 +186,7 @@ class RTPCodec:
             pcm16, state = audioop.ratecv(
                 pcm16,
                 2,
-                1,
+                target_channels,
                 source_rate,
                 target_rate,
                 getattr(self, "_encode_rate_state", None),
@@ -164,24 +195,37 @@ class RTPCodec:
 
         return pcm16
 
-    def _pcm16_to_source_u8(self, pcm16: bytes, source_rate: int) -> bytes:
-        """Convert signed 16-bit PCM to public unsigned 8-bit mono audio."""
+    def _pcm16_to_source_u8(
+        self,
+        pcm16: bytes,
+        source_rate: int,
+        source_channels: Optional[int] = None,
+    ) -> bytes:
+        """Convert signed 16-bit PCM to public unsigned 8-bit audio."""
         if not pcm16:
             return b"\x80" * self.source_frame_size()
 
+        source_channels = (
+            self.channels if source_channels is None else int(source_channels)
+        )
         source_rate = int(source_rate)
         target_rate = int(self.source_sample_rate)
         if source_rate != target_rate:
             pcm16, state = audioop.ratecv(
                 pcm16,
                 2,
-                1,
+                source_channels,
                 source_rate,
                 target_rate,
                 getattr(self, "_decode_rate_state", None),
             )
             self._decode_rate_state = state
 
+        pcm16 = self._convert_pcm16_channels(
+            pcm16,
+            source_channels,
+            self.source_channels,
+        )
         signed8 = audioop.lin2lin(pcm16, 2, 1)
         return audioop.bias(signed8, 1, 128)
 

@@ -805,7 +805,7 @@ class RTPClient:
         dtmf: Optional[Callable[[str], None]] = None,
         audio_sample_rate: Optional[int] = None,
         audio_sample_width: int = 1,
-        audio_channels: int = 1,
+        audio_channels: Optional[int] = None,
         codec_priority_scores: Optional[Dict[Any, int]] = None,
         enabled_codecs: Optional[Any] = None,
     ):
@@ -854,15 +854,14 @@ class RTPClient:
         )
         try:
             self.audio_sample_width = int(audio_sample_width)
-            self.audio_channels = int(audio_channels)
         except (TypeError, ValueError) as ex:
             raise RTPParseError(
                 "Public RTP audio format values must be integers."
             ) from ex
-        if self.audio_sample_width != 1 or self.audio_channels != 1:
+        self.audio_channels = self._resolve_audio_channels(audio_channels)
+        if self.audio_sample_width != 1:
             raise RTPParseError(
-                "rfcvoip public audio currently supports unsigned 8-bit mono; "
-                "only the sample rate is configurable."
+                "rfcvoip public audio currently supports unsigned 8-bit samples."
             )
 
         self.inIP = inIP
@@ -903,6 +902,27 @@ class RTPClient:
 
         return int(getattr(codec, "rate", 8000) or 8000)
 
+    @staticmethod
+    def _preferred_source_channels(codec: PayloadType) -> int:
+        try:
+            from rfcvoip.codecs import codec_class
+
+            cls = codec_class(codec)
+            if cls is not None:
+                for attr in (
+                    "preferred_source_channels",
+                    "source_channels",
+                    "channels",
+                    "rtpmap_channels",
+                ):
+                    channels = getattr(cls, attr, None)
+                    if channels not in (None, 0, ""):
+                        return int(channels)
+        except Exception:
+            pass
+
+        return int(getattr(codec, "channel", 1) or 1)
+
     def _resolve_audio_sample_rate(
         self, audio_sample_rate: Optional[int]
     ) -> int:
@@ -918,6 +938,27 @@ class RTPClient:
         if sample_rate <= 0:
             raise RTPParseError("Audio sample rate must be positive.")
         return sample_rate
+
+    def _resolve_audio_channels(
+        self,
+        audio_channels: Optional[int],
+    ) -> int:
+        channels = (
+            self._preferred_source_channels(self.preference)
+            if audio_channels is None
+            else audio_channels
+        )
+        try:
+            channels = int(channels)
+        except (TypeError, ValueError) as ex:
+            raise RTPParseError("Audio channel count must be an integer.") from ex
+        if channels <= 0:
+            raise RTPParseError("Audio channel count must be positive.")
+        if channels not in (1, 2):
+            raise RTPParseError(
+                "rfcvoip public audio currently supports mono or stereo only."
+            )
+        return channels
 
     def _codec_adapter(self, codec: PayloadType):
         adapter = self._codec_adapters.get(codec)
