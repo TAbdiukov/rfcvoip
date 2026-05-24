@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.9.2+RFC
+
+- **Breaking change**: Remove mono-only bottleneck, now it is mono/stereo
+
 ## 2.9.1+RFC
 
 - Add DTMF sequence normalization and call-level RFC 4733 dispatch helpers.
