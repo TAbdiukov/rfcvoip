@@ -39,6 +39,20 @@ __all__ = [
 
 _SDP_MEDIA_BANDWIDTH_LIMIT_TYPES = {"AS", "TIAS"}
 _TELEGRAM_V2_SPECIALS = r"_*[]()~`>#+-=|{}.!"
+_SIP_URL_VALUE_RE = re.compile(r"\bsips?:[^\s<>,;]+", re.IGNORECASE)
+_SIP_URL_TELEMETRY_KEYS = {
+    "uri",
+    "url",
+    "sip_uri",
+    "sip_url",
+    "request_uri",
+    "request_url",
+    "target_uri",
+    "target_url",
+    "contact_uri",
+    "contact_url",
+}
+_SIP_URL_OMIT = object()
 
 
 _PROCESS_TELEMETRY: Dict[str, Any] = {
@@ -67,6 +81,46 @@ _TELEMETRY_SOURCE_ATTRS = (
 )
 
 
+def _looks_like_sip_url_field(key: Any) -> bool:
+    name = str(key).lower().replace("-", "_")
+    return name in _SIP_URL_TELEMETRY_KEYS or name.endswith(("_uri", "_url"))
+
+
+def _strip_sip_urls(value: Any) -> Any:
+    """Remove SIP URL/URI fields and SIP URL-shaped values from telemetry."""
+    if isinstance(value, dict):
+        cleaned: Dict[Any, Any] = {}
+        for key, item in value.items():
+            if _looks_like_sip_url_field(key):
+                continue
+            cleaned_item = _strip_sip_urls(item)
+            if cleaned_item is _SIP_URL_OMIT:
+                continue
+            cleaned[key] = cleaned_item
+        return cleaned
+
+    if isinstance(value, list):
+        cleaned_list = []
+        for item in value:
+            cleaned_item = _strip_sip_urls(item)
+            if cleaned_item is not _SIP_URL_OMIT:
+                cleaned_list.append(cleaned_item)
+        return cleaned_list
+
+    if isinstance(value, tuple):
+        cleaned_tuple = []
+        for item in value:
+            cleaned_item = _strip_sip_urls(item)
+            if cleaned_item is not _SIP_URL_OMIT:
+                cleaned_tuple.append(cleaned_item)
+        return tuple(cleaned_tuple)
+
+    if isinstance(value, str) and _SIP_URL_VALUE_RE.search(value):
+        return _SIP_URL_OMIT
+
+    return value
+
+
 def _empty_auth_snapshot(**extra: Any) -> Dict[str, Any]:
     data: Dict[str, Any] = {
         "last_digest": None,
@@ -74,7 +128,7 @@ def _empty_auth_snapshot(**extra: Any) -> Dict[str, Any]:
         "has_authenticated": False,
     }
     data.update(extra)
-    return data
+    return _strip_sip_urls(data)
 
 
 def _iter_source_candidates(source: Any, *, max_depth: int = 4):
@@ -139,7 +193,7 @@ def _normalize_auth_block(auth: Any) -> Dict[str, Any]:
     data["has_authenticated"] = bool(
         data["last_digest"] or history or data.get("has_authenticated")
     )
-    return data
+    return _strip_sip_urls(data)
 
 
 def _auth_block_from_candidate(candidate: Any) -> Optional[Dict[str, Any]]:
@@ -857,7 +911,6 @@ def phone_codec_report(
         codec_report.update(
             {
                 "target": None,
-                "target_uri": None,
                 "source": "local",
                 "response": None,
                 "remote": [],
@@ -872,7 +925,7 @@ def phone_codec_report(
                 "can_start_call": codec_report["local_can_start_call"],
             }
         )
-        return codec_report
+        return _strip_sip_urls(codec_report)
 
     target_uri = phone.sip._normalize_request_target(target)
     response = phone.sip.options(target_uri, timeout=timeout)
@@ -882,7 +935,6 @@ def phone_codec_report(
     codec_report.update(
         {
             "target": target,
-            "target_uri": target_uri,
             "source": "sip-options",
             "response": {
                 "status_code": status_code,
@@ -894,7 +946,7 @@ def phone_codec_report(
     )
     if not codec_report.get("remote_has_sdp"):
         codec_report["can_start_call"] = None
-    return codec_report
+    return _strip_sip_urls(codec_report)
 
 
 def rtp_client_codec_info(client: Any) -> Dict[str, Any]:
@@ -1081,7 +1133,7 @@ def _message_authorization_record(message: Any) -> Optional[Dict[str, Any]]:
                 else "WWW-Authenticate"
             ),
             "method": cseq_method or getattr(message, "method", None),
-            "uri": params.get("uri") or getattr(message, "uri", None),
+            "uri_present": bool(params.get("uri") or getattr(message, "uri", None)),
             "realm": params.get("realm"),
             "username": params.get("username"),
             "nonce_present": bool(params.get("nonce")),
@@ -1106,6 +1158,10 @@ def _message_auth_snapshot(message: Any) -> Dict[str, Any]:
 
 
 def _store_auth_record(telemetry: Dict[str, Any], record: Dict[str, Any]) -> None:
+    record = _strip_sip_urls(record)
+    if not isinstance(record, dict):
+        record = {}
+
     auth = telemetry.setdefault("auth", {})
     if not isinstance(auth, dict):
         auth = {}
@@ -1129,6 +1185,9 @@ def record_digest_auth(source: Any, record: Dict[str, Any]) -> Dict[str, Any]:
     record = deepcopy(record)
     record.setdefault("recorded_at", time.time())
     record.setdefault("source", "sip-digest-auth")
+    record = _strip_sip_urls(record)
+    if not isinstance(record, dict):
+        record = {"recorded_at": time.time(), "source": "sip-digest-auth"}
 
     stored = False
     for candidate in _iter_source_candidates(source):
@@ -1206,7 +1265,7 @@ def sip_client_snapshot(client: Any) -> Dict[str, Any]:
     except Exception:
         transport = str(getattr(client, "requested_transport", "") or "") or None
 
-    return {
+    return _strip_sip_urls({
         "type": "sip-client",
         "running": bool(getattr(client, "NSD", False)),
         "server": getattr(client, "server", None),
@@ -1219,7 +1278,7 @@ def sip_client_snapshot(client: Any) -> Dict[str, Any]:
         "my_ip": getattr(client, "myIP", None),
         "my_port": getattr(client, "myPort", None),
         "auth": auth_snapshot(client),
-    }
+    })
 
 
 def sip_message_snapshot(
@@ -1241,7 +1300,7 @@ def sip_message_snapshot(
         phrase = getattr(status, "phrase", None)
 
     codec_report = codec_support_report(message, media_type=media_type)
-    return {
+    return _strip_sip_urls({
         "type": "sip-message",
         "message_type": str(getattr(message, "type", "")),
         "method": getattr(message, "method", None),
@@ -1253,7 +1312,7 @@ def sip_message_snapshot(
         "has_sdp": bool((getattr(message, "body", {}) or {}).get("m")),
         "auth": auth_snapshot(message),
         "codecs": codec_report,
-    }
+    })
 
 
 def call_snapshot(call: Any) -> Dict[str, Any]:
@@ -1266,7 +1325,7 @@ def call_snapshot(call: Any) -> Dict[str, Any]:
     else:
         ports = list(assigned_ports or [])
 
-    return {
+    return _strip_sip_urls({
         "type": "call",
         "call_id": getattr(call, "call_id", None),
         "state": state_value,
@@ -1275,7 +1334,7 @@ def call_snapshot(call: Any) -> Dict[str, Any]:
         "local_ports": ports,
         "codecs": call_codec_report(call),
         "auth": auth_snapshot(getattr(call, "sip", None)),
-    }
+    })
 
 
 def phone_snapshot(phone: Any, media_type: Optional[str] = "audio") -> Dict[str, Any]:
@@ -1286,7 +1345,7 @@ def phone_snapshot(phone: Any, media_type: Optional[str] = "audio") -> Dict[str,
     calls = calls_getter() if callable(calls_getter) else list(getattr(phone, "calls", {}).values())
     sip = getattr(phone, "sip", None)
 
-    return {
+    return _strip_sip_urls({
         "type": "phone",
         "package": {"name": "rfcvoip", "version": getattr(rfcvoip, "__version__", None)},
         "generated_at": time.time(),
@@ -1309,24 +1368,24 @@ def phone_snapshot(phone: Any, media_type: Optional[str] = "audio") -> Dict[str,
         "auth": auth_snapshot(sip) if sip is not None else auth_snapshot(phone),
         "codecs": phone_codec_report(phone, media_type=media_type),
         "calls": [call_snapshot(call) for call in calls],
-    }
+    })
 
 
 def snapshot(source: Optional[Any] = None, *, media_type: Optional[str] = "audio") -> Dict[str, Any]:
     """Return a serializable telemetry snapshot for a phone, call, SIP object, or package."""
     if isinstance(source, dict):
-        return deepcopy(source)
+        return _strip_sip_urls(deepcopy(source))
 
     source = _unwrap_snapshot_source(source)
 
     if source is None:
-        return {
+        return _strip_sip_urls({
             "type": "package",
             "package": {"name": "rfcvoip", "version": getattr(rfcvoip, "__version__", None)},
             "generated_at": time.time(),
             "auth": auth_snapshot(None),
             "codecs": local_codec_report(None),
-        }
+        })
 
     if hasattr(source, "calls") and hasattr(source, "sip"):
         return phone_snapshot(source, media_type=media_type)
@@ -1336,28 +1395,28 @@ def snapshot(source: Optional[Any] = None, *, media_type: Optional[str] = "audio
         return sip_message_snapshot(source, media_type=media_type)
     if _is_sip_client_like(source):
         snap = sip_client_snapshot(source)
-        return {
+        return _strip_sip_urls({
             "type": "sip-client",
             "package": {"name": "rfcvoip", "version": getattr(rfcvoip, "__version__", None)},
             "generated_at": time.time(),
             "sip": snap,
             "auth": snap.get("auth"),
-        }
+        })
     if source.__class__.__name__ == "RTPClient":
-        return {
+        return _strip_sip_urls({
             "type": "rtp-client",
             "package": {"name": "rfcvoip", "version": getattr(rfcvoip, "__version__", None)},
             "generated_at": time.time(),
             "codecs": {"active_codecs": [rtp_client_codec_info(source)]},
-        }
+        })
 
-    return {
+    return _strip_sip_urls({
         "type": "object",
         "package": {"name": "rfcvoip", "version": getattr(rfcvoip, "__version__", None)},
         "generated_at": time.time(),
         "object_type": source.__class__.__name__,
         "auth": auth_snapshot(source),
-    }
+    })
 
 
 _PATH_TOKEN_RE = re.compile(r"([^.[\]]+)|\[(\d+)\]")
@@ -1387,12 +1446,14 @@ def get(
     rfcvoip object or a frontend wrapper that owns ``_phone``/``_call``.
     """
     tokens = _path_tokens(path)
-    if tokens and tokens[0] == "auth" and not isinstance(source, dict):
+    source_data = _strip_sip_urls(source) if isinstance(source, dict) else source
+
+    if tokens and tokens[0] == "auth" and not isinstance(source_data, dict):
         current: Any = {"auth": auth_snapshot(source)}
-    elif len(tokens) >= 2 and tokens[0] == "sip" and tokens[1] == "auth" and not isinstance(source, dict):
+    elif len(tokens) >= 2 and tokens[0] == "sip" and tokens[1] == "auth" and not isinstance(source_data, dict):
         current = {"sip": {"auth": auth_snapshot(source)}}
     else:
-        current = source if isinstance(source, dict) else snapshot(source, media_type=media_type)
+        current = source_data if isinstance(source_data, dict) else snapshot(source, media_type=media_type)
 
     for token in tokens:
         try:
