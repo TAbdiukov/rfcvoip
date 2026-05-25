@@ -22,12 +22,13 @@ def test_rtp_client_exposes_selected_codec_telemetry():
     assert telemetry["rtp"]["local"] == {"ip": "127.0.0.1", "port": 10000}
     assert telemetry["rtp"]["remote"] == {"ip": "127.0.0.1", "port": 10002}
     assert telemetry["rtp"]["transmit_type"] == "sendrecv"
-    assert telemetry["public_audio_format"] == {
-        "sample_rate": 8000,
-        "sample_width": 1,
-        "channels": 1,
-        "encoding": "unsigned-8bit-linear",
-    }
+    assert telemetry["public_audio_format"]["sample_rate"] == 8000
+    assert telemetry["public_audio_format"]["sample_width"] == 1
+    assert telemetry["public_audio_format"]["channels"] == 1
+    assert telemetry["public_audio_format"]["bit_depth"] == 8
+    assert telemetry["public_audio_format"]["bits_per_sample"] == 8
+    assert telemetry["public_audio_format"]["sample_format"] == "u8"
+    assert telemetry["public_audio_format"]["encoding"] == "linear_pcm"
 
 
 def test_voip_call_codec_report_includes_active_codecs():
