@@ -2,6 +2,14 @@ import audioop
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from rfcvoip.audio_format import (
+    normalize_audio_bit_depth,
+    public_pcm_to_s16le,
+    s16le_to_public_pcm,
+    sample_width_bytes,
+    silence_bytes,
+)
+
 
 @dataclass(frozen=True)
 class CodecAvailability:
@@ -20,9 +28,10 @@ class CodecAvailability:
 class RTPCodec:
     """Runtime codec implementation.
 
-    rfcvoip's public audio API reads/writes unsigned 8-bit interleaved samples.
-    The sample rate and channel count are configurable per RTP client.  Codecs
-    convert between that public format and their RTP/native clock internally.
+    rfcvoip's public audio API reads/writes linear PCM bytes.  The sample
+    rate, channel count, and bit depth are configurable per RTP client.
+    Codecs convert between that public format and their RTP/native clock
+    internally.
     """
 
     payload_type = None
@@ -37,9 +46,11 @@ class RTPCodec:
     can_transmit_audio = True
     priority_score = 0
     frame_duration_ms = 20
+    preferred_public_bit_depth = 8
     preferred_source_sample_rate = 8000
     source_sample_rate = 8000
     source_sample_width = 1
+    source_bit_depth = 8
     source_channels = 1
     default_fmtp: List[str] = []
     required_bandwidth_bps: Optional[int] = None
@@ -70,35 +81,45 @@ class RTPCodec:
         sample_rate: Optional[int] = None,
         sample_width: int = 1,
         channels: int = 1,
+        bit_depth: Optional[int] = None,
     ) -> None:
         """Configure rfcvoip's public audio format for this codec instance.
 
-        The public byte stream remains unsigned 8-bit for compatibility with
-        existing callers.  Mono and stereo are supported.
+        The default public byte stream remains unsigned 8-bit for compatibility
+        with existing callers.  Mono and stereo are supported.
         """
         if sample_rate is None:
             sample_rate = int(self.preferred_source_sample_rate)
 
         try:
             sample_rate = int(sample_rate)
-            sample_width = int(sample_width)
             channels = int(channels)
         except (TypeError, ValueError) as ex:
             raise ValueError("Audio format values must be integers.") from ex
 
+        if bit_depth is None:
+            try:
+                bit_depth = int(sample_width) * 8
+            except (TypeError, ValueError) as ex:
+                raise ValueError("Audio format values must be integers.") from ex
+
+        try:
+            bit_depth = normalize_audio_bit_depth(bit_depth)
+        except ValueError as ex:
+            raise ValueError(str(ex)) from ex
+        if bit_depth == "best":
+            raise ValueError("Codec audio bit depth must be resolved before use.")
+
         if sample_rate <= 0:
             raise ValueError("Audio sample rate must be positive.")
-        if sample_width != 1:
-            raise ValueError(
-                "rfcvoip public audio currently supports unsigned 8-bit samples."
-            )
         if channels not in (1, 2):
             raise ValueError(
                 "rfcvoip public audio currently supports mono or stereo only."
             )
 
         self.source_sample_rate = sample_rate
-        self.source_sample_width = sample_width
+        self.source_bit_depth = int(bit_depth)
+        self.source_sample_width = sample_width_bytes(self.source_bit_depth)
         self.source_channels = channels
         self._encode_rate_state = None
         self._decode_rate_state = None
@@ -165,15 +186,25 @@ class RTPCodec:
         target_rate: int,
         target_channels: Optional[int] = None,
     ) -> bytes:
-        """Convert public unsigned 8-bit audio to signed 16-bit PCM."""
+        """Convert public linear PCM audio to signed 16-bit PCM."""
         if not payload:
-            payload = b"\x80" * self.source_frame_size()
+            payload = silence_bytes(
+                self.source_frame_size(),
+                self.source_bit_depth,
+            )
 
         target_channels = (
             self.channels if target_channels is None else int(target_channels)
         )
-        signed8 = audioop.bias(payload, 1, -128)
-        pcm16 = audioop.lin2lin(signed8, 1, 2)
+        pcm16 = public_pcm_to_s16le(payload, self.source_bit_depth)
+        if not pcm16:
+            pcm16 = public_pcm_to_s16le(
+                silence_bytes(
+                    self.source_frame_size(),
+                    self.source_bit_depth,
+                ),
+                self.source_bit_depth,
+            )
         pcm16 = self._convert_pcm16_channels(
             pcm16,
             self.source_channels,
@@ -201,9 +232,12 @@ class RTPCodec:
         source_rate: int,
         source_channels: Optional[int] = None,
     ) -> bytes:
-        """Convert signed 16-bit PCM to public unsigned 8-bit audio."""
+        """Convert signed 16-bit PCM to public linear PCM audio."""
         if not pcm16:
-            return b"\x80" * self.source_frame_size()
+            return silence_bytes(
+                self.source_frame_size(),
+                self.source_bit_depth,
+            )
 
         source_channels = (
             self.channels if source_channels is None else int(source_channels)
@@ -226,8 +260,7 @@ class RTPCodec:
             source_channels,
             self.source_channels,
         )
-        signed8 = audioop.lin2lin(pcm16, 2, 1)
-        return audioop.bias(signed8, 1, 128)
+        return s16le_to_public_pcm(pcm16, self.source_bit_depth)
 
     @staticmethod
     def _fit_bytes(data: bytes, length: int, pad: bytes) -> bytes:

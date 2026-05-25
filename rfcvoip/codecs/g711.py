@@ -1,5 +1,6 @@
 import audioop
 
+from rfcvoip.audio_format import silence_bytes
 from rfcvoip.codecs.base import CodecAvailability, RTPCodec
 
 
@@ -12,6 +13,7 @@ class PCMUCodec(RTPCodec):
     default_payload_type = 0
     priority_score = 700
     required_bandwidth_bps = 64000
+    preferred_public_bit_depth = 8
 
     @classmethod
     def availability(cls) -> CodecAvailability:
@@ -35,6 +37,7 @@ class PCMACodec(RTPCodec):
     default_payload_type = 8
     priority_score = 650
     required_bandwidth_bps = 64000
+    preferred_public_bit_depth = 8
 
     @classmethod
     def availability(cls) -> CodecAvailability:
@@ -67,6 +70,7 @@ class _G711WidebandCoreCodec(RTPCodec):
     source_sample_rate = 16000
     default_fmtp = ["mode-set=1"]
     required_bandwidth_bps = 64000
+    preferred_public_bit_depth = 16
     frame_duration_ms = 20
     core_sample_rate = 8000
     _mode_index = 1
@@ -128,7 +132,10 @@ class _G711WidebandCoreCodec(RTPCodec):
 
     def decode(self, payload: bytes) -> bytes:
         if not payload:
-            return b"\x80" * self.source_frame_size()
+            return silence_bytes(
+                self.source_frame_size(),
+                self.source_bit_depth,
+            )
 
         mode_index = payload[0] & 0x07
         frame_size = self._mode_frame_bytes.get(mode_index)

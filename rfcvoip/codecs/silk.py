@@ -5,6 +5,7 @@ import io
 import struct
 import threading
 
+from rfcvoip.audio_format import silence_bytes
 from rfcvoip.codecs.base import CodecAvailability, RTPCodec
 
 
@@ -108,6 +109,7 @@ class SilkCodec(RTPCodec):
     use_dtx = False
     bit_rate = 20000
     default_fmtp: List[str] = []
+    preferred_public_bit_depth = 16
 
     @classmethod
     def refresh_availability_cache(cls) -> None:
@@ -193,10 +195,11 @@ class SilkCodec(RTPCodec):
 
     def _silk_pcm16_to_public(self, pcm16: bytes) -> bytes:
         public = self._pcm16_to_source_u8(pcm16, self.rate)
+        pad = b"\x80" if self.source_bit_depth == 8 else b"\x00"
         return self._fit(
             public,
             self.source_frame_size(self.frame_duration_ms),
-            b"\x80",
+            pad,
         )
 
     def encode(self, payload: bytes) -> bytes:
@@ -220,7 +223,10 @@ class SilkCodec(RTPCodec):
 
     def decode(self, payload: bytes) -> bytes:
         if not payload:
-            return b"\x80" * self.source_frame_size()
+            return silence_bytes(
+                self.source_frame_size(),
+                self.source_bit_depth,
+            )
 
         source = io.BytesIO(_pysilk_storage_input_from_rtp_payload(payload))
         decoded = io.BytesIO()

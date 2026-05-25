@@ -156,6 +156,7 @@ def codec_availability(payload_type: PayloadType) -> Dict[str, object]:
             "is_dynamic": True,
             "priority_score": codec_priority_score(payload_type),
             "preferred_source_sample_rate": None,
+            "preferred_public_bit_depth": None,
             "required_bandwidth_bps": None,
         }
 
@@ -174,6 +175,7 @@ def codec_availability(payload_type: PayloadType) -> Dict[str, object]:
             "default_payload_type": None,
             "is_dynamic": True,
             "priority_score": 0,
+            "preferred_public_bit_depth": None,
             "required_bandwidth_bps": None,
         }
 
@@ -196,6 +198,11 @@ def codec_availability(payload_type: PayloadType) -> Dict[str, object]:
                 cls,
                 "preferred_source_sample_rate",
                 getattr(cls, "source_sample_rate", 8000),
+            ),
+            "preferred_public_bit_depth": getattr(
+                cls,
+                "preferred_public_bit_depth",
+                8,
             ),
             "required_bandwidth_bps": cls.required_bandwidth_bps,
         }
@@ -282,6 +289,7 @@ def create_codec(
     *,
     source_sample_rate: Optional[int] = None,
     source_sample_width: int = 1,
+    source_bit_depth: Optional[int] = None,
     source_channels: int = 1,
 ) -> Optional[RTPCodec]:
     cls = codec_class(payload_type)
@@ -298,6 +306,7 @@ def create_codec(
     adapter.configure_source_format(
         sample_rate=source_sample_rate,
         sample_width=source_sample_width,
+        bit_depth=source_bit_depth,
         channels=source_channels,
     )
     return adapter

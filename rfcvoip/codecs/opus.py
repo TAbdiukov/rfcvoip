@@ -3,6 +3,7 @@ import ctypes
 import ctypes.util
 import threading
 
+from rfcvoip.audio_format import silence_bytes
 from rfcvoip.codecs.base import CodecAvailability, RTPCodec
 
 
@@ -150,13 +151,15 @@ class OpusCodec(RTPCodec):
     default_payload_type = 111
     dynamic = True
     priority_score = 1000
+    frame_duration_ms = 20
+    preferred_public_bit_depth = 16
     preferred_source_sample_rate = 48000
     preferred_source_channels = 2
     source_sample_rate = 48000
     source_channels = 2
     default_fmtp = ["minptime=10;useinbandfec=1"]
     max_data_bytes = 4000
-    max_frame_size = 5760
+    max_frame_size = 576
 
     @classmethod
     def refresh_availability_cache(cls) -> None:
@@ -255,7 +258,10 @@ class OpusCodec(RTPCodec):
 
     def encode(self, payload: bytes) -> bytes:
         if not payload:
-            payload = b"\x80" * self.source_frame_size()
+            payload = silence_bytes(
+                self.source_frame_size(),
+                self.source_bit_depth,
+            )
 
         pcm16_48k = self._to_opus_pcm(payload)
         frame_size = len(pcm16_48k) // (2 * self.channels)
@@ -277,7 +283,10 @@ class OpusCodec(RTPCodec):
 
     def decode(self, payload: bytes) -> bytes:
         if not payload:
-            return b"\x80" * self.source_frame_size()
+            return silence_bytes(
+                self.source_frame_size(),
+                self.source_bit_depth,
+            )
 
         packet = (ctypes.c_ubyte * len(payload)).from_buffer_copy(payload)
         pcm = (ctypes.c_int16 * (self.max_frame_size * self.channels))()

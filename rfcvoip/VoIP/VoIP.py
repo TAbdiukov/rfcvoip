@@ -1,5 +1,14 @@
 from enum import Enum
 from rfcvoip import SIP, RTP
+from rfcvoip.audio_format import (
+    PublicAudioFormat,
+    normalize_audio_bit_depth,
+    preferred_public_bit_depth,
+    public_pcm_to_s16le,
+    s16le_to_public_pcm,
+    sample_width_bytes,
+    silence_bytes,
+)
 from rfcvoip.VoIP.status import PhoneStatus
 from threading import Thread, Lock, RLock
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -572,6 +581,7 @@ class VoIPCall:
         phone = getattr(self, "phone", None)
         audio_sample_rate = getattr(phone, "audio_sample_rate", None)
         audio_sample_width = getattr(phone, "audio_sample_width", 1)
+        audio_bit_depth = getattr(phone, "audio_bit_depth", 8)
         audio_channels = getattr(phone, "audio_channels", None)
 
         rtp_kwargs = {"dtmf": self.dtmf_callback}
@@ -584,12 +594,15 @@ class VoIPCall:
             audio_sample_rate is not None
             or audio_sample_width != 1
             or audio_channels is not None
+            or audio_bit_depth != 8
         ):
             rtp_kwargs.update(
                 audio_sample_rate=audio_sample_rate,
                 audio_sample_width=audio_sample_width,
                 audio_channels=audio_channels,
             )
+            if audio_bit_depth != 8:
+                rtp_kwargs["audio_bit_depth"] = audio_bit_depth
 
         if getattr(phone, "codec_priorities", None):
             rtp_kwargs["codec_priority_scores"] = phone.codec_priorities
@@ -1270,31 +1283,43 @@ class VoIPCall:
             return rtp_clients[0].audio_frame_size(duration_ms)
         return self.phone.public_audio_frame_size(duration_ms)
 
-    def audio_format(self) -> Dict[str, Any]:
+    def public_audio_format(self, duration_ms: int = 20) -> PublicAudioFormat:
         rtp_clients = self._rtp_clients_snapshot()
-        sample_rate = (
-            max(client.audio_sample_rate for client in rtp_clients)
-            if rtp_clients
-            else self.phone.audio_sample_rate
+        if rtp_clients:
+            sample_rate = max(client.audio_sample_rate for client in rtp_clients)
+            channels = max(client.audio_channels for client in rtp_clients)
+            bit_depth = int(getattr(rtp_clients[0], "audio_bit_depth", 8))
+        else:
+            sample_rate = self.phone.audio_sample_rate or 8000
+            channels = self.phone.audio_channels or 1
+            bit_depth = self.phone._effective_audio_bit_depth()
+
+        return PublicAudioFormat(
+            sample_rate=sample_rate,
+            channels=channels,
+            bit_depth=bit_depth,
+            frame_ms=duration_ms,
         )
-        channels = (
-            max(client.audio_channels for client in rtp_clients)
-            if rtp_clients
-            else self.phone.audio_channels
+
+    def audio_format(self) -> Dict[str, Any]:
+        fmt = self.public_audio_format().as_dict()
+        fmt.update(
+            {
+                "sample_rate_mode": (
+                    "auto" if self.phone.audio_sample_rate is None else "fixed"
+                ),
+                "fallback_sample_rate": self.phone.audio_sample_rate or 8000,
+                "channels_mode": (
+                    "auto" if self.phone.audio_channels is None else "fixed"
+                ),
+                "fallback_channels": self.phone.audio_channels or 1,
+                "bit_depth_mode": (
+                    "best" if self.phone.audio_bit_depth == "best" else "fixed"
+                ),
+                "fallback_bit_depth": 8,
+            }
         )
-        return {
-            "sample_rate": sample_rate,
-            "sample_rate_mode": (
-                "auto" if self.phone.audio_sample_rate is None else "fixed"
-            ),
-            "sample_width": self.phone.audio_sample_width,
-            "channels": channels,
-            "channels_mode": (
-                "auto" if self.phone.audio_channels is None else "fixed"
-            ),
-            "fallback_channels": channels or 1,
-            "encoding": "unsigned-8bit-linear",
-        }
+        return fmt
 
     def readAudio(self, length=None, blocking=True) -> bytes:
         warnings.warn(
@@ -1315,17 +1340,22 @@ class VoIPCall:
 
         state = self._get_state()
         rtp_clients = self._rtp_clients_snapshot()
+        fmt = self.public_audio_format()
         if state != CallState.ANSWERED or len(rtp_clients) == 0:
-            return b"\x80" * length
+            return silence_bytes(length, fmt.bit_depth)
 
         if len(rtp_clients) == 1:
             return rtp_clients[0].read(length, blocking)
 
         data = [client.read(length, blocking) for client in rtp_clients]
-        mixed = audioop.bias(data[0], 1, -128)
+        mixed = public_pcm_to_s16le(data[0], fmt.bit_depth)
         for frame in data[1:]:
-            mixed = audioop.add(mixed, audioop.bias(frame, 1, -128), 1)
-        return audioop.bias(mixed, 1, 128)
+            mixed = audioop.add(
+                mixed,
+                public_pcm_to_s16le(frame, fmt.bit_depth),
+                2,
+            )
+        return s16le_to_public_pcm(mixed, fmt.bit_depth)
 
 class VoIPPhone:
     def __init__(
@@ -1349,6 +1379,7 @@ class VoIPPhone:
         codec_priorities: Optional[Dict[Any, int]] = None,
         audio_sample_rate: Optional[int] = None,
         audio_channels: Optional[int] = None,
+        audio_bit_depth: Any = 8,
     ):
         if rtpPortLow > rtpPortHigh:
             raise InvalidRangeError("'rtpPortHigh' must be >= 'rtpPortLow'")
@@ -1399,8 +1430,15 @@ class VoIPPhone:
                 ) from ex
             if audio_channels not in (1, 2):
                 raise InvalidRangeError("'audio_channels' must be 1 or 2")
+        try:
+            audio_bit_depth = normalize_audio_bit_depth(audio_bit_depth)
+        except ValueError as ex:
+            raise ValueError(str(ex)) from ex
         self.audio_sample_rate = audio_sample_rate
-        self.audio_sample_width = 1
+        self.audio_bit_depth = audio_bit_depth
+        self.audio_sample_width = sample_width_bytes(
+            8 if audio_bit_depth == "best" else audio_bit_depth
+        )
         self.audio_channels = audio_channels
         self.callCallback = callCallback
         self._status = PhoneStatus.INACTIVE
@@ -1665,28 +1703,51 @@ class VoIPPhone:
     def get_status(self) -> PhoneStatus:
         return self._status
 
+    def _effective_audio_bit_depth(
+        self,
+        selected_codec: Optional[RTP.PayloadType] = None,
+    ) -> int:
+        if self.audio_bit_depth == "best":
+            return preferred_public_bit_depth(selected_codec, fallback=8)
+        return int(self.audio_bit_depth)
+
     def public_audio_frame_size(self, duration_ms: int = 20) -> int:
-        # Before negotiation, auto mode has no selected codec yet.  Use the
-        # legacy 8 kHz frame size as the fallback silence/read size.
+        # Before negotiation, auto modes have no selected codec yet.  Use the
+        # legacy 8000 Hz mono 8-bit frame size unless fixed values were set.
         sample_rate = self.audio_sample_rate or 8000
         channels = self.audio_channels or 1
-        return max(1, int(round(sample_rate * channels * (duration_ms / 1000.0))))
+        return PublicAudioFormat(
+            sample_rate=sample_rate,
+            channels=channels,
+            bit_depth=self._effective_audio_bit_depth(),
+            frame_ms=duration_ms,
+        ).frame_size
 
     def audio_format(self) -> Dict[str, Any]:
-        return {
-            "sample_rate": self.audio_sample_rate,
-            "sample_rate_mode": (
-                "auto" if self.audio_sample_rate is None else "fixed"
-            ),
-            "fallback_sample_rate": self.audio_sample_rate or 8000,
-            "sample_width": self.audio_sample_width,
-            "channels": self.audio_channels,
-            "channels_mode": (
-                "auto" if self.audio_channels is None else "fixed"
-            ),
-            "fallback_channels": self.audio_channels or 1,
-            "encoding": "unsigned-8bit-linear",
-        }
+        sample_rate = self.audio_sample_rate or 8000
+        channels = self.audio_channels or 1
+        fmt = PublicAudioFormat(
+            sample_rate=sample_rate,
+            channels=channels,
+            bit_depth=self._effective_audio_bit_depth(),
+        ).as_dict()
+        fmt.update(
+            {
+                "sample_rate_mode": (
+                    "auto" if self.audio_sample_rate is None else "fixed"
+                ),
+                "fallback_sample_rate": sample_rate,
+                "channels_mode": (
+                    "auto" if self.audio_channels is None else "fixed"
+                ),
+                "fallback_channels": channels,
+                "bit_depth_mode": (
+                    "best" if self.audio_bit_depth == "best" else "fixed"
+                ),
+                "fallback_bit_depth": 8,
+            }
+        )
+        return fmt
 
     def refresh_supported_codecs(self) -> List[RTP.PayloadType]:
         return rfcvoip.refresh_supported_codecs()

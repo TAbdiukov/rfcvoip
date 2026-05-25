@@ -88,10 +88,12 @@ migration is limited to installing the new package and updating imports from
 
 ## Public audio format
 
-rfcvoip exposes audio to user code as unsigned 8-bit linear bytes. Stereo
-audio is interleaved left/right. The sample width is fixed at 8-bit for API
-compatibility; the public sample rate and channel count can be selected
-automatically from the negotiated codec or fixed by the application.
+rfcvoip exposes audio to user code as linear PCM bytes. By default this remains
+unsigned 8-bit linear PCM for compatibility. Applications may select the public
+bit depth with `VoIPPhone(audio_bit_depth=8|16|24|32|64|"best")`. Stereo audio
+is interleaved left/right. The public sample rate, channel count, and bit depth
+can be selected automatically from the negotiated codec or fixed by the
+application.
 
 The public audio format is selected as follows:
 
@@ -103,13 +105,28 @@ The public audio format is selected as follows:
   public sample rate.
 - If `audio_channels=None`, rfcvoip uses the selected codec's preferred public
   channel count.
+- If `audio_bit_depth` is a fixed value, rfcvoip exposes that public bit
+  depth.
+- If `audio_bit_depth="best"`, rfcvoip follows the selected codec's preferred
+  public bit depth after negotiation and falls back to 8-bit before
+  negotiation.
 - Before a codec has been negotiated, the fallback public format is 8000 Hz
-  mono unless fixed values were configured.
+  mono 8-bit unless fixed values were configured.
 
-For example, 20 ms at 8000 Hz mono is 160 bytes, 20 ms at 16000 Hz mono is
-320 bytes, and 20 ms at 48000 Hz stereo is 1920 bytes. Use
-`call.audio_frame_size()` instead of hard-coding `160` when your application
-may negotiate wideband or stereo-capable codecs.
+Public PCM formats are:
+
+- 8-bit: unsigned linear PCM, midpoint 128.
+- 16-bit: signed little-endian PCM.
+- 24-bit: signed little-endian packed PCM.
+- 32-bit: signed little-endian integer PCM.
+- 64-bit: signed little-endian integer PCM.
+
+For example, 20 ms at 8000 Hz mono is 160 bytes at 8-bit, 320 bytes at 16-bit,
+480 bytes at 24-bit, 640 bytes at 32-bit, and 1280 bytes at 64-bit. At 48000 Hz
+stereo, 20 ms is 1920 bytes at 8-bit, 3840 bytes at 16-bit, 5760 bytes at
+24-bit, 7680 bytes at 32-bit, and 15360 bytes at 64-bit. Use
+`call.audio_frame_size()` instead of hard-coding `160` when your application may
+negotiate wideband, stereo-capable codecs, or non-8-bit public PCM.
 
 PCMU and PCMA remain 8000 Hz mono RTP codecs on the wire. Wideband, stereo,
 and optional codecs convert internally between the public audio format and

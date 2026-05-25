@@ -3,6 +3,7 @@ import struct
 import threading
 from typing import Optional, Sequence
 
+from rfcvoip.audio_format import silence_bytes
 from rfcvoip.codecs.base import CodecAvailability, RTPCodec
 
 
@@ -97,6 +98,7 @@ class G722Codec(RTPCodec):
     can_transmit_audio = True
     priority_score = 910
     frame_duration_ms = 20
+    preferred_public_bit_depth = 16
     preferred_source_sample_rate = 16000
     source_sample_rate = 16000
     bit_rate = 64000
@@ -136,13 +138,13 @@ class G722Codec(RTPCodec):
         self._encode_rate_state = None
         self._decode_rate_state = None
 
-    def source_frame_size(self) -> int:
-        # unsigned 8-bit public PCM: 1 byte/sample
-        return int(self.source_sample_rate * self.frame_duration_ms / 1000)
+    def source_frame_size(self, duration_ms: Optional[int] = None) -> int:
+        return super().source_frame_size(duration_ms)
 
     def encode(self, payload: bytes) -> bytes:
         expected = self.source_frame_size()
-        payload = self._fit_bytes(payload or b"", expected, b"\x80")
+        pad = b"\x80" if self.source_bit_depth == 8 else b"\x00"
+        payload = self._fit_bytes(payload or b"", expected, pad)
 
         pcm16_16k = self._source_u8_to_pcm16(payload, self.codec_sample_rate)
         pcm16_16k = _pad_pcm16_to_even_sample_count(pcm16_16k)
@@ -152,12 +154,23 @@ class G722Codec(RTPCodec):
 
     def decode(self, payload: bytes) -> bytes:
         if not payload:
-            return b"\x80" * self.source_frame_size()
+            return silence_bytes(
+                self.source_frame_size(),
+                self.source_bit_depth,
+            )
 
         decoded_samples = self._decoder.decode(payload)
         pcm16_16k = _samples_to_pcm16le(decoded_samples)
         public = self._pcm16_to_source_u8(pcm16_16k, self.codec_sample_rate)
 
-        # 64 kbps G.722: 160 payload bytes = 20 ms = 320 samples at 16 kHz
-        expected_length = int(round(len(payload) * self.source_sample_rate / 8000.0))
-        return self._fit_bytes(public, expected_length, b"\x80")
+        # 64 kbps G.722: 160 payload bytes = 20 ms.
+        expected_length = int(
+            round(
+                (len(payload) / 8000.0)
+                * self.source_sample_rate
+                * self.source_sample_width
+                * self.source_channels
+            )
+        )
+        pad = b"\x80" if self.source_bit_depth == 8 else b"\x00"
+        return self._fit_bytes(public, expected_length, pad)

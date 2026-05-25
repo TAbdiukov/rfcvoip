@@ -12,6 +12,13 @@ import threading
 import time
 import warnings
 
+from rfcvoip.audio_format import (
+    PublicAudioFormat,
+    normalize_audio_bit_depth,
+    preferred_public_bit_depth,
+    sample_width_bytes,
+)
+
 
 __all__ = [
     "add_bytes",
@@ -584,7 +591,7 @@ def payload_type_from_name(
 
 
 class RTPPacketManager:
-    def __init__(self):
+    def __init__(self, silence_byte: bytes = b"\x80"):
         self.offset = 4294967296
         """
         The largest number storable in 4 bytes + 1. This will ensure the
@@ -595,6 +602,7 @@ class RTPPacketManager:
         self.log = {}
         self.max_log_span = 200000
         self.rebuilding = False
+        self.silence_byte = bytes(silence_byte or b"\x00")[:1] or b"\x00"
 
     def _available_locked(self) -> int:
         bufferloc = self.buffer.tell()
@@ -618,7 +626,7 @@ class RTPPacketManager:
             if len(packet) < length:
                 missing = length - len(packet)
                 self.buffer.seek(missing, 1)
-                packet = packet + (b"\x80" * missing)
+                packet = packet + (self.silence_byte * missing)
         return packet
 
     def rebuild(self, reset: bool, offset: int = 0, data: bytes = b"") -> None:
@@ -641,7 +649,9 @@ class RTPPacketManager:
                     self.buffer.seek(0, 2)
                     buffer_end = self.buffer.tell()
                     if adjusted_offset > buffer_end:
-                        self.buffer.write(b"\x80" * (adjusted_offset - buffer_end))
+                        self.buffer.write(
+                            self.silence_byte * (adjusted_offset - buffer_end)
+                        )
                     self.buffer.seek(adjusted_offset, 0)
                     self.buffer.write(payload)
 
@@ -686,7 +696,9 @@ class RTPPacketManager:
                 self.buffer.seek(0, 2)
                 buffer_end = self.buffer.tell()
                 if adjusted_offset > buffer_end:
-                    self.buffer.write(b"\x80" * (adjusted_offset - buffer_end))
+                    self.buffer.write(
+                        self.silence_byte * (adjusted_offset - buffer_end)
+                    )
                 self.buffer.seek(adjusted_offset, 0)
                 self.buffer.write(data)
                 self.buffer.seek(bufferloc, 0)
@@ -805,6 +817,7 @@ class RTPClient:
         dtmf: Optional[Callable[[str], None]] = None,
         audio_sample_rate: Optional[int] = None,
         audio_sample_width: int = 1,
+        audio_bit_depth: Optional[Any] = None,
         audio_channels: Optional[int] = None,
         codec_priority_scores: Optional[Dict[Any, int]] = None,
         enabled_codecs: Optional[Any] = None,
@@ -852,17 +865,12 @@ class RTPClient:
         self.audio_sample_rate = self._resolve_audio_sample_rate(
             audio_sample_rate
         )
-        try:
-            self.audio_sample_width = int(audio_sample_width)
-        except (TypeError, ValueError) as ex:
-            raise RTPParseError(
-                "Public RTP audio format values must be integers."
-            ) from ex
+        self.audio_bit_depth = self._resolve_audio_bit_depth(
+            audio_bit_depth,
+            audio_sample_width,
+        )
+        self.audio_sample_width = sample_width_bytes(self.audio_bit_depth)
         self.audio_channels = self._resolve_audio_channels(audio_channels)
-        if self.audio_sample_width != 1:
-            raise RTPParseError(
-                "rfcvoip public audio currently supports unsigned 8-bit samples."
-            )
 
         self.inIP = inIP
         self.inPort = inPort
@@ -872,8 +880,9 @@ class RTPClient:
 
         self.dtmf = dtmf
 
-        self.pmout = RTPPacketManager()  # To Send
-        self.pmin = RTPPacketManager()  # Received
+        silence_byte = b"\x80" if self.audio_bit_depth == 8 else b"\x00"
+        self.pmout = RTPPacketManager(silence_byte=silence_byte)  # To Send
+        self.pmin = RTPPacketManager(silence_byte=silence_byte)  # Received
         self.outOffset = random.randint(1, 5000)
 
         self.outSequence = random.randint(1, 100)
@@ -939,6 +948,28 @@ class RTPClient:
             raise RTPParseError("Audio sample rate must be positive.")
         return sample_rate
 
+    def _resolve_audio_bit_depth(
+        self,
+        audio_bit_depth: Optional[Any],
+        audio_sample_width: int,
+    ) -> int:
+        if audio_bit_depth is None:
+            try:
+                audio_bit_depth = int(audio_sample_width) * 8
+            except (TypeError, ValueError) as ex:
+                raise RTPParseError(
+                    "Public RTP audio format values must be integers."
+                ) from ex
+
+        try:
+            requested = normalize_audio_bit_depth(audio_bit_depth)
+        except ValueError as ex:
+            raise RTPParseError(str(ex)) from ex
+
+        if requested == "best":
+            return preferred_public_bit_depth(self.preference, fallback=8)
+        return int(requested)
+
     def _resolve_audio_channels(
         self,
         audio_channels: Optional[int],
@@ -971,6 +1002,7 @@ class RTPClient:
             codec,
             source_sample_rate=self.audio_sample_rate,
             source_sample_width=self.audio_sample_width,
+            source_bit_depth=self.audio_bit_depth,
             source_channels=self.audio_channels,
         )
         if adapter is None:
@@ -983,6 +1015,20 @@ class RTPClient:
         return self._codec_adapter(self.preference).source_frame_size(
             duration_ms
         )
+
+    def public_audio_format(
+        self,
+        duration_ms: int = 20,
+    ) -> PublicAudioFormat:
+        return PublicAudioFormat(
+            sample_rate=self.audio_sample_rate,
+            channels=self.audio_channels,
+            bit_depth=self.audio_bit_depth,
+            frame_ms=duration_ms,
+        )
+
+    def audio_format(self, duration_ms: int = 20) -> Dict[str, Any]:
+        return self.public_audio_format(duration_ms).as_dict()
 
     def _find_telephone_event_payload_type(self) -> Optional[int]:
         for payload_type, codec in self.assoc.items():

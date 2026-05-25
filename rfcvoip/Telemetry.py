@@ -401,6 +401,7 @@ def _codec_availability_details(codec: Any) -> Dict[str, Any]:
             "is_dynamic": True,
             "priority_score": 0,
             "preferred_source_sample_rate": None,
+            "preferred_public_bit_depth": None,
             "required_bandwidth_bps": None,
         }
 
@@ -492,6 +493,9 @@ def codec_info(
         "channels": getattr(codec, "channel", 0),
         "preferred_source_sample_rate": availability.get(
             "preferred_source_sample_rate"
+        ),
+        "preferred_public_bit_depth": availability.get(
+            "preferred_public_bit_depth"
         ),
         "is_dynamic": is_dynamic,
         "fmtp": fmtp_list,
@@ -951,6 +955,29 @@ def phone_codec_report(
 
 def rtp_client_codec_info(client: Any) -> Dict[str, Any]:
     """Return active codec telemetry for one RTPClient-like object."""
+    audio_format = None
+    audio_format_fn = getattr(client, "audio_format", None)
+    if callable(audio_format_fn):
+        try:
+            audio_format = audio_format_fn()
+        except Exception:
+            audio_format = None
+    if audio_format is None:
+        public_audio_format_fn = getattr(client, "public_audio_format", None)
+        if callable(public_audio_format_fn):
+            try:
+                audio_format = public_audio_format_fn().as_dict()
+            except Exception:
+                audio_format = None
+    if audio_format is None:
+        from rfcvoip.audio_format import PublicAudioFormat
+
+        audio_format = PublicAudioFormat(
+            sample_rate=getattr(client, "audio_sample_rate", 8000),
+            channels=getattr(client, "audio_channels", 1),
+            bit_depth=getattr(client, "audio_bit_depth", 8),
+        ).as_dict()
+
     selected = codec_info(
         client.preference,
         payload_type=client.preference_payload_type,
@@ -964,13 +991,13 @@ def rtp_client_codec_info(client: Any) -> Dict[str, Any]:
         "local": {"ip": client.inIP, "port": client.inPort},
         "remote": {"ip": client.outIP, "port": client.outPort},
         "transmit_type": str(client.sendrecv),
+        "audio": audio_format,
     }
-    selected["public_audio_format"] = {
-        "sample_rate": client.audio_sample_rate,
-        "sample_width": client.audio_sample_width,
-        "channels": client.audio_channels,
-        "encoding": "unsigned-8bit-linear",
-    }
+    selected["bit_depth"] = audio_format.get("bit_depth")
+    selected["public_audio_bit_depth"] = audio_format.get("bit_depth")
+    selected["public_audio_format"] = audio_format
+    selected["audio"] = audio_format
+    selected["public_audio"] = audio_format
     return selected
 
 
@@ -1325,16 +1352,36 @@ def call_snapshot(call: Any) -> Dict[str, Any]:
     else:
         ports = list(assigned_ports or [])
 
-    return _strip_sip_urls({
+    codec_report = call_codec_report(call)
+    active_codecs = codec_report.get("active_codecs", [])
+    audio_format = None
+    audio_format_fn = getattr(call, "audio_format", None)
+    if callable(audio_format_fn):
+        try:
+            audio_format = audio_format_fn()
+        except Exception:
+            audio_format = None
+    if audio_format is None and active_codecs:
+        audio_format = active_codecs[0].get("public_audio_format")
+
+    data = {
         "type": "call",
         "call_id": getattr(call, "call_id", None),
         "state": state_value,
         "session_id": getattr(call, "session_id", None),
         "sendmode": str(getattr(call, "sendmode", "")),
         "local_ports": ports,
-        "codecs": call_codec_report(call),
+        "audio": audio_format,
+        "public_audio": audio_format,
+        "media": {"audio": audio_format},
+        "rtp": {"audio": audio_format},
+        "codecs": codec_report,
         "auth": auth_snapshot(getattr(call, "sip", None)),
-    })
+    }
+    if active_codecs:
+        data["codec"] = active_codecs[0]
+        data["selected_codec"] = active_codecs[0]
+    return _strip_sip_urls(data)
 
 
 def phone_snapshot(phone: Any, media_type: Optional[str] = "audio") -> Dict[str, Any]:
@@ -1344,11 +1391,18 @@ def phone_snapshot(phone: Any, media_type: Optional[str] = "audio") -> Dict[str,
     calls_getter = getattr(phone, "_calls_snapshot", None)
     calls = calls_getter() if callable(calls_getter) else list(getattr(phone, "calls", {}).values())
     sip = getattr(phone, "sip", None)
+    phone_audio_format = (
+        phone.audio_format()
+        if callable(getattr(phone, "audio_format", None))
+        else None
+    )
 
     return _strip_sip_urls({
         "type": "phone",
         "package": {"name": "rfcvoip", "version": getattr(rfcvoip, "__version__", None)},
         "generated_at": time.time(),
+        "audio": phone_audio_format,
+        "public_audio": phone_audio_format,
         "phone": {
             "status": status_value,
             "running": bool(getattr(phone, "NSD", False)),
@@ -1362,7 +1416,7 @@ def phone_snapshot(phone: Any, media_type: Optional[str] = "audio") -> Dict[str,
             "rtp_port_low": getattr(phone, "rtpPortLow", None),
             "rtp_port_high": getattr(phone, "rtpPortHigh", None),
             "assigned_ports": list(getattr(phone, "assignedPorts", []) or []),
-            "audio_format": phone.audio_format() if callable(getattr(phone, "audio_format", None)) else None,
+            "audio_format": phone_audio_format,
         },
         "sip": sip_client_snapshot(sip) if sip is not None else None,
         "auth": auth_snapshot(sip) if sip is not None else auth_snapshot(phone),
