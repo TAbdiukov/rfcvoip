@@ -81,6 +81,7 @@ VoIPPhone
     codec_priorities=None,
     audio_sample_rate=None,
     audio_channels=None,
+    audio_bit_depth=8,
 )
 
 Required arguments:
@@ -130,6 +131,15 @@ Common optional arguments:
   Fixed public audio channel count. Supported values are ``1`` for mono and
   ``2`` for stereo. When omitted, rfcvoip uses the selected codec's preferred
   source channel count.
+
+``audio_bit_depth``
+  Fixed public audio bit depth, or ``"best"``. Accepted fixed values are
+  ``8``, ``16``, ``24``, ``32``, and ``64``. Numeric strings such as ``"16"``
+  are accepted. ``8`` is unsigned 8-bit linear PCM and preserves legacy
+  behaviour. ``16``, ``24``, ``32``, and ``64`` are signed little-endian
+  integer PCM formats. ``"best"`` follows the selected codec's preferred
+  public bit depth after negotiation and falls back to 8-bit before
+  negotiation.
 
 Lifecycle:
 
@@ -182,11 +192,12 @@ Codec and audio helpers:
 
   **public_audio_frame_size**\ (duration_ms=20) -> int
     Returns bytes for the phone's public audio format before negotiation,
-    including sample rate and channel count.
+    including sample rate, channel count, and bit depth.
 
   **audio_format**\ () -> dict
     Returns public audio format metadata, including sample rate, channel count,
-    fixed/automatic mode fields, and fallback values before negotiation.
+    bit depth, sample width, sample format, fixed/automatic mode fields, and
+    fallback values before negotiation.
 
 Negotiation behavior:
 
@@ -265,19 +276,22 @@ Call control:
 Audio:
 
   **write_audio**\ (data: bytes) -> None
-    Queues public audio bytes for every RTP client.
+    Queues public linear PCM audio bytes for every RTP client. The bytes must
+    match ``call.audio_format()``.
 
   **read_audio**\ (length=None, blocking=True) -> bytes
     Reads decoded public audio. If multiple RTP clients exist, audio is mixed.
-    If the call is not answered, silence is returned.
+    If the call is not answered, silence in the active public format is
+    returned.
 
   **audio_frame_size**\ (duration_ms=20) -> int
     Returns the number of public audio bytes for one frame, including sample
-    rate and channel count.
+    rate, channel count, and bit depth.
 
   **audio_format**\ () -> dict
     Returns call audio format metadata, including the active negotiated public
-    sample rate and channel count.
+    sample rate, channel count, bit depth, sample width, sample format, frame
+    duration, and frame size.
 
 DTMF:
 

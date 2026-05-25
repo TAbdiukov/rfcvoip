@@ -58,15 +58,18 @@ Use keyword arguments for optional SIP features:
 Playing an announcement
 ***********************
 
-The public audio API accepts unsigned 8-bit linear bytes. Stereo audio is
+The public audio API accepts linear PCM bytes. By default this remains unsigned
+8-bit linear PCM for compatibility. Applications can request a fixed public
+bit depth with ``VoIPPhone(audio_bit_depth=8|16|24|32|64)`` or ask rfcvoip to
+follow the selected codec with ``audio_bit_depth="best"``. Stereo audio is
 interleaved left/right. The negotiated codec chooses the default sample rate
-and channel count. Use ``call.audio_frame_size()`` or ``call.audio_format()``
-when you need to calculate frame sizes dynamically.
+and channel count when they are not fixed. Use ``call.audio_frame_size()`` and
+``call.audio_format()`` when you need to calculate frame sizes dynamically.
 
 This example plays a WAV file, waits until playback should be finished, and
 then hangs up. The loop exits early if the remote party hangs up or the phone
-is stopped. It assumes the WAV data is already unsigned 8-bit PCM and matches
-the call's public sample rate and channel count.
+is stopped. It assumes the WAV data already matches the call's public audio
+format, including sample rate, channel count, and bit depth.
 
 .. code-block:: python
 
@@ -112,10 +115,11 @@ the call's public sample rate and channel count.
       phone.stop()
 
 For the simplest legacy G.711 flow, use 8000 Hz, 8-bit, mono WAV audio. If you
-enable wideband or stereo-capable codecs, confirm that the audio data you
-provide matches ``call.audio_format()["sample_rate"]`` and
-``call.audio_format()["channels"]``. To keep a fixed 8000 Hz mono application
-audio pipeline, pass ``audio_sample_rate=8000`` and ``audio_channels=1`` to
+enable wideband, stereo-capable codecs, or non-8-bit public PCM, confirm that
+the audio data you provide matches ``call.audio_format()["sample_rate"]``,
+``call.audio_format()["channels"]``, and ``call.audio_format()["bit_depth"]``.
+To keep a fixed 8000 Hz mono 8-bit application audio pipeline, pass
+``audio_sample_rate=8000``, ``audio_channels=1``, and ``audio_bit_depth=8`` to
 ``VoIPPhone``.
 
 IVR and DTMF
@@ -144,7 +148,9 @@ string when no key is available.
           while call.state == CallState.ANSWERED:
               digit = call.get_dtmf()
               if digit == "1":
-                  call.write_audio(b"\x80" * call.audio_frame_size())
+                  fmt = call.audio_format()
+                  silence = b"\x80" if fmt["bit_depth"] == 8 else b"\x00"
+                  call.write_audio(silence * call.audio_frame_size())
                   call.hangup()
               elif digit == "2":
                   call.send_dtmf("9")
@@ -198,7 +204,9 @@ rfcvoip sends ACK, creates RTP clients, and moves the call to ``ANSWERED``.
       time.sleep(0.05)
 
   if call.state == CallState.ANSWERED:
-      call.write_audio(b"\x80" * call.audio_frame_size())
+      fmt = call.audio_format()
+      silence = b"\x80" if fmt["bit_depth"] == 8 else b"\x00"
+      call.write_audio(silence * call.audio_frame_size())
       call.send_dtmf("123#")
       call.hangup()
 
@@ -228,6 +236,7 @@ remote endpoint advertises more than one compatible payload.
       },
       audio_sample_rate=8000,
       audio_channels=1,
+      audio_bit_depth=8,
   )
 
 You can also adjust priorities after construction:
@@ -250,6 +259,7 @@ including passwords or digest responses.
 
   print(Telemetry.report(phone))
   print(Telemetry.get(phone, "auth.last_digest.algorithm", default="none"))
+  print(Telemetry.get(call, "audio.bit_depth", default=8))
 
 SIP OPTIONS can be used to inspect a remote endpoint when the server returns
 SDP in the OPTIONS response:

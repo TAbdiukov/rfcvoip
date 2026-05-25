@@ -18,11 +18,12 @@ Telemetry. **snapshot**\ (source=None, media_type="audio") -> dict
 
 Telemetry. **phone_snapshot**\ (phone, media_type="audio") -> dict
     Returns phone status, SIP target, authentication telemetry, codec
-    telemetry, and active call snapshots.
+    telemetry, public audio format, and active call snapshots.
 
 Telemetry. **call_snapshot**\ (call) -> dict
-    Returns call state, selected codecs, local RTP ports, and related
-    authentication telemetry.
+    Returns call state, selected codecs, active public audio format, local RTP
+    ports, and related authentication telemetry. The public audio format is
+    available through both ``audio`` and ``public_audio`` keys.
 
 Telemetry. **sip_client_snapshot**\ (client) -> dict
     Returns SIP target, transport, running state, and authentication
@@ -107,7 +108,8 @@ Telemetry. **remote_supported_codecs**\ (phone, target, media_type="audio", time
     Sends SIP OPTIONS and returns remote SDP codec telemetry.
 
 Telemetry. **call_active_codecs**\ (call) -> list
-    Returns active RTP codec selections for a call.
+    Returns active RTP codec selections for a call, including each selected
+    codec's preferred public bit depth and the active call public audio format.
 
 Telemetry. **call_codec_report**\ (call) -> dict
     Returns remote SDP compatibility and active RTP codec information for a
@@ -129,3 +131,27 @@ Examples:
   print(Telemetry.get(phone, "phone.status"))
   print(Telemetry.get(phone, "codecs.local_offer[0].name"))
   print(Telemetry.get(call, "codecs.active_codecs[0].name", default="none"))
+  print(Telemetry.get(call, "audio.bit_depth", default=8))
+  print(Telemetry.get(call, "audio.sample_format", default="u8"))
+  print(Telemetry.get(call, "public_audio.frame_size", default=160))
+
+Public audio paths
+******************
+
+Call snapshots expose the active public audio format in these stable paths:
+
+* ``audio.bit_depth``
+* ``audio.bits_per_sample``
+* ``audio.sample_rate``
+* ``audio.channels``
+* ``audio.frame_size``
+* ``audio.sample_format``
+* ``public_audio.bit_depth``
+* ``public_audio.bits_per_sample``
+* ``public_audio.sample_rate``
+* ``public_audio.channels``
+* ``public_audio.frame_size``
+* ``public_audio.sample_format``
+
+Active codec telemetry also includes ``preferred_public_bit_depth``,
+``public_audio_bit_depth``, and ``public_audio_format``.

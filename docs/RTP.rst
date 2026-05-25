@@ -149,14 +149,14 @@ RTPPacketManager
 buffer while tracking RTP timestamp offsets. It handles out-of-order writes and
 fills missing data with silence bytes.
 
-RTP. **RTPPacketManager**\ ()
+RTP. **RTPPacketManager**\ (silence_byte=b"\x80")
 
   **available**\ () -> int
     Returns bytes currently available from the current read position.
 
   **read**\ (length=160) -> bytes
     Reads ``length`` bytes. If fewer bytes are available, the result is padded
-    with ``b"\x80"``.
+    with the configured silence byte.
 
   **rebuild**\ (reset: bool, offset=0, data=b"") -> None
     Rebuilds the internal buffer after out-of-order packets.
@@ -208,6 +208,7 @@ telephone-event DTMF when that payload is negotiated.
     dtmf=None,
     audio_sample_rate=None,
     audio_sample_width=1,
+    audio_bit_depth=None,
     audio_channels=None,
     codec_priority_scores=None,
     enabled_codecs=None,
@@ -234,8 +235,15 @@ telephone-event DTMF when that payload is negotiated.
     source sample rate is used.
 
   ``audio_sample_width``
-    Public audio sample width. Must currently be ``1`` for unsigned 8-bit
-    samples.
+    Backwards-compatible public audio sample width in bytes when
+    ``audio_bit_depth`` is omitted. New code should prefer ``audio_bit_depth``.
+
+  ``audio_bit_depth``
+    Public audio bit depth. Accepted values are ``8``, ``16``, ``24``, ``32``,
+    ``64``, and ``"best"``. Numeric strings such as ``"16"`` are accepted.
+    When omitted, the value is derived from ``audio_sample_width`` for
+    compatibility. ``"best"`` uses the selected codec's preferred public bit
+    depth.
 
   ``audio_channels``
     Public audio channel count. When omitted, the selected codec's preferred
@@ -254,15 +262,22 @@ Methods:
     Stops threads and closes sockets.
 
   **read**\ (length=None, blocking=True) -> bytes
-    Reads decoded public audio. If ``length`` is omitted, one codec frame is
-    read. In non-blocking mode, silence is returned when no data is available.
+    Reads decoded public linear PCM audio. If ``length`` is omitted, one codec
+    frame is read. In non-blocking mode, silence in the active public format is
+    returned when no data is available.
 
   **write**\ (data: bytes) -> None
-    Queues public audio bytes for encoding and transmission.
+    Queues public linear PCM audio bytes for encoding and transmission.
 
   **audio_frame_size**\ (duration_ms=None) -> int
     Returns public audio bytes for a frame duration, including the negotiated
-    or configured sample rate and channel count.
+    or configured sample rate, channel count, and bit depth.
+
+  **audio_format**\ (duration_ms=20) -> dict
+    Returns public audio metadata, including ``sample_rate``, ``channels``,
+    ``bit_depth``, ``bits_per_sample``, ``sample_width``,
+    ``sample_width_bytes``, ``sample_format``, ``frame_ms``, and
+    ``frame_size``.
 
   **send_dtmf**\ (code: str) -> bool
     Queues one DTMF character for RTP telephone-event transmission.

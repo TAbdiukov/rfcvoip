@@ -8,19 +8,37 @@ The enum ``RTP.PayloadType`` describes payload names and RTP clock rates. The
 Public audio format
 *******************
 
-User code reads and writes unsigned 8-bit linear bytes. Stereo audio is
-interleaved left/right. Codecs convert between this public format and their
+User code reads and writes linear PCM bytes. By default this remains unsigned
+8-bit linear PCM for compatibility. Applications may select the public bit
+depth with ``VoIPPhone(audio_bit_depth=8|16|24|32|64|"best")``. Stereo audio
+is interleaved left/right. Codecs convert between this public format and their
 RTP/native format internally.
 
-The public sample rate and channel count are selected as follows:
+The public PCM formats are:
+
+* 8-bit: unsigned linear PCM, midpoint 128.
+* 16-bit: signed little-endian PCM.
+* 24-bit: signed little-endian packed PCM.
+* 32-bit: signed little-endian integer PCM.
+* 64-bit: signed little-endian integer PCM.
+
+The public sample rate, channel count, and bit depth are selected as follows:
 
 * If ``VoIPPhone(audio_sample_rate=...)`` is provided, that value is used.
 * If ``VoIPPhone(audio_channels=1)`` or ``VoIPPhone(audio_channels=2)`` is
   provided, that channel count is used.
+* If ``VoIPPhone(audio_bit_depth=...)`` is a fixed value, that bit depth is
+  used.
+* If ``audio_bit_depth="best"``, rfcvoip uses the selected codec's preferred
+  public bit depth after codec negotiation.
 * Otherwise, rfcvoip uses the selected codec's preferred source sample rate.
 * Otherwise, rfcvoip uses the selected codec's preferred source channel count.
 * Before a codec has been negotiated, ``VoIPPhone.public_audio_frame_size``
-  falls back to 8000 Hz mono unless fixed values were configured.
+  falls back to 8000 Hz mono 8-bit unless fixed values were configured.
+
+In ``"best"`` bit-depth mode, PCMU and PCMA prefer 8-bit public PCM. PCMU-WB,
+PCMA-WB, G.722, Opus, and SILK prefer 16-bit public PCM. ``telephone-event`` is
+not continuous audio and is not used to select public bit depth.
 
 Use these helpers instead of hard-coding frame lengths:
 
@@ -28,26 +46,33 @@ Use these helpers instead of hard-coding frame lengths:
 
   frame = call.audio_frame_size(duration_ms=20)
   fmt = call.audio_format()
+  print(fmt["sample_rate"], fmt["channels"], fmt["bit_depth"])
 
-For example, 20 ms at 8000 Hz mono is 160 bytes, 20 ms at 16000 Hz mono is
-320 bytes, and 20 ms at 48000 Hz stereo is 1920 bytes.
+For example, 20 ms at 8000 Hz mono is 160 bytes at 8-bit, 320 bytes at
+16-bit, 480 bytes at 24-bit, 640 bytes at 32-bit, and 1280 bytes at 64-bit. At
+48000 Hz stereo, 20 ms is 1920 bytes at 8-bit, 3840 bytes at 16-bit, 5760
+bytes at 24-bit, 7680 bytes at 32-bit, and 15360 bytes at 64-bit.
 
 Built-in codecs
 ***************
 
 PCMU
-    G.711 u-law, static payload 0, RTP clock 8000 Hz.
+    G.711 u-law, static payload 0, RTP clock 8000 Hz. In ``"best"`` public
+    bit-depth mode, PCMU prefers 8-bit.
 
 PCMA
-    G.711 A-law, static payload 8, RTP clock 8000 Hz.
+    G.711 A-law, static payload 8, RTP clock 8000 Hz. In ``"best"`` public
+    bit-depth mode, PCMA prefers 8-bit.
 
 PCMU-WB
     G.711.1 core-layer wideband adapter, dynamic payload, RTP clock 16000 Hz,
-    default payload 112, advertises ``mode-set=1``.
+    default payload 112, advertises ``mode-set=1``. In ``"best"`` public
+    bit-depth mode, PCMU-WB prefers 16-bit.
 
 PCMA-WB
     G.711.1 core-layer wideband adapter, dynamic payload, RTP clock 16000 Hz,
-    default payload 113, advertises ``mode-set=1``.
+    default payload 113, advertises ``mode-set=1``. In ``"best"`` public
+    bit-depth mode, PCMA-WB prefers 16-bit.
 
 telephone-event
     RTP DTMF events. This is not a continuous audio codec. It is advertised in
@@ -61,20 +86,22 @@ G.722
     it with ``pip install "rfcvoip[g722]"`` or install ``G722`` separately.
     RFC 3551 keeps G.722 on an 8000 Hz RTP timestamp clock for compatibility,
     even though the codec encodes 16000 Hz wideband audio. In automatic
-    public-audio mode, G.722 uses 16000 Hz mono.
+    sample-rate/channel mode, G.722 uses 16000 Hz mono. In ``"best"`` public
+    bit-depth mode, it prefers 16-bit.
 
 Opus
     Payload name ``opus``, RTP clock 48000 Hz, default payload 111. Requires
     a loadable ``libopus`` library. The ``opus`` extra installs
     ``discord.py``, which can help provide or load libopus in some
-    environments. In automatic public-audio mode, Opus uses 48000 Hz stereo.
+    environments. In automatic sample-rate/channel mode, Opus uses 48000 Hz
+    stereo. In ``"best"`` public bit-depth mode, it prefers 16-bit.
 
 SILK
     Payload names ``SILK/24000``, ``SILK/16000``, ``SILK/12000``, and
     ``SILK/8000``. Requires the optional SILK Python dependency that provides
     the ``pysilk`` module. The ``silk`` extra installs ``silk-python``. In
-    automatic public-audio mode, SILK uses its negotiated sample rate and mono
-    audio.
+    automatic sample-rate/channel mode, SILK uses its negotiated sample rate
+    and mono audio. In ``"best"`` public bit-depth mode, it prefers 16-bit.
 
 The runtime list of enabled codecs is stored in
 ``rfcvoip.RTPCompatibleCodecs``. Optional codecs are only enabled when their

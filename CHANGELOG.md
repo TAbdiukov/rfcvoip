@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.9.3+RFC
+
+- **Breaking change**: Enable higher than 8-bit bit-depth
+
 ## 2.9.2+RFC
 
 - **Breaking change**: Remove mono-only bottleneck, now it is mono/stereo
