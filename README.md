@@ -330,7 +330,7 @@ rfcvoip is built on the original PyVoIP project and continues to honor the
 people and projects that made it possible.
 
 - [TJ Porter](https://github.com/tayler6000), original PyVoIP implementation.
-- [synodriver](https://github.com/synodriver), pysilk and SILK bindings work.
+- [synodriver](https://github.com/synodriver/pysilk), pysilk and SILK bindings work.
 - [Nabu Casa](https://www.nabucasa.com/).
 - [Home Assistant](https://www.home-assistant.io/).
 
