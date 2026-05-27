@@ -2,7 +2,7 @@
 
 ## 2.9.4+RFC
 
-- Unit tests (high level)
+- Unit tests (high-level)
 - Acknowledgements: synodriver/pysilk (better link)
 - Reassert new minimum Python version in pyproject.toml
 
