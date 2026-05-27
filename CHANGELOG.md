@@ -3,6 +3,7 @@
 ## 2.9.3+RFC
 
 - **Breaking change**: Enable higher than 8-bit bit-depth
+- Minor update for G.722 codec
 
 ## 2.9.2+RFC
 
