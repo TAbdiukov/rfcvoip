@@ -2,6 +2,8 @@
 
 ## 2.9.4
 
+- Unit tests (high level)
+
 ## 2.9.3+RFC
 
 - **Breaking change**: Enable higher than 8-bit bit-depth
