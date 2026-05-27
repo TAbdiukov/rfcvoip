@@ -1,5 +1,7 @@
 # Changelog
 
+## 2.9.4
+
 ## 2.9.3+RFC
 
 - **Breaking change**: Enable higher than 8-bit bit-depth
