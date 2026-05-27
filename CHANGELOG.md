@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.9.4
+## 2.9.4+RFC
 
 - Unit tests (high level)
 - Acknowledgements: synodriver/pysilk (better link)
@@ -37,7 +37,7 @@
 
 ## 2.8.8+RFC
 
-- EOL: last version where `pyVOIP` import is used instead of `rfcvoip`
+- **EOL**: last version where `pyVOIP` import is used instead of `rfcvoip`
 - Standalone Telemetry module.
 - SIP: Modularize SIPSubscription
 
