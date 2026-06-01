@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.9.5+RFC
+
+- Installation extras groups implementation.
+
 ## 2.9.4+RFC
 
 - Unit tests (high-level)

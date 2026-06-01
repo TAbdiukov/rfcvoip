@@ -56,16 +56,23 @@ Optional codec extras:
 
 ```bash
 pip install "rfcvoip[opus]"
-pip install "rfcvoip[g722]"
 pip install "rfcvoip[silk]"
+pip install "rfcvoip[g722]"
+pip install "rfcvoip[no-compiler]"
+pip install "rfcvoip[compiler]"
 pip install "rfcvoip[all]"
 ```
 
-G.722 support requires the optional `G722` PyPI package, provided by the
-declared G.722 extra. Opus support requires a loadable system `libopus`
-library. SILK support requires the optional `pysilk` backend, provided by the
-declared SILK extra. Unavailable optional codecs are reported as unavailable
-and are not included in SIP offers.
+The `opus` and `silk` extras install optional Python packages that do not
+require a C++ compiler. For convenience, `no-compiler` installs both of those
+extras together. Opus support still requires a loadable system `libopus`
+library at runtime.
+
+G.722 support requires the optional `G722` PyPI package, which may require a
+C++ compiler when installed from source. It is available through either the
+`g722` or `compiler` extra. The `all` extra installs both the no-compiler
+extras and the compiler-dependent extras. Unavailable optional codecs are
+reported as unavailable and are not included in SIP offers.
 
 Installing from a source checkout:
 
@@ -231,9 +238,15 @@ Built-in event payloads:
 
 Optional codecs:
 
-- G.722, static payload 9, requiring the `G722` PyPI package.
-- Opus, default dynamic payload 111, requiring loadable `libopus`.
-- SILK at 24000, 16000, 12000, and 8000 Hz, requiring `pysilk`.
+- No-compiler group, installable with `rfcvoip[no-compiler]`:
+  - Opus, default dynamic payload 111, requiring loadable `libopus`.
+  - SILK at 24000, 16000, 12000, and 8000 Hz, requiring `pysilk`.
+- Compiler-dependent group, installable with `rfcvoip[compiler]`:
+  - G.722, static payload 9, requiring the `G722` PyPI package.
+
+Individual codec extras remain available as `rfcvoip[opus]`,
+`rfcvoip[silk]`, and `rfcvoip[g722]`. Use `rfcvoip[all]` to install both
+optional codec groups.
 
 G.722 uses the RFC 3551 static payload 9 RTP timestamp clock of 8000 Hz for
 wire compatibility, while encoding 16000 Hz wideband audio internally. In
