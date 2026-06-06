@@ -51,7 +51,7 @@ setup(
         "Original PyVoIP": "https://github.com/tayler6000/pyVoIP",
     },
     extras_require={
-        "opus": ["discord.py>=2.0"],
+        "opus": ["discord.py>=2.7.1"],
         "silk": ["silk-python>=0.2.6"],
         "g722": EXTRAS_COMPILER,
         "no-compiler": EXTRAS_NO_COMPILER,
