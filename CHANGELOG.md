@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.9.6+RFC
+
+- Telemetry: Add detailed codec telemetry, including availability, dependencies, RTP capabilities, and negotiation data.
+- Codecs: Add metadata describing optional package requirements and compiler requirements.
+- Misc: Update support link in FUNDING.
+
 ## 2.9.5+RFC
 
 - Installation extras groups implementation.
