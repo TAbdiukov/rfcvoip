@@ -55,6 +55,15 @@ def test_package_snapshot_reports_local_codec_capabilities_hilevel():
     assert (0, "PCMU") in offered_codecs
     assert (8, "PCMA") in offered_codecs
 
+def test_require_snapshot_reports_requirements_hilevel():
+    snapshot = Telemetry.snapshot()
+    for codec in snapshot["codecs"]["known_codecs"]:
+        assert "extra_packages" in codec
+        assert "package_extras" in codec
+        assert "install_extras" in codec
+        assert "extra_package" in codec
+        assert "package_extra" in codec
+        assert "install_extra" in codec
 
 def test_sip_message_snapshot_reports_remote_sdp_compatibility_hilevel():
     message = _sip_response_with_sdp(
