@@ -1757,16 +1757,41 @@ def _codec_dependency_group_label(codec: Dict[str, Any]) -> str:
     return f"{extra_label} / {compiler_label}"
 
 
-def _codec_family_label(codec: Dict[str, Any]) -> str:
-    family = str(
+def _codec_family_name(codec: Dict[str, Any]) -> str:
+    name = str(
         codec.get("name")
         or codec.get("description")
         or "unknown"
     )
+    normalized = name.upper()
+
+    if normalized in {"PCMA", "PCMU", "PCMA-WB", "PCMU-WB"}:
+        return "G.711"
+    if normalized == "G722":
+        return "G.722"
+    if normalized.startswith("SILK"):
+        return "SILK"
+
+    return name
+
+
+def _codec_family_label(codec: Dict[str, Any]) -> str:
+    family = _codec_family_name(codec)
     packages = _string_list(codec.get("extra_packages"))
     if packages:
         family += " [" + ", ".join(packages) + "]"
     return family
+
+
+def _codec_option_sort_key(label: str):
+    parts = str(label).split("/")
+    rate = _safe_int(parts[1]) if len(parts) > 1 else None
+    return (
+        rate is None,
+        rate or 0,
+        parts[0].casefold() if parts else "",
+        str(label).casefold(),
+    )
 
 
 def _codec_option_labels(codec: Dict[str, Any]) -> List[str]:
@@ -1790,7 +1815,14 @@ def _codec_family_options(
         for label in _codec_option_labels(codec):
             if label not in families[family]:
                 families[family].append(label)
-    return list(families.items())
+
+    return [
+        (family, sorted(options, key=_codec_option_sort_key))
+        for family, options in sorted(
+            families.items(),
+            key=lambda item: item[0].casefold(),
+        )
+    ]
 
 
 def _limited_code_list(
@@ -1848,8 +1880,8 @@ def _codec_dependency_summary_lines(
                 + _limited_code_list(
                     options,
                     platform,
-                    delimiter="; ",
-                    code_items=False,
+                    delimiter=", ",
+                    code_items=True,
                 )
             )
 
@@ -1859,6 +1891,7 @@ def _codec_dependency_summary_lines(
                 label = _codec_family_label(codec)
                 if label not in unavailable:
                     unavailable.append(label)
+            unavailable.sort(key=lambda item: item.casefold())
 
             lines.append(
                 f"  ❌ {_text('Not available', platform)}: "
