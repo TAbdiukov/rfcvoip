@@ -1,4 +1,5 @@
-from typing import List, Optional
+from pathlib import Path
+from typing import List, Optional, Tuple
 import ctypes
 import ctypes.util
 import threading
@@ -12,6 +13,19 @@ OPUS_APPLICATION_VOIP = 2048
 _LIBOPUS_ENCODE_HANDLE = None
 _LIBOPUS_ENCODE_LOCK = threading.Lock()
 _LIBOPUS_AVAILABILITY: Optional[CodecAvailability] = None
+
+_OPUS_LIBRARY_FILENAMES = (
+    "libopus.so.0",
+    "libopus.so.1",
+    "libopus.so",
+    "libopus.dylib",
+    "libopus.0.dylib",
+    "opus.dll",
+    "libopus-0.x64.dll",
+    "libopus-0.x86.dll",
+    "libopus-0.dll",
+    "libopus.dll",
+)
 
 
 def _prepare_libopus_encoder_api(lib) -> None:
@@ -59,6 +73,93 @@ def _prepare_libopus_encoder_api(lib) -> None:
     lib.opus_strerror.restype = ctypes.c_char_p
 
 
+def _append_unique(candidates: List[str], candidate: object) -> None:
+    if not candidate:
+        return
+    text = str(candidate)
+    if text not in candidates:
+        candidates.append(text)
+
+
+def _dsopus_module():
+    try:
+        import discord.opus as opus_module  # type: ignore
+
+        return opus_module
+    except Exception:
+        return None
+
+def _dsbin_candidates() -> List[str]:
+    try:
+        import discord  # type: ignore
+
+        bin_dir = Path(discord.__file__).resolve().parent / "bin"
+    except Exception:
+        return []
+
+    candidates: List[str] = []
+    for name in _OPUS_LIBRARY_FILENAMES:
+        candidate = bin_dir / name
+        if candidate.exists():
+            candidates.append(str(candidate))
+    return candidates
+
+
+def _opus_library_candidates() -> List[str]:
+    candidates: List[str] = []
+    try:
+        _append_unique(candidates, ctypes.util.find_library("opus"))
+    except Exception:
+        pass
+
+    for candidate in _dsbin_candidates():
+        _append_unique(candidates, candidate)
+    for candidate in _OPUS_LIBRARY_FILENAMES:
+        _append_unique(candidates, candidate)
+    return candidates
+
+
+def ensure_opus_loaded() -> Tuple[bool, Optional[str]]:
+    opus_module = _dsopus_module()
+    if opus_module is None:
+        return False, "Prerequisite is not available"
+
+    last_error = None
+    is_loaded = getattr(opus_module, "is_loaded", None)
+    if callable(is_loaded):
+        try:
+            if is_loaded():
+                return True, "already loaded"
+        except Exception as exc:
+            last_error = exc
+
+    loader = getattr(opus_module, "_load_default", None)
+    if callable(loader):
+        try:
+            loader()
+        except Exception as exc:
+            last_error = exc
+
+    if callable(is_loaded):
+        try:
+            if is_loaded():
+                return True, "_load_default"
+        except Exception as exc:
+            last_error = exc
+
+    load_opus = getattr(opus_module, "load_opus", None)
+    if callable(load_opus):
+        for candidate in _opus_library_candidates():
+            try:
+                load_opus(candidate)
+                if not callable(is_loaded) or is_loaded():
+                    return True, candidate
+            except Exception as exc:
+                last_error = exc
+
+    return False, str(last_error) if last_error else None
+
+
 def _opus_error_message(lib, code: int) -> str:
     try:
         raw = lib.opus_strerror(int(code))
@@ -71,9 +172,7 @@ def _opus_error_message(lib, code: int) -> str:
 
 def _dsopus_loaded_opus_library():
     try:
-        import discord  # type: ignore
-
-        opus_module = getattr(discord, "opus", None)
+        opus_module = _dsopus_module()
         if opus_module is None:
             return None
 
@@ -99,7 +198,8 @@ def _get_libopus_encode_handle():
             return _LIBOPUS_ENCODE_HANDLE
 
         try:
-            lib = _dsopus_loaded_opus_library()
+            loaded, _ = ensure_opus_loaded()
+            lib = _dsopus_loaded_opus_library() if loaded else None
             if lib is not None:
                 _prepare_libopus_encoder_api(lib)
                 _LIBOPUS_ENCODE_HANDLE = lib
@@ -107,27 +207,8 @@ def _get_libopus_encode_handle():
         except Exception:
             pass
 
-        candidates: List[str] = []
-        try:
-            found = ctypes.util.find_library("opus")
-            if found:
-                candidates.append(found)
-        except Exception:
-            pass
-
-        for name in (
-            "libopus.so.0",
-            "libopus.so.1",
-            "libopus.dylib",
-            "opus.dll",
-            "libopus-0.x64.dll",
-            "libopus-0.dll",
-        ):
-            if name not in candidates:
-                candidates.append(name)
-
         last_error = None
-        for name in candidates:
+        for name in _opus_library_candidates():
             try:
                 lib = ctypes.CDLL(name)
                 _prepare_libopus_encoder_api(lib)
