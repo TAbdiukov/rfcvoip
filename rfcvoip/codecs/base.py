@@ -1,6 +1,6 @@
 import audioop
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from rfcvoip.audio_format import (
     normalize_audio_bit_depth,
@@ -54,6 +54,8 @@ class RTPCodec:
     source_channels = 1
     default_fmtp: List[str] = []
     required_bandwidth_bps: Optional[int] = None
+    extra_packages: Sequence[str] = ()
+    package_extras: Sequence[str] = ()
     extra_package: Optional[str] = None
     package_extra: Optional[str] = None
     requires_extra_package: bool = False

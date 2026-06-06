@@ -110,8 +110,8 @@ class SilkCodec(RTPCodec):
     bit_rate = 20000
     default_fmtp: List[str] = []
     preferred_public_bit_depth = 16
-    extra_package = "silk-python"
-    package_extra = "silk"
+    extra_packages = ("silk-python",)
+    package_extras = ("silk",)
     requires_extra_package = True
     requires_compiler = False
 

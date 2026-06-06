@@ -104,8 +104,8 @@ class G722Codec(RTPCodec):
     bit_rate = 64000
     codec_sample_rate = 16000
     required_bandwidth_bps = 64000
-    extra_package = "G722"
-    package_extra = "g722"
+    extra_packages = ("G722",)
+    package_extras = ("g722",)
     requires_extra_package = True
     requires_compiler = True
 

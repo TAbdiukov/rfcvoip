@@ -80,21 +80,50 @@ _CODEC_CLASSES, _CODEC_ORDER_INDEX = _discover_codec_classes()
 _CODEC_PRIORITY_OVERRIDES: Dict[PayloadType, int] = {}
 
 
+def _metadata_values(
+    cls: Optional[Type[RTPCodec]],
+    plural_attr: str,
+    singular_attr: str,
+) -> List[str]:
+    if cls is None:
+        return []
+
+    values: List[str] = []
+    for raw in (
+        getattr(cls, plural_attr, None),
+        getattr(cls, singular_attr, None),
+    ):
+        if raw in (None, ""):
+            continue
+        if isinstance(raw, str):
+            candidates = [raw]
+        else:
+            try:
+                candidates = list(raw)
+            except TypeError:
+                candidates = [raw]
+        for value in candidates:
+            value = str(value or "").strip()
+            if value and value not in values:
+                values.append(value)
+    return values
+
+
 def _codec_dependency_metadata(
     cls: Optional[Type[RTPCodec]],
 ) -> Dict[str, object]:
-    extra_package = (
-        getattr(cls, "extra_package", None)
-        if cls is not None
-        else None
+    extra_packages = _metadata_values(
+        cls,
+        "extra_packages",
+        "extra_package",
     )
-    package_extra = (
-        getattr(cls, "package_extra", None)
-        if cls is not None
-        else None
+    package_extras = _metadata_values(
+        cls,
+        "package_extras",
+        "package_extra",
     )
     requires_extra_package = bool(
-        extra_package
+        extra_packages
         or (
             getattr(cls, "requires_extra_package", False)
             if cls is not None
@@ -110,10 +139,18 @@ def _codec_dependency_metadata(
     return {
         "requires_extra_package": requires_extra_package,
         "requires_compiler": requires_compiler,
-        "extra_package": extra_package,
-        "package_extra": package_extra,
+        "extra_packages": extra_packages,
+        "package_extras": package_extras,
+        "install_extras": [
+            f"rfcvoip[{package_extra}]"
+            for package_extra in package_extras
+        ],
+        # Backwards-compatible aliases for callers that consumed the first
+        # patch's singular telemetry fields.
+        "extra_package": extra_packages[0] if extra_packages else None,
+        "package_extra": package_extras[0] if package_extras else None,
         "install_extra": (
-            f"rfcvoip[{package_extra}]" if package_extra else None
+            f"rfcvoip[{package_extras[0]}]" if package_extras else None
         ),
     }
 
@@ -250,6 +287,9 @@ def codec_availability(payload_type: PayloadType) -> Dict[str, object]:
             "required_bandwidth_bps": None,
             "requires_extra_package": None,
             "requires_compiler": None,
+            "extra_packages": [],
+            "package_extras": [],
+            "install_extras": [],
             "extra_package": None,
             "package_extra": None,
             "install_extra": None,

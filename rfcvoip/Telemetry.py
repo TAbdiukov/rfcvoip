@@ -288,6 +288,25 @@ def _safe_int(value: Any) -> Optional[int]:
         return None
 
 
+def _string_list(value: Any) -> List[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        values = [value]
+    else:
+        try:
+            values = list(value)
+        except TypeError:
+            values = [value]
+
+    result = []
+    for item in values:
+        item = str(item or "").strip()
+        if item and item not in result:
+            result.append(item)
+    return result
+
+
 def _protocol_value(protocol: Any) -> str:
     return str(getattr(protocol, "value", protocol))
 
@@ -473,6 +492,9 @@ def _codec_availability_details(codec: Any) -> Dict[str, Any]:
             "required_bandwidth_bps": None,
             "requires_extra_package": None,
             "requires_compiler": None,
+            "extra_packages": [],
+            "package_extras": [],
+            "install_extras": [],
             "extra_package": None,
             "package_extra": None,
             "install_extra": None,
@@ -558,6 +580,15 @@ def codec_info(
             + ["supported" if supported else "unsupported"]
         )
     )
+    extra_packages = _string_list(availability.get("extra_packages"))
+    if not extra_packages:
+        extra_packages = _string_list(availability.get("extra_package"))
+    package_extras = _string_list(availability.get("package_extras"))
+    if not package_extras:
+        package_extras = _string_list(availability.get("package_extra"))
+    install_extras = _string_list(availability.get("install_extras"))
+    if not install_extras:
+        install_extras = _string_list(availability.get("install_extra"))
 
     return {
         "media_type": media_type,
@@ -592,9 +623,13 @@ def codec_info(
         "library": availability.get("library"),
         "requires_extra_package": availability.get("requires_extra_package"),
         "requires_compiler": availability.get("requires_compiler"),
-        "extra_package": availability.get("extra_package"),
-        "package_extra": availability.get("package_extra"),
-        "install_extra": availability.get("install_extra"),
+        "extra_packages": extra_packages,
+        "package_extras": package_extras,
+        "install_extras": install_extras,
+        # Backwards-compatible aliases.
+        "extra_package": extra_packages[0] if extra_packages else None,
+        "package_extra": package_extras[0] if package_extras else None,
+        "install_extra": install_extras[0] if install_extras else None,
         "tags": tags,
         "default_payload_type": preferred_payload_type,
         "required_bandwidth_bps": availability.get("required_bandwidth_bps"),
@@ -711,6 +746,9 @@ def _unknown_codec_info(
         "library": None,
         "requires_extra_package": None,
         "requires_compiler": None,
+        "extra_packages": [],
+        "package_extras": [],
+        "install_extras": [],
         "extra_package": None,
         "package_extra": None,
         "install_extra": None,
@@ -1705,7 +1743,7 @@ def _codec_dependency_group_label(codec: Dict[str, Any]) -> str:
     if extra is None:
         extra_label = "package unknown"
     elif extra:
-        extra_label = "extra package"
+        extra_label = "extra package(s)"
     else:
         extra_label = "built-in"
 
@@ -1717,6 +1755,18 @@ def _codec_dependency_group_label(codec: Dict[str, Any]) -> str:
         compiler_label = "no compiler"
 
     return f"{extra_label} / {compiler_label}"
+
+
+def _codec_family_label(codec: Dict[str, Any]) -> str:
+    family = str(
+        codec.get("name")
+        or codec.get("description")
+        or "unknown"
+    )
+    packages = _string_list(codec.get("extra_packages"))
+    if packages:
+        family += " [" + ", ".join(packages) + "]"
+    return family
 
 
 def _codec_option_labels(codec: Dict[str, Any]) -> List[str]:
@@ -1735,11 +1785,7 @@ def _codec_family_options(
 ) -> List[Tuple[str, List[str]]]:
     families: Dict[str, List[str]] = {}
     for codec in codecs:
-        family = str(
-            codec.get("name")
-            or codec.get("description")
-            or "unknown"
-        )
+        family = _codec_family_label(codec)
         families.setdefault(family, [])
         for label in _codec_option_labels(codec):
             if label not in families[family]:

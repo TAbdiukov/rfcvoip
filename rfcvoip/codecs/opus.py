@@ -160,8 +160,8 @@ class OpusCodec(RTPCodec):
     default_fmtp = ["minptime=10;useinbandfec=1"]
     max_data_bytes = 4000
     max_frame_size = 576
-    extra_package = "discord.py"
-    package_extra = "opus"
+    extra_packages = ("discord.py",)
+    package_extras = ("opus",)
     requires_extra_package = True
     requires_compiler = False
 
