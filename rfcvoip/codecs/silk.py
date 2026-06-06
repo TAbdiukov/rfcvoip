@@ -110,6 +110,10 @@ class SilkCodec(RTPCodec):
     bit_rate = 20000
     default_fmtp: List[str] = []
     preferred_public_bit_depth = 16
+    extra_package = "silk-python"
+    package_extra = "silk"
+    requires_extra_package = True
+    requires_compiler = False
 
     @classmethod
     def refresh_availability_cache(cls) -> None:

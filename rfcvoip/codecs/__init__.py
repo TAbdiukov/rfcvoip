@@ -80,6 +80,68 @@ _CODEC_CLASSES, _CODEC_ORDER_INDEX = _discover_codec_classes()
 _CODEC_PRIORITY_OVERRIDES: Dict[PayloadType, int] = {}
 
 
+def _codec_dependency_metadata(
+    cls: Optional[Type[RTPCodec]],
+) -> Dict[str, object]:
+    extra_package = (
+        getattr(cls, "extra_package", None)
+        if cls is not None
+        else None
+    )
+    package_extra = (
+        getattr(cls, "package_extra", None)
+        if cls is not None
+        else None
+    )
+    requires_extra_package = bool(
+        extra_package
+        or (
+            getattr(cls, "requires_extra_package", False)
+            if cls is not None
+            else False
+        )
+    )
+    requires_compiler = bool(
+        getattr(cls, "requires_compiler", False)
+        if cls is not None
+        else False
+    )
+
+    return {
+        "requires_extra_package": requires_extra_package,
+        "requires_compiler": requires_compiler,
+        "extra_package": extra_package,
+        "package_extra": package_extra,
+        "install_extra": (
+            f"rfcvoip[{package_extra}]" if package_extra else None
+        ),
+    }
+
+
+def _codec_tags(
+    payload_kind: str,
+    *,
+    dynamic: bool,
+    available: bool,
+    metadata: Dict[str, object],
+) -> List[str]:
+    return [
+        (
+            "extra-package"
+            if metadata.get("requires_extra_package")
+            else "built-in"
+        ),
+        (
+            "requires-compiler"
+            if metadata.get("requires_compiler")
+            else "no-compiler"
+        ),
+        str(payload_kind or "unknown"),
+        "dynamic" if dynamic else "static",
+        "available" if available else "unavailable",
+    ]
+
+
 def codec_class(payload_type: PayloadType) -> Optional[Type[RTPCodec]]:
     return _CODEC_CLASSES.get(_normalize_payload_type(payload_type))
 
@@ -142,7 +204,8 @@ def codec_availability(payload_type: PayloadType) -> Dict[str, object]:
     payload_type = _normalize_payload_type(payload_type)
 
     if payload_type == PayloadType.EVENT:
-        return {
+        metadata = _codec_dependency_metadata(None)
+        data = {
             "available": True,
             "reason": "telephone-event is built in",
             "library": None,
@@ -159,6 +222,14 @@ def codec_availability(payload_type: PayloadType) -> Dict[str, object]:
             "preferred_public_bit_depth": None,
             "required_bandwidth_bps": None,
         }
+        data.update(metadata)
+        data["tags"] = _codec_tags(
+            "event",
+            dynamic=True,
+            available=True,
+            metadata=metadata,
+        )
+        return data
 
     cls = codec_class(payload_type)
     if cls is None:
@@ -177,9 +248,16 @@ def codec_availability(payload_type: PayloadType) -> Dict[str, object]:
             "priority_score": 0,
             "preferred_public_bit_depth": None,
             "required_bandwidth_bps": None,
+            "requires_extra_package": None,
+            "requires_compiler": None,
+            "extra_package": None,
+            "package_extra": None,
+            "install_extra": None,
+            "tags": ["unknown", "unavailable", "unsupported"],
         }
 
     availability = cls.availability()
+    metadata = _codec_dependency_metadata(cls)
     data = availability.as_dict()
     data.update(
         {
@@ -206,6 +284,13 @@ def codec_availability(payload_type: PayloadType) -> Dict[str, object]:
             ),
             "required_bandwidth_bps": cls.required_bandwidth_bps,
         }
+    )
+    data.update(metadata)
+    data["tags"] = _codec_tags(
+        cls.payload_kind,
+        dynamic=bool(cls.dynamic),
+        available=availability.available,
+        metadata=metadata,
     )
     return data
 

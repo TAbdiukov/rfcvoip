@@ -104,6 +104,10 @@ class G722Codec(RTPCodec):
     bit_rate = 64000
     codec_sample_rate = 16000
     required_bandwidth_bps = 64000
+    extra_package = "G722"
+    package_extra = "g722"
+    requires_extra_package = True
+    requires_compiler = True
 
     @classmethod
     def refresh_availability_cache(cls) -> None:

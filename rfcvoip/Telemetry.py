@@ -358,6 +358,74 @@ def _bandwidth_context(
     }
 
 
+def _rtp_option_label(
+    name: Any,
+    rate: Any = None,
+    channels: Any = None,
+) -> str:
+    label = str(name or "unknown")
+    if rate not in (None, "", 0):
+        label += f"/{rate}"
+    if channels not in (None, "", 0, 1):
+        label += f"/{channels}"
+    return label
+
+
+def _rtp_options_for_codec(
+    codec: Any,
+    payload_type: Optional[int],
+    fmtp: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    payload_number = _safe_int(payload_type)
+    if payload_number is None:
+        return []
+
+    try:
+        from rfcvoip import RTP
+
+        rtpmap = RTP.rtpmap_for_payload_type(payload_number, codec)
+    except Exception:
+        rtpmap = None
+
+    label = None
+    if rtpmap:
+        parts = str(rtpmap).split(None, 1)
+        label = parts[1] if len(parts) > 1 else str(rtpmap)
+    if not label:
+        label = _rtp_option_label(
+            getattr(codec, "description", codec),
+            getattr(codec, "rate", None),
+            getattr(codec, "channel", None),
+        )
+
+    return [
+        {
+            "payload_type": payload_number,
+            "label": label,
+            "rtpmap": rtpmap,
+            "fmtp": list(fmtp or []),
+        }
+    ]
+
+
+def _rtp_options_from_parts(
+    *,
+    name: Any,
+    rate: Any,
+    channels: Any,
+    payload_type: Optional[int],
+    fmtp: Optional[List[str]],
+) -> List[Dict[str, Any]]:
+    return [
+        {
+            "payload_type": _safe_int(payload_type),
+            "label": _rtp_option_label(name, rate, channels),
+            "rtpmap": None,
+            "fmtp": list(fmtp or []),
+        }
+    ]
+
+
 def _media_protocol_supported(media: Dict[str, Any]) -> bool:
     from rfcvoip import RTP
 
@@ -403,6 +471,12 @@ def _codec_availability_details(codec: Any) -> Dict[str, Any]:
             "preferred_source_sample_rate": None,
             "preferred_public_bit_depth": None,
             "required_bandwidth_bps": None,
+            "requires_extra_package": None,
+            "requires_compiler": None,
+            "extra_package": None,
+            "package_extra": None,
+            "install_extra": None,
+            "tags": ["unknown", "unavailable"],
         }
 
 
@@ -474,6 +548,16 @@ def codec_info(
         or not isinstance(getattr(codec, "value", None), int)
         or (isinstance(payload_type, int) and payload_type >= 96)
     )
+    rtp_options = _rtp_options_for_codec(codec, payload_type, fmtp_list)
+    raw_tags = availability.get("tags") or []
+    if isinstance(raw_tags, str):
+        raw_tags = [raw_tags]
+    tags = list(
+        dict.fromkeys(
+            [str(tag) for tag in raw_tags if tag]
+            + ["supported" if supported else "unsupported"]
+        )
+    )
 
     return {
         "media_type": media_type,
@@ -506,8 +590,15 @@ def codec_info(
         "available": bool(availability.get("available", supported)),
         "availability_reason": availability.get("reason"),
         "library": availability.get("library"),
+        "requires_extra_package": availability.get("requires_extra_package"),
+        "requires_compiler": availability.get("requires_compiler"),
+        "extra_package": availability.get("extra_package"),
+        "package_extra": availability.get("package_extra"),
+        "install_extra": availability.get("install_extra"),
+        "tags": tags,
         "default_payload_type": preferred_payload_type,
         "required_bandwidth_bps": availability.get("required_bandwidth_bps"),
+        "rtp_options": rtp_options,
         "rtpmap": (
             RTP.rtpmap_for_payload_type(payload_type, codec)
             if payload_type is not None
@@ -593,6 +684,13 @@ def _unknown_codec_info(
     session_bandwidth: Any = None,
     media_bandwidth: Any = None,
 ) -> Dict[str, Any]:
+    rtp_options = _rtp_options_from_parts(
+        name=name,
+        rate=rate,
+        channels=channels,
+        payload_type=payload_type,
+        fmtp=fmtp,
+    )
     return {
         "media_type": media.get("type"),
         "payload_type": payload_type,
@@ -611,9 +709,21 @@ def _unknown_codec_info(
         "available": False,
         "availability_reason": "Codec is not known to rfcvoip.",
         "library": None,
+        "requires_extra_package": None,
+        "requires_compiler": None,
+        "extra_package": None,
+        "package_extra": None,
+        "install_extra": None,
+        "tags": [
+            "unknown",
+            "unavailable",
+            "unsupported",
+            "dynamic" if payload_type is None or payload_type >= 96 else "static",
+        ],
         "priority_score": 0,
         "default_payload_type": None,
         "rtpmap": None,
+        "rtp_options": rtp_options,
         "bandwidth_supported": True,
         "bandwidth": _bandwidth_context(
             session_bandwidth=session_bandwidth,
@@ -866,8 +976,13 @@ def local_codec_offer(phone: Optional[Any] = None) -> List[Dict[str, Any]]:
 
 def local_codec_report(phone: Optional[Any] = None) -> Dict[str, Any]:
     """Return local codec telemetry and the INVITE offer for a phone."""
+    priority_scores = _phone_priority_scores(phone)
     local_codecs = local_supported_codecs(
-        priority_scores=_phone_priority_scores(phone),
+        priority_scores=priority_scores,
+    )
+    known_codecs = local_supported_codecs(
+        include_unavailable=True,
+        priority_scores=priority_scores,
     )
     offer = local_codec_offer(phone)
     local_transmittable_audio = [
@@ -883,6 +998,7 @@ def local_codec_report(phone: Optional[Any] = None) -> Dict[str, Any]:
     return {
         "local": local_codecs,
         "rfcvoip": local_codecs,
+        "known_codecs": known_codecs,
         "local_offer": offer,
         "local_transmittable_audio": local_transmittable_audio,
         "local_can_start_call": bool(local_transmittable_audio),
@@ -1574,6 +1690,113 @@ def _codec_summary(
     return rendered
 
 
+def _codec_dependency_group_key(codec: Dict[str, Any]) -> Tuple[int, int]:
+    extra = codec.get("requires_extra_package")
+    compiler = codec.get("requires_compiler")
+    extra_order = 2 if extra is None else (1 if extra else 0)
+    compiler_order = 2 if compiler is None else (1 if compiler else 0)
+    return extra_order, compiler_order
+
+
+def _codec_dependency_group_label(codec: Dict[str, Any]) -> str:
+    extra = codec.get("requires_extra_package")
+    compiler = codec.get("requires_compiler")
+
+    if extra is None:
+        extra_label = "package unknown"
+    elif extra:
+        extra_label = "extra package"
+    else:
+        extra_label = "built-in"
+
+    if compiler is None:
+        compiler_label = "compiler unknown"
+    elif compiler:
+        compiler_label = "requires compiler"
+    else:
+        compiler_label = "no compiler"
+
+    return f"{extra_label} / {compiler_label}"
+
+
+def _codec_option_labels(codec: Dict[str, Any]) -> List[str]:
+    labels = []
+    for option in codec.get("rtp_options") or []:
+        label = option.get("label") or option.get("rtpmap")
+        if label and label not in labels:
+            labels.append(str(label))
+    if not labels:
+        labels.append(_codec_label(codec))
+    return labels
+
+
+def _codec_family_options(
+    codecs: List[Dict[str, Any]],
+) -> List[Tuple[str, List[str]]]:
+    families: Dict[str, List[str]] = {}
+    for codec in codecs:
+        family = str(
+            codec.get("name")
+            or codec.get("description")
+            or "unknown"
+        )
+        families.setdefault(family, [])
+        for label in _codec_option_labels(codec):
+            if label not in families[family]:
+                families[family].append(label)
+    return list(families.items())
+
+
+def _limited_code_list(
+    values: List[str],
+    platform: str,
+    *,
+    max_items: int = 6,
+) -> str:
+    rendered = ", ".join(
+        _code(value, platform) for value in values[:max_items]
+    )
+    remaining = len(values) - max_items
+    if remaining > 0:
+        rendered += _text(f" ... and {remaining} more", platform)
+    return rendered
+
+
+def _codec_dependency_summary_lines(
+    codecs: List[Dict[str, Any]],
+    platform: str,
+    *,
+    title: str,
+) -> List[str]:
+    available_codecs = [
+        codec for codec in codecs if codec.get("available", True)
+    ]
+    if not available_codecs:
+        return []
+
+    groups: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
+    for codec in available_codecs:
+        groups.setdefault(_codec_dependency_group_key(codec), []).append(
+            codec
+        )
+
+    lines = [f"{title}:"]
+    for key in sorted(groups):
+        group_codecs = groups[key]
+        group_label = _codec_dependency_group_label(group_codecs[0])
+        family_parts = []
+        for family, options in _codec_family_options(group_codecs):
+            family_parts.append(
+                f"{_code(family, platform)}: "
+                + _limited_code_list(options, platform)
+            )
+        lines.append(
+            f"  • {_text(group_label, platform)}: "
+            + _text("; ", platform).join(family_parts)
+        )
+    return lines
+
+
 def _call_state_summary(calls: List[Dict[str, Any]], platform: str) -> str:
     if not calls:
         return _code("0", platform)
@@ -1662,12 +1885,22 @@ def report(
                 + _codec_summary(active, platform, max_items=3)
             )
 
-        local_offer = codecs.get("local_offer") or []
-        if local_offer:
-            lines.append(
-                f"🎧 {_text('Local offer', platform)}: "
-                + _codec_summary(local_offer, platform, max_items=5)
+        local_codecs = codecs.get("local") or codecs.get("rfcvoip") or []
+        if local_codecs:
+            lines.extend(
+                _codec_dependency_summary_lines(
+                    local_codecs,
+                    platform,
+                    title=f"🎧 {_text('Local codecs', platform)}",
+                )
             )
+        else:
+            local_offer = codecs.get("local_offer") or []
+            if local_offer:
+                lines.append(
+                    f"🎧 {_text('Local offer', platform)}: "
+                    + _codec_summary(local_offer, platform, max_items=5)
+                )
 
         remote = codecs.get("remote") or []
         if remote:

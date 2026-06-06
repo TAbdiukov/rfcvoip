@@ -54,6 +54,10 @@ class RTPCodec:
     source_channels = 1
     default_fmtp: List[str] = []
     required_bandwidth_bps: Optional[int] = None
+    extra_package: Optional[str] = None
+    package_extra: Optional[str] = None
+    requires_extra_package: bool = False
+    requires_compiler: bool = False
 
     @classmethod
     def availability(cls) -> CodecAvailability:
