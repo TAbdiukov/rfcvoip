@@ -1798,9 +1798,12 @@ def _limited_code_list(
     platform: str,
     *,
     max_items: int = 6,
+    delimiter: str = ", ",
+    code_items: bool = True,
 ) -> str:
-    rendered = ", ".join(
-        _code(value, platform) for value in values[:max_items]
+    formatter = _code if code_items else _text
+    rendered = delimiter.join(
+        formatter(value, platform) for value in values[:max_items]
     )
     remaining = len(values) - max_items
     if remaining > 0:
@@ -1814,14 +1817,11 @@ def _codec_dependency_summary_lines(
     *,
     title: str,
 ) -> List[str]:
-    available_codecs = [
-        codec for codec in codecs if codec.get("available", True)
-    ]
-    if not available_codecs:
+    if not codecs:
         return []
 
     groups: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
-    for codec in available_codecs:
+    for codec in codecs:
         groups.setdefault(_codec_dependency_group_key(codec), []).append(
             codec
         )
@@ -1830,16 +1830,45 @@ def _codec_dependency_summary_lines(
     for key in sorted(groups):
         group_codecs = groups[key]
         group_label = _codec_dependency_group_label(group_codecs[0])
-        family_parts = []
-        for family, options in _codec_family_options(group_codecs):
-            family_parts.append(
-                f"{_code(family, platform)}: "
-                + _limited_code_list(options, platform)
-            )
+
+        available_codecs = [
+            codec for codec in group_codecs if codec.get("available", True)
+        ]
+        unavailable_codecs = [
+            codec for codec in group_codecs if not codec.get("available", True)
+        ]
+
         lines.append(
-            f"  • {_text(group_label, platform)}: "
-            + _text("; ", platform).join(family_parts)
+            f"{_text(group_label, platform)}:"
         )
+
+        for family, options in _codec_family_options(available_codecs):
+            lines.append(
+                f"  ✅ {_text(family, platform)}: "
+                + _limited_code_list(
+                    options,
+                    platform,
+                    delimiter="; ",
+                    code_items=False,
+                )
+            )
+
+        if unavailable_codecs:
+            unavailable = []
+            for codec in unavailable_codecs:
+                label = _codec_family_label(codec)
+                if label not in unavailable:
+                    unavailable.append(label)
+
+            lines.append(
+                f"  ❌ {_text('Not available', platform)}: "
+                + _limited_code_list(
+                    unavailable,
+                    platform,
+                    max_items=12,
+                    code_items=False,
+                )
+            )
     return lines
 
 
@@ -1931,7 +1960,12 @@ def report(
                 + _codec_summary(active, platform, max_items=3)
             )
 
-        local_codecs = codecs.get("local") or codecs.get("rfcvoip") or []
+        local_codecs = (
+            codecs.get("known_codecs")
+            or codecs.get("local")
+            or codecs.get("rfcvoip")
+            or []
+        )
         if local_codecs:
             lines.extend(
                 _codec_dependency_summary_lines(
