@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.10.0+RFC
+
+- VoIP: Reject misdirected inbound SIP INVITEs that are not addressed to the configured local account, preventing phantom calls from reaching the frontend.
+
 ## 2.9.8+RFC
 
 - VoIP: Fix a `_run_call_callback()` race

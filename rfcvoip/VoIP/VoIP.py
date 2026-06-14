@@ -103,6 +103,23 @@ def _transmit_type_from_value(
         return default
 
 
+def _sip_uri_user(value: Any) -> str:
+    text = str(value or "").strip()
+    if "<" in text and ">" in text:
+        text = text.split("<", 1)[1].split(">", 1)[0].strip()
+
+    lower = text.lower()
+    if lower.startswith("sips:"):
+        text = text[5:]
+    elif lower.startswith("sip:"):
+        text = text[4:]
+
+    text = text.split("?", 1)[0].split(";", 1)[0]
+    if "@" not in text:
+        return ""
+    return text.rsplit("@", 1)[0].strip()
+
+
 def _media_transmit_type(
     media: Dict[str, Any],
     default: RTP.TransmitType = RTP.TransmitType.SENDRECV,
@@ -1847,6 +1864,39 @@ class VoIPPhone:
                 return False
         return found_audio
 
+    def _invite_targets_local_account(self, request: SIP.SIPMessage) -> bool:
+        local_users = {
+            str(self.username or "").strip().casefold(),
+            str(self.auth_username or "").strip().casefold(),
+        }
+        local_users.discard("")
+        if not local_users:
+            return True
+
+        target_users = []
+        request_uri_user = _sip_uri_user(getattr(request, "uri", ""))
+        if request_uri_user:
+            target_users.append(request_uri_user)
+
+        to_header = request.headers.get("To", {})
+        if isinstance(to_header, dict):
+            number = to_header.get("number")
+            if number not in (None, ""):
+                target_users.append(str(number).strip())
+            for key in ("address", "raw"):
+                user = _sip_uri_user(to_header.get(key, ""))
+                if user:
+                    target_users.append(user)
+        else:
+            user = _sip_uri_user(to_header)
+            if user:
+                target_users.append(user)
+
+        return any(
+            user.strip().casefold() in local_users
+            for user in target_users
+            if user
+        )
 
     def _has_compatible_audio_offer(self, request: SIP.SIPMessage) -> bool:
         for media in request.body.get("m", []):
@@ -1923,10 +1973,12 @@ class VoIPPhone:
                 )
             return
         request.headers["Call-ID"] = call_id
+        source_address = getattr(request, "source_address", None)
         debug(
             request.summary(),
             "Inbound INVITE "
-            + f"call_id={call_id} from={request.headers.get('From')} "
+            + f"call_id={call_id} source={source_address} "
+            + f"from={request.headers.get('From')} "
             + f"to={request.headers.get('To')}",
         )
 
@@ -1952,6 +2004,19 @@ class VoIPPhone:
             )
             message = self.sip.gen_response(
                 request, SIP.SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST
+            )
+            self.sip.send_response(request, message)
+            return
+
+        if not self._invite_targets_local_account(request):
+            debug(
+                request.summary(),
+                "Rejecting inbound INVITE for a different local account "
+                + f"call_id={call_id} request_uri={getattr(request, 'uri', '')} "
+                + f"to={request.headers.get('To')} username={self.username}",
+            )
+            message = self.sip.gen_response(
+                request, SIP.SIPStatus.NOT_FOUND
             )
             self.sip.send_response(request, message)
             return

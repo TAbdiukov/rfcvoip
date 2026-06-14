@@ -112,6 +112,8 @@ def test_inbound_invite_sends_488_for_constructor_media_failure():
             ]
         )
     )
+    request.headers["To"]["raw"] = "<sip:alice@example.com>"
+
 
     phone._callback_MSG_Invite(request)
 
