@@ -3,6 +3,7 @@
 ## 2.9.7+RFC
 
 - Telemetry: Fix telemetry source unwrapping so active calls are accounted.
+- Telemetry: More thorough call telemetry overall.
 - Telemetry: Rework telemetry layout into clearer sections.
 - Misc: Request made for `g722` package to be pre-compiled.
 

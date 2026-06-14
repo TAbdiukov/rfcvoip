@@ -1924,16 +1924,30 @@ def _codec_dependency_summary_lines(
 
 
 def _call_state_summary(calls: List[Dict[str, Any]], platform: str) -> str:
-    if not calls:
-        return _code("0", platform)
     counts: Dict[str, int] = {}
     for call in calls:
-        state = str(call.get("state") or "UNKNOWN")
+        state = str(call.get("state") or "UNKNOWN").rsplit(".", 1)[-1]
         counts[state] = counts.get(state, 0) + 1
-    parts = [_code(str(len(calls)), platform)]
+
+    active_counts = {
+        state: count
+        for state, count in counts.items()
+        if state != "ENDED"
+    }
+    active_count = sum(active_counts.values())
+    ended_count = counts.get("ENDED", 0)
+
+    parts = [
+        f"{_text('total', platform)}: {_code(len(calls), platform)}",
+        f"{_text('active', platform)}: {_code(active_count, platform)}",
+    ]
+    if ended_count:
+        parts.append(
+            f"{_text('ended', platform)}: {_code(ended_count, platform)}"
+        )
     parts.extend(
         f"{_code(state, platform)} {_text('x', platform)} {_code(count, platform)}"
-        for state, count in sorted(counts.items())
+        for state, count in sorted(active_counts.items())
     )
     return _text(" | ", platform).join(parts)
 
@@ -2073,17 +2087,7 @@ def report(
     if isinstance(calls, list):
         lines.append("")
         lines.append(_bold("☎️ Calls", platform))
-        lines.append(f"  • {_text('Total', platform)}: {_code(str(len(calls)), platform)}")
-        if calls:
-            counts: Dict[str, int] = {}
-            for call in calls:
-                state = str(call.get("state") or "UNKNOWN")
-                counts[state] = counts.get(state, 0) + 1
-            rendered_states = _text(" | ", platform).join(
-                f"{_code(state, platform)} {_text('x', platform)} {_code(count, platform)}"
-                for state, count in sorted(counts.items())
-            )
-            lines.append(f"  • {_text('States', platform)}: {rendered_states}")
+        lines.append(f"  • {_call_state_summary(calls, platform)}")
 
     return "\n".join(lines)
 
