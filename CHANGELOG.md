@@ -2,8 +2,8 @@
 
 ## 2.9.8+RFC
 
-- Fix a `_run_call_callback()` race
-- Fix stale or malformed inbound SIP INVITEs triggering phantom frontend call callbacks without a valid Call-ID.
+- VoIP: Fix a `_run_call_callback()` race
+- VoIP: Fix stale or malformed inbound SIP INVITEs triggering phantom frontend call callbacks without a valid Call-ID.
 
 ## 2.9.7+RFC
 
