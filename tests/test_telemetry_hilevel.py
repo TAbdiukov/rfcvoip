@@ -215,6 +215,7 @@ def test_call_snapshot_and_reports_include_active_codec_hilevel():
     assert snapshot["audio"]["bit_depth"] == 8
     assert snapshot["codecs"]["active_codecs"][0]["rtp"]["local"]["port"] == 10000
 
-    assert "Active codec" in discord_report
+    assert "🎧 Codecs" in discord_report
+    assert "• Active:" in discord_report
     assert "PCMU/8000:0" in discord_report
-    assert "Active codec" in telegram_report
+    assert "• Active:" in telegram_report

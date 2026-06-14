@@ -58,7 +58,8 @@ def sample_codec_report() -> str:
 
 
 def verify_telemetry_codec_report(report: str) -> None:
-    assert "🎧 Local codecs:" in report
+    assert "🎧 Codecs" in report
+    assert "• Local support:" in report
     assert "built-in / no compiler:" in report
     assert (
         "  ✅ G.711: "
