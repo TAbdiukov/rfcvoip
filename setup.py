@@ -45,6 +45,7 @@ setup(
     long_description_content_type="text/markdown",
     author="Tim Abdiukov; Tayler Porter and PyVoIP contributors",
     url="https://github.com/TAbdiukov/rfcvoip",
+    license_files=["LICEN[CS]E*"]
     project_urls={
         "Bug Tracker": "https://github.com/TAbdiukov/rfcvoip/issues",
         "Documentation": "https://rfcvoip.readthedocs.io/",
@@ -65,7 +66,6 @@ setup(
         "Intended Audience :: Developers",
         "Intended Audience :: Telecommunications Industry",
         "Intended Audience :: Information Technology",
-        "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
         "Natural Language :: English",
         "Topic :: Communications :: Internet Phone",
         "Topic :: Communications :: Telephony",
