@@ -1510,6 +1510,16 @@ class VoIPPhone:
     ) -> None:
         if delay > 0:
             time.sleep(delay)
+        if not str(getattr(call, "call_id", "") or "").strip():
+            return
+        phone = getattr(call, "phone", None)
+        get_call = getattr(phone, "_get_call", None)
+        if callable(get_call) and get_call(call.call_id) is not call:
+            return
+        get_state = getattr(call, "_get_state", None)
+        state = get_state() if callable(get_state) else getattr(call, "state", None)
+        if state == CallState.ENDED:
+            return
         callback(call)
 
     def _queue_unmatched_final_invite_response(
@@ -1895,7 +1905,24 @@ class VoIPPhone:
         return True
 
     def _callback_MSG_Invite(self, request: SIP.SIPMessage) -> None:
-        call_id = request.headers["Call-ID"]
+        call_id = str(request.headers.get("Call-ID", "") or "").strip()
+        if not call_id:
+            debug(
+                request.summary(),
+                "Rejecting inbound INVITE without Call-ID",
+            )
+            try:
+                message = self.sip.gen_response(
+                    request, SIP.SIPStatus.BAD_REQUEST
+                )
+                self.sip.send_response(request, message)
+            except Exception as ex:
+                debug(
+                    f"Failed to send 400 for INVITE without Call-ID: {ex}",
+                    "Failed to send 400 for INVITE without Call-ID",
+                )
+            return
+        request.headers["Call-ID"] = call_id
         debug(
             request.summary(),
             "Inbound INVITE "
