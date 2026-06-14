@@ -248,13 +248,25 @@ def _is_sip_client_like(source: Any) -> bool:
     return False
 
 
+def _is_real_phone_like(source: Any) -> bool:
+    return (
+        source is not None
+        and hasattr(source, "calls")
+        and hasattr(source, "sip")
+        and (
+            source.__class__.__name__ == "VoIPPhone"
+            or callable(getattr(source, "_calls_snapshot", None))
+        )
+    )
+
+
 def _unwrap_snapshot_source(source: Any) -> Any:
     """Prefer the real rfcvoip phone/SIP/call object inside frontend wrappers."""
     if source is None or isinstance(source, dict):
         return source
 
     if (
-        (hasattr(source, "calls") and hasattr(source, "sip"))
+        _is_real_phone_like(source)
         or (hasattr(source, "RTPClients") and hasattr(source, "call_id"))
         or (
             hasattr(source, "headers")
@@ -266,6 +278,9 @@ def _unwrap_snapshot_source(source: Any) -> Any:
         return source
 
     candidates = list(_iter_source_candidates(source))
+    for candidate in candidates[1:]:
+        if _is_real_phone_like(candidate):
+            return candidate
     for candidate in candidates[1:]:
         if hasattr(candidate, "calls") and hasattr(candidate, "sip"):
             return candidate
@@ -1848,6 +1863,7 @@ def _codec_dependency_summary_lines(
     platform: str,
     *,
     title: str,
+    indent: str = "",
 ) -> List[str]:
     if not codecs:
         return []
@@ -1858,7 +1874,9 @@ def _codec_dependency_summary_lines(
             codec
         )
 
-    lines = [f"{title}:"]
+    group_indent = indent + "  "
+    item_indent = indent + "    "
+    lines = [f"{indent}{title}:"]
     for key in sorted(groups):
         group_codecs = groups[key]
         group_label = _codec_dependency_group_label(group_codecs[0])
@@ -1871,12 +1889,12 @@ def _codec_dependency_summary_lines(
         ]
 
         lines.append(
-            f"{_text(group_label, platform)}:"
+            f"{group_indent}{_text(group_label, platform)}:"
         )
 
         for family, options in _codec_family_options(available_codecs):
             lines.append(
-                f"  ✅ {_text(family, platform)}: "
+                f"{item_indent}✅ {_text(family, platform)}: "
                 + _limited_code_list(
                     options,
                     platform,
@@ -1894,7 +1912,7 @@ def _codec_dependency_summary_lines(
             unavailable.sort(key=lambda item: item.casefold())
 
             lines.append(
-                f"  ❌ {_text('Not available', platform)}: "
+                f"{item_indent}❌ {_text('Not available', platform)}: "
                 + _limited_code_list(
                     unavailable,
                     platform,
@@ -1942,6 +1960,10 @@ def report(
 
     phone = data.get("phone") or {}
     sip = data.get("sip") or {}
+    if phone or sip:
+        lines.append("")
+        lines.append(_bold("📞 Phone", platform) if phone else _bold("📡 SIP", platform))
+
     if phone:
         status = phone.get("status")
         target = None
@@ -1949,47 +1971,58 @@ def report(
             target_data = sip.get("target") or {}
             if target_data:
                 target = f"{sip.get('transport') or 'SIP'}"
-        line = f"📞 {_text('Phone', platform)}: {_code(status, platform)}"
+        lines.append(f"  • {_text('Status', platform)}: {_code(status, platform)}")
         if target:
-            line += _text(" | ", platform) + f"{_text('SIP', platform)} {_code(target, platform)}"
-        lines.append(line)
+            lines.append(f"  • {_text('SIP', platform)}: {_code(target, platform)}")
     elif isinstance(sip, dict) and sip:
         target_data = sip.get("target") or {}
         target = None
         if target_data:
             target = f"{sip.get('transport') or 'SIP'}"
-        line = f"📡 {_text('SIP', platform)}: {_code('running' if sip.get('running') else 'stopped', platform)}"
+        lines.append(
+            f"  • {_text('Status', platform)}: "
+            + _code("running" if sip.get("running") else "stopped", platform)
+        )
         if target:
-            line += _text(" | ", platform) + _code(target, platform)
-        lines.append(line)
+            lines.append(f"  • {_text('Transport', platform)}: {_code(target, platform)}")
 
     auth = data.get("auth") or (sip.get("auth") if isinstance(sip, dict) else {}) or {}
     last_digest = auth.get("last_digest") if isinstance(auth, dict) else None
+    lines.append("")
+    lines.append(_bold("🔐 Authentication", platform))
     if last_digest:
-        auth_bits = [
-            _code(last_digest.get("algorithm"), platform),
-            f"{_text('qop', platform)} {_code(last_digest.get('qop') or 'none', platform)}",
-        ]
+        lines.append(
+            f"  • {_text('Digest', platform)}: "
+            + _code(last_digest.get("algorithm"), platform)
+        )
+        lines.append(
+            f"  • {_text('qop', platform)}: "
+            + _code(last_digest.get("qop") or "none", platform)
+        )
         if last_digest.get("header"):
-            auth_bits.append(f"{_text('via', platform)} {_code(last_digest.get('header'), platform)}")
-        lines.append(f"🔐 {_text('Auth', platform)}: " + _text(" | ", platform).join(auth_bits))
+            lines.append(
+                f"  • {_text('Header', platform)}: "
+                + _code(last_digest.get("header"), platform)
+            )
     else:
         challenges = auth.get("challenges") if isinstance(auth, dict) else None
         if challenges:
             offered = sorted({str(item.get("algorithm")) for item in challenges if item.get("algorithm")})
             lines.append(
-                f"🔐 {_text('Auth challenge', platform)}: "
+                f"  • {_text('Challenge algorithms', platform)}: "
                 + ", ".join(_code(item, platform) for item in offered[:4])
             )
         else:
-            lines.append(f"🔐 {_text('Auth', platform)}: {_code('not used yet', platform)}")
+            lines.append(f"  • {_text('Status', platform)}: {_code('not used yet', platform)}")
 
     codecs = data.get("codecs") or {}
+    lines.append("")
+    lines.append(_bold("🎧 Codecs", platform))
     if isinstance(codecs, dict):
         active = codecs.get("active_codecs") or codecs.get("active") or []
         if active:
             lines.append(
-                f"🎙️ {_text('Active codec', platform)}: "
+                f"  • {_text('Active', platform)}: "
                 + _codec_summary(active, platform, max_items=3)
             )
 
@@ -2004,21 +2037,22 @@ def report(
                 _codec_dependency_summary_lines(
                     local_codecs,
                     platform,
-                    title=f"🎧 {_text('Local codecs', platform)}",
+                    title=f"• {_text('Local support', platform)}",
+                    indent="  ",
                 )
             )
         else:
             local_offer = codecs.get("local_offer") or []
             if local_offer:
                 lines.append(
-                    f"🎧 {_text('Local offer', platform)}: "
+                    f"  • {_text('Local offer', platform)}: "
                     + _codec_summary(local_offer, platform, max_items=5)
                 )
 
         remote = codecs.get("remote") or []
         if remote:
             lines.append(
-                f"📨 {_text('Remote SDP', platform)}: "
+                f"  • {_text('Remote SDP', platform)}: "
                 + _codec_summary(remote, platform, max_items=5)
             )
 
@@ -2030,11 +2064,26 @@ def report(
                 rendered = "no"
             else:
                 rendered = "unknown"
-            lines.append(f"✅ {_text('Can start call', platform)}: {_code(rendered, platform)}")
+            lines.append(
+                f"  • ✅ {_text('Can start call', platform)}: "
+                + _code(rendered, platform)
+            )
 
     calls = data.get("calls")
     if isinstance(calls, list):
-        lines.append(f"☎️ {_text('Calls', platform)}: {_call_state_summary(calls, platform)}")
+        lines.append("")
+        lines.append(_bold("☎️ Calls", platform))
+        lines.append(f"  • {_text('Total', platform)}: {_code(str(len(calls)), platform)}")
+        if calls:
+            counts: Dict[str, int] = {}
+            for call in calls:
+                state = str(call.get("state") or "UNKNOWN")
+                counts[state] = counts.get(state, 0) + 1
+            rendered_states = _text(" | ", platform).join(
+                f"{_code(state, platform)} {_text('x', platform)} {_code(count, platform)}"
+                for state, count in sorted(counts.items())
+            )
+            lines.append(f"  • {_text('States', platform)}: {rendered_states}")
 
     return "\n".join(lines)
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.9.7+RFC
+
+- Telemetry: Fix telemetry source unwrapping so active calls are accounted.
+- Telemetry: Rework telemetry layout into clearer sections.
+- Misc: Request made for `g722` package to be pre-compiled.
+
 ## 2.9.6+RFC
 
 - Telemetry: Add detailed codec telemetry, including availability, dependencies, RTP capabilities, and negotiation data.
