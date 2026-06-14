@@ -5,6 +5,7 @@
 - Telemetry: Fix telemetry source unwrapping so active calls are accounted.
 - Telemetry: More thorough call telemetry overall.
 - Telemetry: Rework telemetry layout into clearer sections.
+- Misc: Sunset using `+RFC` suffix for development versions of the package. This practice is no longer required.
 - Misc: Request made for `g722` package to be pre-compiled.
 
 ## 2.9.6+RFC
