@@ -1,7 +1,12 @@
+from abc import ABC, abstractmethod
 import audioop
 
 from rfcvoip.audio_format import silence_bytes
-from rfcvoip.codecs.base import CodecAvailability, RTPCodec
+from rfcvoip.codecs.base import (
+    CodecAvailability,
+    CodecNotImplementedError,
+    RTPCodec,
+)
 
 
 class PCMUCodec(RTPCodec):
@@ -52,7 +57,7 @@ class PCMACodec(RTPCodec):
         return self._pcm16_to_source_u8(pcm16, self.rate)
 
 
-class _G711WidebandCoreCodec(RTPCodec):
+class _G711WidebandCoreCodec(RTPCodec, ABC):
     """G.711.1 core-layer RTP codec adapter.
 
     ``PCMU-WB`` and ``PCMA-WB`` are the SDP/RTP names for G.711.1.  This
@@ -107,11 +112,13 @@ class _G711WidebandCoreCodec(RTPCodec):
         modes = {mode.strip() for mode in mode_set.split(",") if mode.strip()}
         return "1" in modes
 
+    @abstractmethod
     def _encode_core_pcm16(self, payload: bytes) -> bytes:
-        raise NotImplementedError
+        raise CodecNotImplementedError(self, "_encode_core_pcm16")
 
+    @abstractmethod
     def _decode_core_pcm16(self, payload: bytes) -> bytes:
-        raise NotImplementedError
+        raise CodecNotImplementedError(self, "_decode_core_pcm16")
 
     def _pad_to_core_frames(self, pcm16: bytes) -> bytes:
         if not pcm16:

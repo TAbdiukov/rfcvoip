@@ -3,6 +3,7 @@
 ## 2.11.1+RFC
 
 - RTP/Codecs: Raise informative codec errors for unknown, unavailable, or unimplemented RTP payloads.
+- Codecs: Make G.711.1 core methods abstract with clearer errors.
 
 ## 2.10.0+RFC
 
