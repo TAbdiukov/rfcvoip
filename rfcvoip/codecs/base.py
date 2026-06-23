@@ -25,6 +25,20 @@ class CodecAvailability:
         }
 
 
+class CodecNotImplementedError(NotImplementedError):
+    def __init__(self, codec: object, operation: str):
+        self.codec = codec
+        self.operation = operation
+        codec_name = (
+            getattr(codec, "name", None)
+            or getattr(codec, "description", None)
+            or codec.__class__.__name__
+        )
+        super().__init__(
+            f"{codec_name} codec adapter does not implement {operation}()."
+        )
+
+
 class RTPCodec:
     """Runtime codec implementation.
 
@@ -275,7 +289,7 @@ class RTPCodec:
         return data + (pad * (length - len(data)))
 
     def encode(self, payload: bytes) -> bytes:
-        raise NotImplementedError
+        raise CodecNotImplementedError(self, "encode")
 
     def decode(self, payload: bytes) -> bytes:
-        raise NotImplementedError
+        raise CodecNotImplementedError(self, "decode")

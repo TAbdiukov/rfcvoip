@@ -43,6 +43,7 @@ __all__ = [
     "PayloadType",
     "select_transmittable_audio_codec",
     "RTPParseError",
+    "UnsupportedCodecError",
     "RTPProtocol",
     "RTPPacketManager",
     "RTPClient",
@@ -107,6 +108,31 @@ class DynamicPayloadType(Exception):
 
 class RTPParseError(Exception):
     pass
+
+
+class UnsupportedCodecError(RTPParseError):
+    """Raised when an RTP payload maps to a codec rfcvoip cannot handle."""
+
+    def __init__(
+        self,
+        codec: Any = None,
+        *,
+        payload_type: Optional[int] = None,
+        operation: str = "process",
+        reason: str = "",
+    ):
+        self.codec = codec
+        self.payload_type = payload_type
+        self.operation = operation
+        self.reason = str(reason or "")
+
+        codec_name = str(codec) if codec is not None else "unknown"
+        message = f"Unable to {operation} RTP codec {codec_name}"
+        if payload_type is not None:
+            message += f" (payload type {payload_type})"
+        if self.reason:
+            message += f": {self.reason}"
+        super().__init__(message)
 
 
 class RTPProtocol(Enum):
@@ -432,6 +458,32 @@ def fmtp_for_payload_type(payload_type: int, codec: PayloadType) -> List[str]:
         return []
 
 
+def _codec_unavailable_reason(codec: PayloadType) -> str:
+    try:
+        from rfcvoip.codecs import codec_availability
+
+        availability = codec_availability(codec)
+    except Exception as ex:
+        return str(ex) or "codec availability could not be determined"
+
+    reason = str(availability.get("reason") or "").strip()
+    if not reason:
+        reason = "no codec implementation registered"
+
+    install_extras = availability.get("install_extras") or []
+    if isinstance(install_extras, str):
+        install_extras = [install_extras]
+    install_extras = [
+        str(extra).strip()
+        for extra in install_extras
+        if str(extra).strip()
+    ]
+    if install_extras:
+        reason += " Install one of: " + ", ".join(install_extras) + "."
+
+    return reason
+
+
 def is_transmittable_audio_codec(
     codec: PayloadType,
     enabled_codecs: Optional[Any] = None,
@@ -714,6 +766,7 @@ class RTPMessage:
         self.CC = 0
         self.marker = False
         self.payload_type = PayloadType.UNKNOWN
+        self.payload_number = 0
         self.sequence = 0
         self.timestamp = 0
         self.SSRC = 0
@@ -757,14 +810,22 @@ class RTPMessage:
         self.marker = bool(int(byte[0], 2))
 
         pt = int(byte[1:], 2)
+        self.payload_number = pt
         if pt in self.assoc:
             self.payload_type = self.assoc[pt]
         else:
             try:
                 self.payload_type = PayloadType(pt)
                 e = False
-            except ValueError:
-                e = True
+            except ValueError as ex:
+                raise UnsupportedCodecError(
+                    payload_type=pt,
+                    operation="parse",
+                    reason=(
+                        "payload type is not in the negotiated SDP payload "
+                        + "map and is not a known static RTP payload"
+                    ),
+                ) from ex
             if e:
                 raise RTPParseError(f"RTP Payload type {pt} not found.")
 
@@ -991,22 +1052,47 @@ class RTPClient:
             )
         return channels
 
-    def _codec_adapter(self, codec: PayloadType):
+    def _codec_adapter(
+        self,
+        codec: PayloadType,
+        payload_type: Optional[int] = None,
+    ):
         adapter = self._codec_adapters.get(codec)
         if adapter is not None:
             return adapter
 
         from rfcvoip.codecs import create_codec
 
-        adapter = create_codec(
-            codec,
-            source_sample_rate=self.audio_sample_rate,
-            source_sample_width=self.audio_sample_width,
-            source_bit_depth=self.audio_bit_depth,
-            source_channels=self.audio_channels,
-        )
+        try:
+            adapter = create_codec(
+                codec,
+                source_sample_rate=self.audio_sample_rate,
+                source_sample_width=self.audio_sample_width,
+                source_bit_depth=self.audio_bit_depth,
+                source_channels=self.audio_channels,
+            )
+        except NotImplementedError as ex:
+            raise UnsupportedCodecError(
+                codec,
+                payload_type=payload_type,
+                operation="initialise",
+                reason=str(ex) or "codec adapter is not implemented",
+            ) from ex
+        except RuntimeError as ex:
+            raise UnsupportedCodecError(
+                codec,
+                payload_type=payload_type,
+                operation="initialise",
+                reason=str(ex) or _codec_unavailable_reason(codec),
+            ) from ex
+
         if adapter is None:
-            raise RTPParseError(f"No codec implementation for {codec}.")
+            raise UnsupportedCodecError(
+                codec,
+                payload_type=payload_type,
+                operation="initialise",
+                reason=_codec_unavailable_reason(codec),
+            )
 
         self._codec_adapters[codec] = adapter
         return adapter
@@ -1346,7 +1432,10 @@ class RTPClient:
                 continue
 
             last_sent = time.monotonic_ns()
-            adapter = self._codec_adapter(self.preference)
+            adapter = self._codec_adapter(
+                self.preference,
+                self.preference_payload_type,
+            )
             raw_payload = self.pmout.read(adapter.source_frame_size())
             try:
                 payload = adapter.encode(raw_payload)
@@ -1401,8 +1490,14 @@ class RTPClient:
         elif is_audio_codec(msg.payload_type):
             self.parse_audio(msg)
         else:
-            raise RTPParseError(
-                "Unsupported codec (parse): " + str(msg.payload_type)
+            raise UnsupportedCodecError(
+                msg.payload_type,
+                payload_type=getattr(msg, "payload_number", None),
+                operation="parse",
+                reason=(
+                    payload_type_media_kind(msg.payload_type)
+                    + " RTP payloads are not supported by RTPClient"
+                ),
             )
 
     def parse_audio(
@@ -1411,9 +1506,22 @@ class RTPClient:
         codec: Optional[PayloadType] = None,
     ) -> None:
         codec = codec or packet.payload_type
-        adapter = self._codec_adapter(codec)
+        adapter = self._codec_adapter(
+            codec,
+            getattr(packet, "payload_number", None),
+        )
         try:
             data = adapter.decode(packet.payload)
+        except NotImplementedError as ex:
+            raise UnsupportedCodecError(
+                codec,
+                payload_type=getattr(packet, "payload_number", None),
+                operation="decode",
+                reason=(
+                    str(ex)
+                    or "decode() is not implemented by the codec adapter"
+                ),
+            ) from ex
         except Exception as ex:
             raise RTPParseError(
                 f"RTP audio decode failed for {codec}: {ex}"
@@ -1430,7 +1538,21 @@ class RTPClient:
         return self.encode_packet(payload)
 
     def encode_packet(self, payload: bytes) -> bytes:
-        return self._codec_adapter(self.preference).encode(payload)
+        try:
+            return self._codec_adapter(
+                self.preference,
+                self.preference_payload_type,
+            ).encode(payload)
+        except NotImplementedError as ex:
+            raise UnsupportedCodecError(
+                self.preference,
+                payload_type=self.preference_payload_type,
+                operation="encode",
+                reason=(
+                    str(ex)
+                    or "encode() is not implemented by the codec adapter"
+                ),
+            ) from ex
 
     def parsePCMU(self, packet: RTPMessage) -> None:
         warnings.warn(

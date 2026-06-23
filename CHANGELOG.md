@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.11.1+RFC
+
+- RTP/Codecs: Raise informative codec errors for unknown, unavailable, or unimplemented RTP payloads.
+
 ## 2.10.0+RFC
 
 - VoIP: Reject misdirected inbound SIP INVITEs that are not addressed to the configured local account, preventing phantom calls from reaching the frontend.

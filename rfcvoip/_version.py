@@ -1,7 +1,7 @@
 __all__ = ["__version__", "version_info"]
 
 # rfcvoip
-__version__ = "2.10.0"
+__version__ = "2.10.1"
 version_info = tuple(
     int(part) if part.isdigit() else part
     for part in __version__.split("+", 1)[0].split(".")
