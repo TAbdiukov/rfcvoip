@@ -41,7 +41,7 @@ def fake_g722_backend(monkeypatch):
             return [0] * (len(payload) * 2)
 
     module = types.ModuleType("G722")
-    module.__version__ = "test"
+    module.__version__ = "1.2.8"
     module.G722 = FakeG722
     monkeypatch.setitem(sys.modules, "G722", module)
     return FakeG722
@@ -51,13 +51,30 @@ def test_g722_reports_optional_backend_availability(fake_g722_backend):
     availability = g722.G722Codec.availability()
 
     assert availability.available is True
-    assert availability.library == "G722 test"
+    assert availability.library == "G722 1.2.8"
     assert availability.reason == "G722 encoder/decoder available"
 
     probe = fake_g722_backend.instances[-1]
     assert probe.sample_rate == 16000
     assert probe.bit_rate == 64000
     assert probe.use_numpy is False
+
+
+def test_g722_reports_unavailable_when_optional_backend_is_too_old(monkeypatch):
+    class OldG722:
+        pass
+
+    module = types.ModuleType("G722")
+    module.__version__ = "1.2.7"
+    module.G722 = OldG722
+    monkeypatch.setitem(sys.modules, "G722", module)
+    g722.G722Codec.refresh_availability_cache()
+
+    availability = g722.G722Codec.availability()
+
+    assert availability.available is False
+    assert "1.2.8 or newer is required" in availability.reason
+    assert "found 1.2.7" in availability.reason
 
 
 def test_codec_registry_creates_g722_with_expected_public_audio_format(

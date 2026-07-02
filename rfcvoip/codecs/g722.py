@@ -63,8 +63,8 @@ def _get_g722_class():
             module = importlib.import_module("G722")
         except Exception as ex:
             raise RuntimeError(
-                "G722>=1.2.8 package is not available; install "
-                + "rfcvoip[g722] or install G722>=1.2.8 separately."
+                "G722 package is not available; install rfcvoip[g722] "
+                + "or install G722>=1.2.8 separately."
             ) from ex
 
         _ensure_supported_g722_version(module)
