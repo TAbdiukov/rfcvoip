@@ -82,8 +82,11 @@ Optional codecs
 ***************
 
 G.722
-    Static RTP payload 9. Requires the optional ``G722`` PyPI package. Install
-    it with ``pip install "rfcvoip[g722]"`` or install ``G722`` separately.
+    Static RTP payload 9. Requires the optional ``G722>=1.2.8`` PyPI package.
+    Install it with ``pip install "rfcvoip[g722]"`` or install
+    ``G722>=1.2.8`` separately. Older ``G722`` versions are not supported.
+    Starting with ``G722`` 1.2.8, this dependency no longer requires a C++
+    compiler.
     RFC 3551 keeps G.722 on an 8000 Hz RTP timestamp clock for compatibility,
     even though the codec encodes 16000 Hz wideband audio. In automatic
     sample-rate/channel mode, G.722 uses 16000 Hz mono. In ``"best"`` public
@@ -102,6 +105,10 @@ SILK
     the ``pysilk`` module. The ``silk`` extra installs ``silk-python``. In
     automatic sample-rate/channel mode, SILK uses its negotiated sample rate
     and mono audio. In ``"best"`` public bit-depth mode, it prefers 16-bit.
+
+The ``no-compiler`` and ``all`` extras install the optional G.722, Opus, and
+SILK dependencies. The ``compiler`` extra is retained for compatibility and
+currently does not install codec dependencies.
 
 The runtime list of enabled codecs is stored in
 ``rfcvoip.RTPCompatibleCodecs``. Optional codecs are only enabled when their

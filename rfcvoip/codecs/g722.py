@@ -1,4 +1,5 @@
 import importlib
+import importlib.metadata
 import struct
 import threading
 from typing import Optional, Sequence
@@ -10,6 +11,44 @@ from rfcvoip.codecs.base import CodecAvailability, RTPCodec
 _G722_CLASS = None
 _G722_LOCK = threading.Lock()
 _G722_AVAILABILITY: Optional[CodecAvailability] = None
+_MIN_G722_VERSION = (1, 2, 8)
+_MIN_G722_VERSION_TEXT = "1.2.8"
+
+
+def _g722_version_tuple(version: object):
+    parts = []
+    for part in str(version or "").split("."):
+        digits = []
+        for char in part:
+            if not char.isdigit():
+                break
+            digits.append(char)
+        parts.append(int("".join(digits)) if digits else 0)
+        if len(parts) == 3:
+            break
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts)
+
+
+def _installed_g722_version(module) -> str:
+    version = getattr(module, "__version__", None)
+    if version:
+        return str(version)
+    try:
+        return importlib.metadata.version("G722")
+    except importlib.metadata.PackageNotFoundError:
+        return ""
+
+
+def _ensure_supported_g722_version(module) -> None:
+    version = _installed_g722_version(module)
+    if _g722_version_tuple(version) < _MIN_G722_VERSION:
+        raise RuntimeError(
+            "G722 package version "
+            + f"{_MIN_G722_VERSION_TEXT} or newer is required; "
+            + f"found {version or 'unknown'}."
+        )
 
 
 def _get_g722_class():
@@ -24,10 +63,11 @@ def _get_g722_class():
             module = importlib.import_module("G722")
         except Exception as ex:
             raise RuntimeError(
-                "G722 package is not available; install rfcvoip[g722] "
-                + "or install G722 separately."
+                "G722>=1.2.8 package is not available; install "
+                + "rfcvoip[g722] or install G722>=1.2.8 separately."
             ) from ex
 
+        _ensure_supported_g722_version(module)
         cls = getattr(module, "G722", None)
         if not callable(cls):
             raise RuntimeError("G722.G722 class is not available.")
@@ -107,7 +147,7 @@ class G722Codec(RTPCodec):
     extra_packages = ("G722",)
     package_extras = ("g722",)
     requires_extra_package = True
-    requires_compiler = True
+    requires_compiler = False
 
     @classmethod
     def refresh_availability_cache(cls) -> None:
@@ -125,7 +165,7 @@ class G722Codec(RTPCodec):
         try:
             _new_g722(cls.codec_sample_rate, cls.bit_rate)
             module = importlib.import_module("G722")
-            version = getattr(module, "__version__", None)
+            version = _installed_g722_version(module)
             library = f"G722 {version}" if version else "G722"
             _G722_AVAILABILITY = CodecAvailability(
                 True,

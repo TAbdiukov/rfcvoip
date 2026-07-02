@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.11.2+RFC
+
+- G.722: starting version 1.2.8, the `g722` codec no longer requires a compiler ([reference](https://github.com/sippy/libg722/issues/10)).
+- G.722: require version 1.2.8 or higher
+- G.722: acknowledgement
+
 ## 2.11.1+RFC
 
 - RTP/Codecs: Raise informative codec errors for unknown, unavailable, or unimplemented RTP payloads.

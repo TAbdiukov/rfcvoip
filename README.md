@@ -63,16 +63,16 @@ pip install "rfcvoip[compiler]"
 pip install "rfcvoip[all]"
 ```
 
-The `opus` and `silk` extras install optional Python packages that do not
-require a C++ compiler. For convenience, `no-compiler` installs both of those
-extras together. Opus support still requires a loadable system `libopus`
-library at runtime.
+The `opus`, `silk`, and `g722` extras install optional Python packages that do
+not require a C++ compiler. The `g722` extra requires `G722>=1.2.8`; older
+`G722` versions are not supported. For convenience, `no-compiler` installs all
+three optional codec extras together. Opus support still requires a loadable
+system `libopus` library at runtime.
 
-G.722 support requires the optional `G722` PyPI package, which may require a
-C++ compiler when installed from source. It is available through either the
-`g722` or `compiler` extra. The `all` extra installs both the no-compiler
-extras and the compiler-dependent extras. Unavailable optional codecs are
-reported as unavailable and are not included in SIP offers.
+The `compiler` extra is retained for compatibility and currently does not
+install codec dependencies. The `all` extra currently matches `no-compiler`.
+Unavailable optional codecs are reported as unavailable and are not included in
+SIP offers.
 
 Installing from a source checkout:
 
@@ -239,14 +239,15 @@ Built-in event payloads:
 Optional codecs:
 
 - No-compiler group, installable with `rfcvoip[no-compiler]`:
+  - G.722, static payload 9, requiring `G722>=1.2.8`.
   - Opus, default dynamic payload 111, requiring loadable `libopus`.
   - SILK at 24000, 16000, 12000, and 8000 Hz, requiring `pysilk`.
 - Compiler-dependent group, installable with `rfcvoip[compiler]`:
-  - G.722, static payload 9, requiring the `G722` PyPI package.
+  - Currently empty; retained for compatibility with earlier rfcvoip releases.
 
 Individual codec extras remain available as `rfcvoip[opus]`,
-`rfcvoip[silk]`, and `rfcvoip[g722]`. Use `rfcvoip[all]` to install both
-optional codec groups.
+`rfcvoip[silk]`, and `rfcvoip[g722]`. Use `rfcvoip[all]` to install all
+optional codec dependencies.
 
 G.722 uses the RFC 3551 static payload 9 RTP timestamp clock of 8000 Hz for
 wire compatibility, while encoding 16000 Hz wideband audio internally. In
@@ -344,6 +345,7 @@ people and projects that made it possible.
 
 - [TJ Porter](https://github.com/tayler6000), original PyVoIP implementation.
 - [synodriver](https://github.com/synodriver/pysilk), pysilk and SILK bindings work.
+- [Maksym Sobolyev](https://github.com/sobomax) / [Steve Underwood / CMU](https://github.com/sippy/libg722), a modern and maintained G.722 implementation.
 - [Nabu Casa](https://www.nabucasa.com/).
 - [Home Assistant](https://www.home-assistant.io/).
 

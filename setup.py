@@ -30,8 +30,9 @@ def read_version() -> str:
 with open(ROOT / "README.md", "r", encoding="utf-8") as f:
     long_description = f.read()
 
-EXTRAS_NO_COMPILER = ["discord.py>=2.0", "silk-python>=0.2.6"]
-EXTRAS_COMPILER = ["G722"]
+EXTRAS_G722 = ["G722>=1.2.8"]
+EXTRAS_NO_COMPILER = ["discord.py>=2.0", "silk-python>=0.2.6"] + EXTRAS_G722
+EXTRAS_COMPILER = []
 
 setup(
     name="rfcvoip",
@@ -54,7 +55,7 @@ setup(
     extras_require={
         "opus": ["discord.py>=2.7.1"],
         "silk": ["silk-python>=0.2.6"],
-        "g722": EXTRAS_COMPILER,
+        "g722": EXTRAS_G722,
         "no-compiler": EXTRAS_NO_COMPILER,
         "compiler": EXTRAS_COMPILER,
         "all": EXTRAS_NO_COMPILER + EXTRAS_COMPILER,
