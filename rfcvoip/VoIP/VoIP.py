@@ -320,6 +320,7 @@ class VoIPCall:
         self._state_lock = RLock()
         self.state = callstate
         self.phone = phone
+        self.audio_output_mode = getattr(phone, "audio_output_mode", "buffered")
         self.sip = self.phone.sip
         self.request = request
         self.call_id = request.headers["Call-ID"]
@@ -600,8 +601,13 @@ class VoIPCall:
         audio_sample_width = getattr(phone, "audio_sample_width", 1)
         audio_bit_depth = getattr(phone, "audio_bit_depth", 8)
         audio_channels = getattr(phone, "audio_channels", None)
+        audio_output_mode = getattr(
+            self, "audio_output_mode", getattr(phone, "audio_output_mode", "buffered")
+        )
 
         rtp_kwargs = {"dtmf": self.dtmf_callback}
+        if audio_output_mode != "buffered":
+            rtp_kwargs["audio_output_mode"] = audio_output_mode
 
         # Keep lightweight tests and older RTPClient-compatible doubles working:
         # the real RTPClient defaults are already equivalent for the common
@@ -1397,7 +1403,13 @@ class VoIPPhone:
         audio_sample_rate: Optional[int] = None,
         audio_channels: Optional[int] = None,
         audio_bit_depth: Any = 8,
+        audio_output_mode: str = "buffered",
     ):
+        if audio_output_mode not in ("buffered", "realtime"):
+            raise ValueError(
+                "audio_output_mode must be 'buffered' or 'realtime'."
+            )
+        self.audio_output_mode = audio_output_mode
         if rtpPortLow > rtpPortHigh:
             raise InvalidRangeError("'rtpPortHigh' must be >= 'rtpPortLow'")
 

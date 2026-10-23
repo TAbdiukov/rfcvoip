@@ -139,6 +139,13 @@ PCMU and PCMA remain 8000 Hz mono RTP codecs on the wire. Wideband, stereo,
 and optional codecs convert internally between the public audio format and
 their native RTP format.
 
+For live voice bridges, pass `audio_output_mode="realtime"` to `VoIPPhone`
+(or directly to `RTPClient`). Native RTP output then uses 40 ms of startup
+and recovery prefill and limits queued audio to 140 ms before workers start.
+The default `audio_output_mode="buffered"` preserves entire queued WAV files
+and announcements. Every call inherits the selected mode, including after
+renegotiation.
+
 ## Quick start
 
 A minimal inbound-call application creates a `VoIPPhone`, starts it, and

@@ -20,9 +20,9 @@ Timing and registration
 ***********************
 
 rfcvoip. **TRANSMIT_DELAY_REDUCTION** = 0.0
-    RTP transmission delay adjustment. The effective divisor is
-    ``TRANSMIT_DELAY_REDUCTION + 1.0``. Most applications should leave this at
-    ``0.0``.
+    Legacy compatibility setting, ignored by the RTP transmitter. Absolute
+    media deadlines now absorb scheduler jitter without speeding up the RTP
+    sample clock. Leave this at ``0.0``.
 
 rfcvoip. **REGISTER_FAILURE_THRESHOLD** = 3
     Number of consecutive registration failures before a ``VoIPPhone`` stops

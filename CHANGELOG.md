@@ -1,12 +1,20 @@
 # Changelog
 
-## 2.11.2+RFC
+## 2.10.3+RFC
+
+- RTP: Fix output underruns and receive-buffer resets.
+- RTP: Fix pacing, timestamp rollover, and duplicate decoding.
+- VoIP: Add native realtime audio buffering.
+- Opus: Fix decoder buffer size.
+- Packaging: Align Opus dependency requirements.
+
+## 2.10.2+RFC
 
 - G.722: starting version 1.2.8, the `g722` codec no longer requires a compiler ([reference](https://github.com/sippy/libg722/issues/10)).
 - G.722: require version 1.2.8 or higher
 - G.722: acknowledgement
 
-## 2.11.1+RFC
+## 2.10.1+RFC
 
 - RTP/Codecs: Raise informative codec errors for unknown, unavailable, or unimplemented RTP payloads.
 - Codecs: Make G.711.1 core methods abstract with clearer errors.

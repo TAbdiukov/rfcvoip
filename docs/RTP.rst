@@ -145,7 +145,7 @@ Classes
 RTPPacketManager
 ================
 
-``RTPPacketManager`` stores incoming or outgoing audio bytes in a seekable
+``RTPPacketManager`` stores incoming audio bytes in a seekable
 buffer while tracking RTP timestamp offsets. It handles out-of-order writes and
 fills missing data with silence bytes.
 
@@ -163,6 +163,29 @@ RTP. **RTPPacketManager**\ (silence_byte=b"\x80")
 
   **write**\ (offset: int, data: bytes) -> None
     Writes data at the RTP timestamp-derived offset.
+
+RTPAudioOutput
+==============
+
+``RTPAudioOutput`` is the sequential public PCM FIFO used by
+``RTPClient.pmout``. Empty reads return silence without advancing past future
+writes. The default mode preserves all queued audio, including whole WAV files
+and announcements passed to ``write``. It does not periodically reset storage.
+
+  **enable_realtime**\ (max_latency=0.140, prefill=0.040) -> None
+    Opts into live bridge mode; both arguments are in seconds. Old queued PCM
+    is discarded by age and queue size to bound conversational delay. The FIFO
+    waits for ``prefill`` seconds of PCM before starting or recovering after
+    starvation. An isolated full frame can also start after that wait. Partial
+    frames survive starvation until enough fresh PCM completes them. Do not
+    enable this mode when writing a whole announcement at once.
+
+  **available**\ () -> int
+    Returns the queued PCM byte count.
+
+  **snapshot**\ () -> dict
+    Returns ``queued_ms``, ``underruns``, ``dropped_bytes``, ``expired_bytes``,
+    and ``output_state`` for diagnostics.
 
 .. _RTPMessage:
 
@@ -197,6 +220,11 @@ RTPClient
 ``RTPClient`` owns one UDP socket, one receive loop, one transmit loop, and
 one negotiated continuous audio codec. It can also send and receive RTP
 telephone-event DTMF when that payload is negotiated.
+Audio transmission uses absolute deadlines at the codec packet duration and
+RTP clock rate. Ordinary scheduler jitter does not accumulate. A stall skips
+missed media deadlines and advances timestamps rather than sending a burst of
+late packets. Select ``audio_output_mode="realtime"`` for a live voice bridge,
+or leave the default ``"buffered"`` to queue complete announcements.
 
 *class* RTP. **RTPClient**\ (
     assoc,
@@ -212,6 +240,7 @@ telephone-event DTMF when that payload is negotiated.
     audio_channels=None,
     codec_priority_scores=None,
     enabled_codecs=None,
+    audio_output_mode="buffered",
 )
 
   ``assoc``
@@ -252,6 +281,13 @@ telephone-event DTMF when that payload is negotiated.
 
   ``codec_priority_scores`` and ``enabled_codecs``
     Optional per-client codec selection overrides.
+
+  ``audio_output_mode``
+    ``"buffered"`` (default) preserves all queued PCM, including whole-file
+    announcements. ``"realtime"`` enables a 140 ms latency limit and 40 ms
+    startup/recovery prefill before any RTP worker starts. Old live audio is
+    discarded to keep conversation current. Other values raise
+    ``RTPParseError`` during construction.
 
 Methods:
 

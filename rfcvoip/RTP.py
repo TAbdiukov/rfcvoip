@@ -5,6 +5,7 @@ from collections import deque
 import audioop
 import io
 import ipaddress
+import math
 import rfcvoip
 import random
 import socket
@@ -46,6 +47,7 @@ __all__ = [
     "UnsupportedCodecError",
     "RTPProtocol",
     "RTPPacketManager",
+    "RTPAudioOutput",
     "RTPClient",
     "TransmitType",
 ]
@@ -654,6 +656,8 @@ class RTPPacketManager:
         self.log = {}
         self.max_log_span = 200000
         self.rebuilding = False
+        self._initialized = False
+        self._read_started = False
         self.silence_byte = bytes(silence_byte or b"\x00")[:1] or b"\x00"
 
     def _available_locked(self) -> int:
@@ -664,21 +668,35 @@ class RTPPacketManager:
         return max(0, end - bufferloc)
 
     def available(self) -> int:
-        while self.rebuilding:
-            time.sleep(0.01)
         with self.bufferLock:
             return self._available_locked()
 
+    def _compact_locked(self) -> None:
+        """Discard consumed bytes without moving the absolute playout cursor."""
+        consumed = self.buffer.tell()
+        if not consumed or not self._initialized:
+            return
+        self.buffer = io.BytesIO(self.buffer.read())
+        self.offset += consumed
+        self.log = {
+            offset: payload
+            for offset, payload in self.log.items()
+            if offset + len(payload) > self.offset
+        }
+
     def read(self, length: int = 160) -> bytes:
-        # This acts functionally as a lock while the buffer is being rebuilt.
-        while self.rebuilding:
-            time.sleep(0.01)
+        if length < 0:
+            raise ValueError("RTP audio read length must not be negative.")
         with self.bufferLock:
             packet = self.buffer.read(length)
             if len(packet) < length:
                 missing = length - len(packet)
                 self.buffer.seek(missing, 1)
                 packet = packet + (self.silence_byte * missing)
+            if length and self._initialized:
+                self._read_started = True
+            if self.buffer.tell() >= self.max_log_span // 2:
+                self._compact_locked()
         return packet
 
     def rebuild(self, reset: bool, offset: int = 0, data: bytes = b"") -> None:
@@ -689,6 +707,8 @@ class RTPPacketManager:
                     self.offset = offset
                     self.log = {offset: data}
                     self.buffer = io.BytesIO(data)
+                    self._initialized = True
+                    self._read_started = False
                     return
 
                 bufferloc = self.buffer.tell()
@@ -712,7 +732,24 @@ class RTPPacketManager:
             self.rebuilding = False
 
     def write(self, offset: int, data: bytes) -> None:
+        if not data:
+            return
         with self.bufferLock:
+            if not self._initialized:
+                self.rebuild(True, offset, data)
+                return
+
+            # Once playout has started, late bytes must not rewind it or be
+            # replayed after a rebuild. An overlapping packet can still fill
+            # its unplayed tail.
+            if self._read_started:
+                cursor = self.offset + self.buffer.tell()
+                if offset < cursor:
+                    data = data[cursor - offset:]
+                    offset = cursor
+                    if not data:
+                        return
+
             newest = max(max(self.log) if self.log else offset, offset)
             cutoff = newest - self.max_log_span
             if offset < cutoff:
@@ -739,10 +776,15 @@ class RTPPacketManager:
             else:
                 adjusted_offset = offset - self.offset
                 if adjusted_offset > self.max_log_span:
+                    self._compact_locked()
+                    adjusted_offset = offset - self.offset
+                    bufferloc = self.buffer.tell()
+                if adjusted_offset > self.max_log_span:
                     self.offset = offset
                     self.log = {offset: data}
                     self.buffer = io.BytesIO(data)
                     self.buffer.seek(0, 0)
+                    self._read_started = False
                     return
 
                 self.buffer.seek(0, 2)
@@ -866,6 +908,179 @@ class RTPMessage:
         self.payload = payload
 
 
+class RTPAudioOutput:
+    """Sequential PCM output, independent of incoming RTP timestamps.
+
+    The default mode preserves whole queued announcements. Live bridges can
+    opt into bounded latency and startup/recovery headroom with
+    :meth:`enable_realtime`.
+    """
+
+    def __init__(
+        self,
+        frame_bytes: int,
+        silence_byte: bytes = b"\x80",
+        *,
+        sample_alignment: int = 1,
+        clock: Optional[Callable[[], float]] = None,
+    ):
+        self.bufferLock = threading.RLock()
+        self._clock = clock or time.perf_counter
+        self._chunks = deque()
+        self._size = 0
+        self._primed = False
+        self._max_latency = None
+        self._prefill_seconds = 0.0
+        self._sample_alignment = max(1, int(sample_alignment))
+        self._expired_alignment_skip = 0
+        self.underruns = self.dropped_bytes = self.expired_bytes = 0
+        self.output_state = "prefill"
+        self.configure(frame_bytes, 0.020, silence_byte)
+
+    def configure(
+        self, frame_bytes: int, period: float, silence_byte: bytes
+    ) -> None:
+        with self.bufferLock:
+            self.frame_bytes = max(1, int(frame_bytes))
+            self.period = max(0.001, float(period))
+            self.silence_byte = silence_byte
+            self._prefill = max(
+                1, math.ceil(self._prefill_seconds / self.period - 1e-9)
+            ) * self.frame_bytes
+            self._maximum = (
+                None if self._max_latency is None else max(
+                    self.frame_bytes,
+                    int(self._max_latency / self.period + 1e-9)
+                    * self.frame_bytes,
+                )
+            )
+            if self._maximum is not None:
+                self._prefill = min(self._prefill, self._maximum)
+            self._trim_locked()
+
+    def enable_realtime(
+        self, *, max_latency: float = 0.140, prefill: float = 0.040
+    ) -> None:
+        """Bound queued live PCM by age/size, re-priming after starvation.
+
+        Times are in seconds. Do not enable this mode for whole-file writes:
+        old queued audio is deliberately dropped to keep a live call current.
+        """
+        max_latency, prefill = float(max_latency), float(prefill)
+        if (
+            not math.isfinite(max_latency)
+            or not math.isfinite(prefill)
+            or max_latency <= 0
+            or prefill < 0
+            or prefill > max_latency
+        ):
+            raise ValueError("Require 0 <= prefill <= max_latency and positive latency.")
+        with self.bufferLock:
+            self._max_latency = max_latency
+            self._prefill_seconds = prefill
+            self._primed = False
+            self.configure(self.frame_bytes, self.period, self.silence_byte)
+            self._trim_locked()
+
+    def _take_locked(self, length: int) -> bytes:
+        output = bytearray()
+        while length and self._chunks:
+            queued_at, chunk = self._chunks.popleft()
+            count = min(length, len(chunk))
+            output.extend(chunk[:count])
+            self._size -= count
+            length -= count
+            if count < len(chunk):
+                self._chunks.appendleft((queued_at, chunk[count:]))
+        return bytes(output)
+
+    def _trim_locked(self) -> None:
+        if self._maximum is None or self._size <= self._maximum:
+            return
+        excess = self._size - self._maximum
+        # Keep PCM sample/channel boundaries intact when discarding backlog.
+        excess = min(self._size, (
+            (excess + self._sample_alignment - 1) // self._sample_alignment
+        ) * self._sample_alignment)
+        self._take_locked(excess)
+        self.dropped_bytes += excess
+
+    def write(self, offset: int, data: bytes) -> None:
+        # Offset is retained for compatibility with RTPClient.write. It is a
+        # storage counter, not a playout deadline, and cannot invalidate PCM.
+        if not data:
+            return
+        with self.bufferLock:
+            if self._expired_alignment_skip:
+                skipped = min(len(data), self._expired_alignment_skip)
+                data = data[skipped:]
+                self._expired_alignment_skip -= skipped
+                self.expired_bytes += skipped
+                if not data:
+                    return
+            self._chunks.append((self._clock(), memoryview(bytes(data))))
+            self._size += len(data)
+            self._trim_locked()
+
+    def read(self, length: int = 160) -> bytes:
+        if length <= 0:
+            return b""
+        with self.bufferLock:
+            now = self._clock()
+            if self._max_latency is not None:
+                expired = 0
+                while (
+                    self._chunks
+                    and now - self._chunks[0][0] > self._max_latency
+                ):
+                    _, chunk = self._chunks.popleft()
+                    self._size -= len(chunk)
+                    expired += len(chunk)
+                # Writes may split one interleaved PCM sample across chunks.
+                # Expire to a complete sample boundary, including any fresh
+                # suffix of that sample, so channels/bytes never shift.
+                if expired % self._sample_alignment:
+                    suffix = self._sample_alignment - expired % self._sample_alignment
+                    discarded = len(self._take_locked(suffix))
+                    expired += discarded
+                    self._expired_alignment_skip += suffix - discarded
+                self.expired_bytes += expired
+                if not self._primed:
+                    ready = self._size >= self._prefill
+                    waited = bool(
+                        self._chunks
+                        and now - self._chunks[0][0] >= self._prefill_seconds
+                    )
+                    if self._size < length or not (ready or waited):
+                        self.output_state = "prefill"
+                        return self.silence_byte * length
+                    self._primed = True
+                if self._size < length:
+                    self.underruns += 1
+                    self._primed = False
+                    self.output_state = "underrun"
+                    return self.silence_byte * length
+            elif self._size < length:
+                self.underruns += 1
+            output = self._take_locked(length)
+            self.output_state = "audio" if output else "underrun"
+            return output + self.silence_byte * (length - len(output))
+
+    def available(self) -> int:
+        with self.bufferLock:
+            return self._size
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self.bufferLock:
+            return {
+                "queued_ms": self._size / self.frame_bytes * self.period * 1000,
+                "underruns": self.underruns,
+                "dropped_bytes": self.dropped_bytes,
+                "expired_bytes": self.expired_bytes,
+                "output_state": self.output_state,
+            }
+
+
 class RTPClient:
     def __init__(
         self,
@@ -882,7 +1097,13 @@ class RTPClient:
         audio_channels: Optional[int] = None,
         codec_priority_scores: Optional[Dict[Any, int]] = None,
         enabled_codecs: Optional[Any] = None,
+        audio_output_mode: str = "buffered",
     ):
+        if audio_output_mode not in ("buffered", "realtime"):
+            raise RTPParseError(
+                "audio_output_mode must be 'buffered' or 'realtime'."
+            )
+        self.audio_output_mode = audio_output_mode
         self._running = threading.Event()
         self._socket_lock = threading.RLock()
         self.NSD = False
@@ -899,6 +1120,11 @@ class RTPClient:
                 f"Unsupported RTP transmit type {sendrecv!r}."
             ) from ex
         self._codec_adapters: Dict[PayloadType, Any] = {}
+        self._receive_codec_adapters: Dict[PayloadType, Any] = {}
+        self._receive_ssrc: Optional[int] = None
+        self._receive_timestamp: Optional[int] = None
+        self._receive_sequences = set()
+        self._receive_sequence_order: Deque[int] = deque()
         self.codec_priority_scores = dict(codec_priority_scores or {})
         self.enabled_codecs = (
             None if enabled_codecs is None else tuple(enabled_codecs)
@@ -942,7 +1168,16 @@ class RTPClient:
         self.dtmf = dtmf
 
         silence_byte = b"\x80" if self.audio_bit_depth == 8 else b"\x00"
-        self.pmout = RTPPacketManager(silence_byte=silence_byte)  # To Send
+        self.pmout = RTPAudioOutput(
+            max(1, round(
+                self.audio_sample_rate * self.audio_sample_width
+                * self.audio_channels * 0.020
+            )),
+            silence_byte=silence_byte,
+            sample_alignment=self.audio_sample_width * self.audio_channels,
+        )
+        if self.audio_output_mode == "realtime":
+            self.pmout.enable_realtime()
         self.pmin = RTPPacketManager(silence_byte=silence_byte)  # Received
         self.outOffset = random.randint(1, 5000)
 
@@ -1056,11 +1291,23 @@ class RTPClient:
         self,
         codec: PayloadType,
         payload_type: Optional[int] = None,
+        *,
+        receive: bool = False,
     ):
-        adapter = self._codec_adapters.get(codec)
+        adapters = self._receive_codec_adapters if receive else self._codec_adapters
+        adapter = adapters.get(codec)
         if adapter is not None:
             return adapter
 
+        adapter = self._new_codec_adapter(codec, payload_type)
+        adapters[codec] = adapter
+        return adapter
+
+    def _new_codec_adapter(
+        self,
+        codec: PayloadType,
+        payload_type: Optional[int] = None,
+    ):
         from rfcvoip.codecs import create_codec
 
         try:
@@ -1094,7 +1341,6 @@ class RTPClient:
                 reason=_codec_unavailable_reason(codec),
             )
 
-        self._codec_adapters[codec] = adapter
         return adapter
 
     def audio_frame_size(self, duration_ms: Optional[int] = None) -> int:
@@ -1400,8 +1646,9 @@ class RTPClient:
         return self.pmin.read(length)
 
     def write(self, data: bytes) -> None:
-        self.pmout.write(self.outOffset, data)
-        self.outOffset += len(data)
+        with self.pmout.bufferLock:
+            self.pmout.write(self.outOffset, data)
+            self.outOffset += len(data)
 
     def recv(self) -> None:
         while self.NSD:
@@ -1419,24 +1666,45 @@ class RTPClient:
             except OSError:
                 pass
 
-    def trans(self) -> None:
+    def trans(
+        self,
+        *,
+        clock: Optional[Callable[[], float]] = None,
+        wait: Optional[Callable[[float], None]] = None,
+    ) -> None:
+        """Pace audio against absolute media deadlines without sleep drift."""
+        clock = clock or time.perf_counter
+        wait = wait or time.sleep
+        next_due = clock()
+        previous_send = None
         while self.NSD:
             if self.sendrecv in (TransmitType.RECVONLY, TransmitType.INACTIVE):
-                time.sleep(0.02)
+                wait(0.02)
+                next_due = clock()
                 continue
 
             with self._dtmf_lock:
                 pending_dtmf = self._pending_dtmf.popleft() if self._pending_dtmf else None
             if pending_dtmf is not None:
                 self.transmit_dtmf(pending_dtmf)
+                next_due = clock()
                 continue
 
-            last_sent = time.monotonic_ns()
             adapter = self._codec_adapter(
                 self.preference,
                 self.preference_payload_type,
             )
-            raw_payload = self.pmout.read(adapter.source_frame_size())
+            size = adapter.source_frame_size()
+            period = adapter.packet_duration_seconds(bytes(size))
+            # Ordinary wakeup jitter is absorbed by the next absolute deadline.
+            # A whole missed interval starts a fresh epoch, preventing bursts
+            # of old packets after an event-loop or encoder stall.
+            missed = max(0, int((clock() - next_due) / period + 1e-9))
+            if missed:
+                next_due = clock()
+            self.pmout.configure(size, period, self.pmout.silence_byte)
+            raw_payload = self.pmout.read(size)
+            sent_at = None
             try:
                 payload = adapter.encode(raw_payload)
             except Exception as ex:
@@ -1445,26 +1713,61 @@ class RTPClient:
                     RuntimeWarning,
                     stacklevel=2,
                 )
-                time.sleep(0.02)
-                continue
-            timestamp = self.outTimestamp & 0xFFFFFFFF
-            self._send_rtp_packet(
-                self.preference_payload_type,
-                payload,
-                marker=False,
-                timestamp=timestamp,
-            )
-            self.outTimestamp = (
-                self.outTimestamp
-                + adapter.rtp_timestamp_increment(raw_payload, payload)
-            ) & 0xFFFFFFFF
-            # Calculate how long it took to generate this packet.
-            # Then how long we should wait to send the next, then devide by 2.
-            delay = adapter.packet_duration_seconds(raw_payload)
-            sleep_time = max(
-                0, delay - ((time.monotonic_ns() - last_sent) / 1000000000)
-            )
-            time.sleep(sleep_time / self.trans_delay_reduction)
+                increment = adapter.rtp_timestamp_increment(raw_payload, b"")
+                # PCM has been consumed even though this interval could not
+                # be encoded. Do not reuse its timestamp on the next packet.
+                self.outTimestamp = (
+                    self.outTimestamp + (missed + 1) * increment
+                ) & 0xFFFFFFFF
+            else:
+                increment = adapter.rtp_timestamp_increment(raw_payload, payload)
+                timestamp = (self.outTimestamp + missed * increment) & 0xFFFFFFFF
+                sequence = self.outSequence & 0xFFFF
+                sent_at = clock()
+                self._send_rtp_packet(
+                    self.preference_payload_type,
+                    payload,
+                    marker=False,
+                    timestamp=timestamp,
+                )
+                self.outTimestamp = (timestamp + increment) & 0xFFFFFFFF
+
+            next_due += period
+            now = clock()
+            if now > next_due:
+                skipped = int((now - next_due) / period + 1e-9) + 1
+                missed += skipped
+                self.outTimestamp = (
+                    self.outTimestamp + skipped * increment
+                ) & 0xFFFFFFFF
+                next_due = now + period
+            trace = getattr(self, "_callbot_audio_trace", None)
+            if trace is not None and sent_at is not None:
+                try:
+                    trace(
+                        "sip_rtp_output",
+                        sequence=sequence,
+                        rtp_timestamp=timestamp,
+                        ssrc=self.outSSRC,
+                        pcm_bytes=len(raw_payload),
+                        packet_duration_ms=period * 1000,
+                        rtp_clock_rate=adapter.rate,
+                        codec=str(self.preference),
+                        skipped_deadlines=missed,
+                        send_interval_ms=(
+                            None if previous_send is None
+                            else (sent_at - previous_send) * 1000
+                        ),
+                        **self.pmout.snapshot(),
+                    )
+                except Exception:
+                    # Optional diagnostics cannot interrupt live media.
+                    pass
+            if sent_at is not None:
+                previous_send = sent_at
+            # TRANSMIT_DELAY_REDUCTION is kept as a compatibility setting, but
+            # must not speed up the RTP sample clock to compensate for jitter.
+            wait(max(0.0, next_due - clock()))
 
     @property
     def trans_delay_reduction(self) -> float:
@@ -1506,10 +1809,32 @@ class RTPClient:
         codec: Optional[PayloadType] = None,
     ) -> None:
         codec = codec or packet.payload_type
-        adapter = self._codec_adapter(
-            codec,
-            getattr(packet, "payload_number", None),
-        )
+        ssrc = getattr(packet, "SSRC", 0)
+        same_source = self._receive_ssrc == ssrc
+        sequence = getattr(packet, "sequence", None)
+        if same_source and sequence is not None and sequence in self._receive_sequences:
+            return
+
+        if not same_source and self._receive_ssrc is not None:
+            adapter = self._new_codec_adapter(
+                codec, getattr(packet, "payload_number", None),
+            )
+        else:
+            adapter = self._codec_adapter(
+                codec,
+                getattr(packet, "payload_number", None),
+                receive=True,
+            )
+        timestamp = packet.timestamp
+        previous = self._receive_timestamp if same_source else None
+        if previous is not None:
+            # Choose the closest timestamp in the extended 32-bit timeline.
+            # Keep the high-water mark so a reordered pre-wrap packet cannot
+            # move subsequent packets into the wrong timestamp cycle.
+            timestamp = previous + (
+                (timestamp - (previous & 0xFFFFFFFF) + 0x80000000)
+                % 0x100000000 - 0x80000000
+            )
         try:
             data = adapter.decode(packet.payload)
         except NotImplementedError as ex:
@@ -1526,7 +1851,23 @@ class RTPClient:
             raise RTPParseError(
                 f"RTP audio decode failed for {codec}: {ex}"
             ) from ex
-        self.pmin.write(adapter.output_offset(packet.timestamp), data)
+        if not same_source:
+            # A new source has its own timestamp origin and decoder history.
+            # Commit the switch only after its first audio decoded correctly.
+            self._receive_codec_adapters = {codec: adapter}
+            self._receive_ssrc = ssrc
+            self._receive_sequences.clear()
+            self._receive_sequence_order.clear()
+            self.pmin.rebuild(True, adapter.output_offset(timestamp), data)
+        else:
+            self.pmin.write(adapter.output_offset(timestamp), data)
+        if previous is None or timestamp > previous:
+            self._receive_timestamp = timestamp
+        if sequence is not None:
+            self._receive_sequences.add(sequence)
+            self._receive_sequence_order.append(sequence)
+            if len(self._receive_sequence_order) > 256:
+                self._receive_sequences.remove(self._receive_sequence_order.popleft())
 
     def encodePacket(self, payload: bytes) -> bytes:
         warnings.warn(

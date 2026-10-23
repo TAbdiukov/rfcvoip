@@ -72,7 +72,11 @@ class FakeLibopus:
         decode_fec,
     ):
         self.decoded_payloads.append(bytes(packet[:packet_length]))
-        samples = min(self.decode_samples, max_frame_size)
+        if self.decode_samples > max_frame_size:
+            # Real libopus rejects an undersized PCM buffer. Truncating here
+            # would hide decoder capacity regressions in the production code.
+            return -2  # OPUS_BUFFER_TOO_SMALL
+        samples = self.decode_samples
 
         for index in range(samples * OpusCodec.channels):
             pcm[index] = 100 + index
@@ -182,3 +186,31 @@ def test_decode_empty_payload_returns_silence_without_decoder(fake_libopus):
 
     assert decoded == b"\x00" * codec.source_frame_size()
     assert fake_libopus.decoder_create_calls == []
+
+
+@pytest.mark.parametrize("samples", [960, 1920, 2880, 5760])
+def test_decode_accepts_full_20_to_120_ms_packets(fake_libopus, samples):
+    fake_libopus.decode_samples = samples
+    codec = OpusCodec()
+    codec.configure_source_format(
+        sample_rate=48000, bit_depth=16, channels=2,
+    )
+
+    decoded = codec.decode(b"full-opus-packet")
+
+    assert len(decoded) == samples * 2 * 2
+
+
+@pytest.mark.parametrize("duration_ms", [20, 40, 60])
+def test_real_libopus_round_trip_preserves_frame_duration(duration_ms):
+    if not OpusCodec.availability().available:
+        pytest.skip("optional libopus is not installed")
+    codec = OpusCodec()
+    codec.configure_source_format(
+        sample_rate=48000, bit_depth=16, channels=2,
+    )
+    source = b"\x00" * codec.source_frame_size(duration_ms)
+
+    decoded = codec.decode(codec.encode(source))
+
+    assert len(decoded) == len(source)

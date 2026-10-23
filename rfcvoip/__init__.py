@@ -14,9 +14,9 @@ from rfcvoip._version import __version__, version_info
 DEBUG = False
 
 """
-The higher this variable is, the more often RTP packets are sent.
-This should only ever need to be 0.0. However, when testing on Windows,
-there has sometimes been jittering, setting this to 0.75 fixed this in testing.
+Legacy setting retained for source compatibility. RTP transmission now uses
+absolute media deadlines and ignores this value; accelerating the sample clock
+to compensate for scheduler jitter causes underruns and receiver packet drops.
 """
 TRANSMIT_DELAY_REDUCTION = 0.0
 

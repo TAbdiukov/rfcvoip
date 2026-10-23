@@ -82,6 +82,7 @@ VoIPPhone
     audio_sample_rate=None,
     audio_channels=None,
     audio_bit_depth=8,
+    audio_output_mode="buffered",
 )
 
 Required arguments:
@@ -140,6 +141,14 @@ Common optional arguments:
   integer PCM formats. ``"best"`` follows the selected codec's preferred
   public bit depth after negotiation and falls back to 8-bit before
   negotiation.
+
+``audio_output_mode``
+  ``"buffered"`` (default) preserves all queued audio, including complete
+  WAV files and announcements. ``"realtime"`` is intended for live voice
+  bridges: it limits queued PCM to 140 ms and uses 40 ms of startup/recovery
+  prefill. Every call inherits this mode, and native RTP buffers are configured
+  before workers start. Renegotiation preserves the selected mode. Invalid
+  values raise ``ValueError`` during phone construction.
 
 Lifecycle:
 
@@ -228,6 +237,7 @@ VoIPCall
 
 ``VoIPCall`` is normally created by ``VoIPPhone``. It stores the SIP request,
 Call-ID, RTP clients, negotiated media, DTMF buffer, and assigned ports.
+Its ``audio_output_mode`` is inherited from the phone when the call is created.
 
 Attributes:
 
