@@ -66,6 +66,12 @@ class SIPURIInfo:
     has_scheme: bool = False
     explicit_port: bool = False
 
+    @property
+    def destination_host(self) -> str:
+        # Routing overrides must not replace the URI's account domain or
+        # the identity used for TLS certificate verification.
+        return (self.params.get("maddr") or self.host).strip("[]")
+
 
 @dataclass(frozen=True)
 class ResolvedSIPTarget:
@@ -205,11 +211,6 @@ class SIPResolver:
         if not host:
             raise ValueError(f"SIP URI has no host: {value!r}")
 
-        # maddr changes the destination host, while the URI's port remains
-        # the destination port.
-        if params.get("maddr"):
-            host = params["maddr"].strip("[]")
-
         return SIPURIInfo(
             scheme=scheme,
             host=host,
@@ -257,7 +258,7 @@ class SIPResolver:
             srv = self._srv_if_usable(uri, transport, explicit_port)
             if srv is not None:
                 return srv
-        elif self.is_numeric_host(uri.host) or explicit_port:
+        elif self.is_numeric_host(uri.destination_host) or explicit_port:
             transport = SIPTransport.UDP
         else:
             resolved = self._resolve_dns(uri)
@@ -266,7 +267,7 @@ class SIPResolver:
             transport = SIPTransport.UDP
 
         return ResolvedSIPTarget(
-            host=uri.host,
+            host=uri.destination_host,
             port=port if port is not None else self.default_port(transport),
             transport=transport,
             scheme=uri.scheme,
@@ -282,10 +283,10 @@ class SIPResolver:
         transport: SIPTransport,
         explicit_port: bool,
     ) -> Optional[ResolvedSIPTarget]:
-        if explicit_port or self.is_numeric_host(uri.host):
+        if explicit_port or self.is_numeric_host(uri.destination_host):
             return None
         return self._resolve_srv_for_transport(
-            uri.host,
+            uri.destination_host,
             transport,
             uri,
             source="srv-explicit-transport",
@@ -311,7 +312,7 @@ class SIPResolver:
             ]
         for transport in transports:
             srv = self._resolve_srv_for_transport(
-                uri.host, transport, uri, source="srv-fallback"
+                uri.destination_host, transport, uri, source="srv-fallback"
             )
             if srv is not None:
                 return srv
@@ -319,7 +320,7 @@ class SIPResolver:
 
     def _resolve_naptr(self, uri: SIPURIInfo) -> Optional[ResolvedSIPTarget]:
         try:
-            answers = dns_resolver.resolve(uri.host, "NAPTR")
+            answers = dns_resolver.resolve(uri.destination_host, "NAPTR")
         except Exception:
             return None
 

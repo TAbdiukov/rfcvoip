@@ -1142,6 +1142,7 @@ class RTPClient:
         enabled_codecs: Optional[Any] = None,
         audio_output_mode: str = "buffered",
         codec_fmtp: Optional[Dict[int, List[str]]] = None,
+        receive_assoc: Optional[Dict[int, PayloadType]] = None,
     ):
         if audio_output_mode not in ("buffered", "realtime"):
             raise RTPParseError(
@@ -1154,6 +1155,12 @@ class RTPClient:
         self.NSD = False
         # Example: {0: PayloadType.PCMU, 101: PayloadType.EVENT}
         self.assoc = assoc
+        # SDP can assign different payload numbers in each direction. The
+        # answer's map selects outgoing payloads; incoming packets continue
+        # to use the payload numbers advertised in our original offer.
+        self.receive_assoc = (
+            assoc if receive_assoc is None else dict(receive_assoc)
+        )
         try:
             self.sendrecv = (
                 sendrecv
@@ -1170,6 +1177,11 @@ class RTPClient:
         self._receive_timestamp: Optional[int] = None
         self._receive_sequences = set()
         self._receive_sequence_order: Deque[Tuple[int, int]] = deque()
+        self._receive_media_sequence: Optional[int] = None
+        self._receive_media_timestamp: Optional[int] = None
+        self._receive_clock_epochs: Deque[Tuple[int, int, int, int]] = deque(
+            maxlen=256
+        )
         self.codec_priority_scores = dict(codec_priority_scores or {})
         self.codec_fmtp = {
             payload_type: list(settings)
@@ -1630,9 +1642,6 @@ class RTPClient:
             return False
 
         clock = 8000
-        audio_clock = int(
-            getattr(self._codec_adapter(self.preference), "rate", clock)
-        )
         event_code = _DTMF_CHAR_TO_EVENT[code]
         start_timestamp = self.outTimestamp & 0xFFFFFFFF
         total_duration = max(1, int((duration_ms * clock) / 1000))
@@ -1688,13 +1697,9 @@ class RTPClient:
                 )
             completed += segment_duration
 
-        audio_timestamp_advance = max(
-            1,
-            int(round((total_duration / clock) * audio_clock)),
-        )
-        self.outTimestamp = (
-            start_timestamp + audio_timestamp_advance
-        ) & 0xFFFFFFFF
+        # Carry the elapsed event clock into the next payload's timestamp
+        # base when switching rates on this SSRC (RFC 7160 section 4.2).
+        self.outTimestamp = (start_timestamp + total_duration) & 0xFFFFFFFF
         return True
 
     def start(self) -> None:
@@ -1723,6 +1728,8 @@ class RTPClient:
             self._receive_codec_adapters.clear()
             self._receive_sequences.clear()
             self._receive_sequence_order.clear()
+            self._receive_media_sequence = self._receive_media_timestamp = None
+            self._receive_clock_epochs.clear()
             self._received_dtmf.clear()
             self._received_dtmf_order.clear()
             self._received_dtmf_segments.clear()
@@ -1934,7 +1941,7 @@ class RTPClient:
         return self.parse_packet(packet)
 
     def parse_packet(self, packet: bytes) -> None:
-        msg = RTPMessage(packet, self.assoc)
+        msg = RTPMessage(packet, self.receive_assoc)
         if msg.payload_type == PayloadType.EVENT:
             self.parse_telephone_event(msg)
         elif is_audio_codec(msg.payload_type):
@@ -1949,6 +1956,65 @@ class RTPClient:
                     + " RTP payloads are not supported by RTPClient"
                 ),
             )
+
+    def _receive_media_offset(
+        self,
+        timestamp: int,
+        clock: int,
+        sequence: Optional[int],
+        offset_for_timestamp: Optional[Callable[[int], int]] = None,
+    ) -> int:
+        """Map RTP clock changes and reordered packets onto one PCM timeline."""
+        previous_timestamp = self._receive_media_timestamp
+        if previous_timestamp is not None:
+            timestamp = previous_timestamp + (
+                (timestamp - previous_timestamp + 0x80000000)
+                % 0x100000000 - 0x80000000
+            )
+        previous_sequence = self._receive_media_sequence
+        if sequence is None:
+            sequence = (
+                0 if previous_sequence is None else previous_sequence + 1
+            )
+        elif previous_sequence is not None:
+            sequence = previous_sequence + (
+                (sequence - previous_sequence + 0x8000) % 0x10000 - 0x8000
+            )
+
+        alignment = self.audio_sample_width * self.audio_channels
+
+        def offset_at(value: int, rate: int) -> int:
+            return (value * self.audio_sample_rate // rate) * alignment
+
+        if offset_for_timestamp is None:
+            offset_for_timestamp = lambda value: offset_at(value, clock)
+        epochs = self._receive_clock_epochs
+        if not epochs:
+            epochs.append(
+                (sequence, timestamp, clock, offset_for_timestamp(timestamp))
+            )
+        forward = (
+            previous_sequence is None
+            or sequence >= previous_sequence
+        ) and (previous_timestamp is None or timestamp >= previous_timestamp)
+        if forward and clock != epochs[-1][2]:
+            _, origin, previous_clock, pcm_origin = epochs[-1]
+            pcm_offset = pcm_origin + (
+                offset_at(timestamp, previous_clock)
+                - offset_at(origin, previous_clock)
+            )
+            epochs.append((sequence, timestamp, clock, pcm_offset))
+        epoch = next(
+            (item for item in reversed(epochs) if item[0] <= sequence), epochs[0]
+        )
+        _, origin, _rate, pcm_origin = epoch
+        result = pcm_origin + (
+            offset_for_timestamp(timestamp) - offset_for_timestamp(origin)
+        )
+        if forward:
+            self._receive_media_sequence = sequence
+            self._receive_media_timestamp = timestamp
+        return result
 
     def parse_audio(
         self,
@@ -2012,9 +2078,18 @@ class RTPClient:
             # Commit the switch only after its first audio decoded correctly.
             self._receive_codec_adapters = {codec: adapter}
             self._receive_ssrc = ssrc
-            self.pmin.rebuild(True, adapter.output_offset(timestamp), data)
+            self._receive_media_sequence = self._receive_media_timestamp = None
+            self._receive_clock_epochs.clear()
+        offset = self._receive_media_offset(
+            timestamp,
+            int(getattr(adapter, "rate", codec.rate)),
+            sequence,
+            adapter.output_offset,
+        )
+        if not same_source:
+            self.pmin.rebuild(True, offset, data)
         else:
-            self.pmin.write(adapter.output_offset(timestamp), data)
+            self.pmin.write(offset, data)
         if previous is None or timestamp > previous:
             self._receive_timestamp = timestamp
         if sequence is not None:
@@ -2132,6 +2207,12 @@ class RTPClient:
         packed = len(payload) > 4
         for offset in range(0, len(payload), 4):
             report = payload[offset : offset + 4]
+            if self._receive_ssrc == packet.SSRC:
+                self._receive_media_offset(
+                    timestamp,
+                    PayloadType.EVENT.rate,
+                    packet.sequence,
+                )
             self._parse_telephone_event_report(
                 report,
                 packet.SSRC,

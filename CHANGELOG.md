@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- SIP: Preserve the account domain and TLS identity when `maddr` selects a different network destination.
+- SIP: Correlate subscription responses with their request and dialog, ignore stale or repeated responses, and preserve live targets and expiry after failed refreshes.
+- SIP: Complete configured INVITE authentication retries, retain both proxy and origin credentials, select challenges by response status, and copy INVITE credentials into ACK requests.
+- SIP: Authenticate both the proxy and registrar during registration and deregistration while bounding repeated credential challenges.
+- VoIP: Preserve each audio stream's negotiated direction and reject answers that add streams or omit every offered audio codec.
+- RTP/VoIP: Preserve directional payload mappings through initial answers and successful renegotiation.
+- RTP: Keep wideband audio and telephone-event timestamps on a consistent receive timeline, including observed clock changes and reordered audio.
+- Telemetry: Exclude disabled or invalid media ports from compatible codec reports and call-readiness results.
 - SIP: Receive large UDP messages intact, discard stale transport buffers on close, and require Content-Length for TCP/TLS framing.
 - SIP: Stop failed stream connections after framing errors or EOF, cancel registration, and clean up the phone instead of retrying indefinitely. Prevent queued registration from restarting stopped signaling or delivering duplicate failure callbacks.
 - SDP: Accept repeat schedules with one or more offsets and preserve every offset.

@@ -467,6 +467,15 @@ def _media_protocol_supported(media: Dict[str, Any]) -> bool:
     return protocol in (RTP.RTPProtocol.AVP, RTP.RTPProtocol.AVP.value, "RTP/AVP")
 
 
+def _media_port_enabled(media: Dict[str, Any]) -> bool:
+    # Older callers can supply codec-only media metadata without a port.
+    # An explicit zero port rejects the media section in an SDP answer.
+    if "port" not in media:
+        return True
+    port = _safe_int(media["port"])
+    return port is not None and 0 < port <= 65535
+
+
 def _fmtp_settings(attributes: Dict[str, Any]) -> List[str]:
     fmtp = attributes.get("fmtp", {})
     if isinstance(fmtp, dict):
@@ -756,6 +765,7 @@ def _unknown_codec_info(
         "fmtp_supported": False,
         "codec_supported": False,
         "protocol_supported": _media_protocol_supported(media),
+        "media_enabled": _media_port_enabled(media),
         "supported": False,
         "available": False,
         "availability_reason": "Codec is not known to rfcvoip.",
@@ -856,6 +866,7 @@ def _codec_info_from_media(
 
     codec_supported = codec in getattr(rfcvoip, "RTPCompatibleCodecs", [])
     protocol_supported = _media_protocol_supported(media)
+    media_enabled = _media_port_enabled(media)
     fmtp_supported = RTP.codec_fmtp_supported(codec, fmtp)
     bandwidth_supported = _codec_bandwidth_supported(
         codec,
@@ -871,12 +882,14 @@ def _codec_info_from_media(
         supported=(
             codec_supported
             and protocol_supported
+            and media_enabled
             and fmtp_supported
             and bandwidth_supported
         ),
     )
     info["codec_supported"] = codec_supported and info["available"]
     info["protocol_supported"] = protocol_supported
+    info["media_enabled"] = media_enabled
     info["fmtp_supported"] = fmtp_supported
     if rate is not None:
         info["rate"] = rate

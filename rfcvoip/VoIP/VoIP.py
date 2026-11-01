@@ -617,6 +617,7 @@ class VoIPCall:
         request: SIP.SIPMessage,
         baseport: int,
         media: Optional[Dict[str, Any]] = None,
+        receive_assoc: Optional[Dict[int, RTP.PayloadType]] = None,
     ) -> None:
         debug(
             f"Creating RTP client(s) for {self.call_id}",
@@ -674,6 +675,8 @@ class VoIPCall:
         )
 
         rtp_kwargs = {"dtmf": self.dtmf_callback}
+        if receive_assoc is not None and receive_assoc != codecs:
+            rtp_kwargs["receive_assoc"] = receive_assoc
         if RTP.PayloadType.OPUS in codecs.values():
             rtp_kwargs["codec_fmtp"] = {
                 payload_type: _media_fmtp_settings(media or {}, payload_type)
@@ -1033,8 +1036,23 @@ class VoIPCall:
         self,
         *,
         start_clients: bool = False,
+        transmit_types: Optional[Dict[int, RTP.TransmitType]] = None,
+        default_transmit_type: Optional[RTP.TransmitType] = None,
     ) -> Dict[int, Any]:
         m: Dict[int, Any] = {}
+        default_transmit_type = _transmit_type_from_value(
+            self.sendmode
+            if default_transmit_type is None
+            else default_transmit_type
+        )
+
+        def media_direction(client):
+            return _transmit_type_from_value(
+                (transmit_types or {}).get(
+                    client.inPort, getattr(client, "sendrecv", self.sendmode)
+                )
+            )
+
         with self._state_lock_for():
             media_groups = []
             for group in getattr(self, "_rtp_media_groups", []):
@@ -1067,12 +1085,15 @@ class VoIPCall:
                 base_port = group["base_port"]
                 port_count = group["port_count"]
                 codecs = group["codecs"]
-                if port_count > 1:
+                direction = media_direction(clients[0])
+                if port_count > 1 or direction != default_transmit_type:
                     m[base_port] = {
                         "media_type": group["media_type"],
                         "port_count": port_count,
                         "codecs": codecs,
                     }
+                    if direction != default_transmit_type:
+                        m[base_port]["transmit_type"] = direction
                 else:
                     m[base_port] = codecs
             return m
@@ -1080,7 +1101,14 @@ class VoIPCall:
         for client in rtp_clients:
             if start_clients:
                 client.start()
-            m[client.inPort] = client.assoc
+            direction = media_direction(client)
+            if direction != default_transmit_type:
+                m[client.inPort] = {
+                    "codecs": client.assoc,
+                    "transmit_type": direction,
+                }
+            else:
+                m[client.inPort] = client.assoc
         return m
 
     def gen_ms(self) -> Dict[int, Any]:
@@ -1128,6 +1156,7 @@ class VoIPCall:
 
         rtp_targets: List[Tuple[str, int, Dict[str, Any]]] = []
         target_media: List[Dict[str, Any]] = []
+        target_directions: List[RTP.TransmitType] = []
         valid_layout = True
 
         desired_sendmode = _transmit_type_from_value(
@@ -1156,6 +1185,7 @@ class VoIPCall:
                 break
             rtp_targets.extend(targets)
             target_media.extend([i] * len(targets))
+            target_directions.extend([negotiated_sendmode] * len(targets))
 
         rtp_clients = self._rtp_clients_snapshot()
         if not valid_layout or len(rtp_targets) != len(rtp_clients):
@@ -1206,7 +1236,13 @@ class VoIPCall:
                 self._send_reinvite_response(request, message)
                 return
 
-        m = self._rtp_media_answer_map()
+        m = self._rtp_media_answer_map(
+            transmit_types={
+                client.inPort: direction
+                for client, direction in zip(rtp_clients, target_directions)
+            },
+            default_transmit_type=negotiated_sendmode,
+        )
         message = self.sip.gen_answer(
             request, self.session_id, m, negotiated_sendmode
         )
@@ -1217,11 +1253,17 @@ class VoIPCall:
         if request.headers.get("Contact"):
             self.request.headers["Contact"] = request.headers["Contact"]
         self.sendmode = negotiated_sendmode
-        for client, (remote_ip, remote_port, _connection) in zip(
+        for client, target, direction in zip(
             rtp_clients,
             rtp_targets,
+            target_directions,
         ):
-            client.sendrecv = negotiated_sendmode
+            remote_ip, remote_port, _connection = target
+            client.sendrecv = direction
+            # gen_answer advertises each retained client's outgoing map for
+            # the new receive direction as well. Apply it only once the
+            # re-INVITE answer has been sent successfully.
+            client.receive_assoc = dict(client.assoc)
             client.outIP = remote_ip
             client.outPort = remote_port
 
@@ -1294,11 +1336,21 @@ class VoIPCall:
             + f"call_id={self.call_id} contact={request.headers.get('Contact')}",
         )
 
+        offered_media = self.request.body.get("m", [])
+        answer_media = request.body.get("m", [])
+        if len(answer_media) != len(offered_media) or any(
+            answer.get("type") != offer.get("type")
+            for offer, answer in zip(offered_media, answer_media)
+        ):
+            raise RTP.RTPParseError(
+                "SDP answer media sections must match the offered streams."
+            )
+
         self.remote_sip_message = request
         desired_sendmode = _transmit_type_from_value(
             getattr(self, "_desired_sendmode", self.sendmode)
         )
-        for i in request.body["m"]:
+        for offered, i in zip(offered_media, answer_media):
             if i.get("type") != "audio":
                 continue
             if (
@@ -1357,8 +1409,30 @@ class VoIPCall:
                 continue
             self.sendmode = negotiated_sendmode
 
+            receive_assoc = {}
+            for method in offered.get("methods", []):
+                try:
+                    codec = _payload_type_from_media_method(offered, method)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if codec in codecs.values():
+                    receive_assoc[int(method)] = codec
+            if not any(
+                RTP.is_transmittable_audio_codec(codec)
+                for codec in receive_assoc.values()
+            ):
+                raise RTP.RTPParseError(
+                    "SDP answer must retain an offered audio codec."
+                )
+
             self.create_rtp_clients(
-                codecs, self.myIP, self.port, request, i["port"], media=i
+                codecs,
+                self.myIP,
+                self.port,
+                request,
+                i["port"],
+                media=i,
+                receive_assoc=receive_assoc,
             )
 
         rtp_clients = self._rtp_clients_snapshot()
@@ -1828,19 +1902,21 @@ class VoIPPhone:
             return
 
         call_id = request.headers.get("Call-ID")
+        call = self._get_call(call_id)
+        original_request = getattr(request, "_rfcvoip_invite_request", None)
+        if original_request is None and call is not None:
+            original_request = getattr(call, "request", None)
         request_uri = getattr(request, "_rfcvoip_invite_request_uri", None)
         if request_uri is None:
-            call = self._get_call(call_id)
-            original_request = (
-                getattr(call, "request", None) if call is not None else None
-            )
             request_uri = getattr(original_request, "uri", None)
         if request_uri is None:
             invite_debug_snapshot = self.sip.invite_debug_snapshot()
             if invite_debug_snapshot.get("call_id") == call_id:
                 request_uri = invite_debug_snapshot.get("target_uri")
 
-        ack = self.sip.gen_ack(request, request_uri=request_uri)
+        ack = self.sip.gen_ack(
+            request, request_uri=request_uri, invite_request=original_request
+        )
         host, port = self.sip.ack_target(request)
         self.sip.send_raw(ack.encode("utf8"), (host, port))
         setattr(request, "_rfcvoip_ack_sent", True)

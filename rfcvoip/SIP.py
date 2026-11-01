@@ -2282,6 +2282,7 @@ class SIPClient:
         timeout_s = self.options_timeout if timeout is None else float(timeout)
         deadline = time.monotonic() + timeout_s
         retries = 0
+        auth_challenges: Dict[str, Tuple[SIPMessage, int]] = {}
 
         with self.recvLock:
             self.send_raw(request.encode("utf8"), self.signal_target())
@@ -2318,16 +2319,9 @@ class SIPClient:
                     SIPStatus.UNAUTHORIZED,
                     SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
                 ) and retries < self.options_max_retries:
-                    header_name = "Authorization"
-                    if (
-                        response.status == SIPStatus.PROXY_AUTHENTICATION_REQUIRED
-                        or response.authentication_header == "Proxy-Authenticate"
-                    ):
-                        header_name = "Proxy-Authorization"
-
-                    auth_line = self._build_digest_auth_header(
+                    auth_line = self._build_digest_auth_headers(
+                        auth_challenges,
                         response,
-                        header_name=header_name,
                         method="OPTIONS",
                         uri=target_uri,
                     )
@@ -2391,7 +2385,10 @@ class SIPClient:
             + f"tag={subscription.local_tag}\r\n"
         )
         request += f"Call-ID: {subscription.call_id}\r\n"
-        request += f"CSeq: {self.subscribeCounter.next()} SUBSCRIBE\r\n"
+        with self._subscription_lock:
+            sequence = self.subscribeCounter.next()
+            subscription._local_cseq = sequence
+        request += f"CSeq: {sequence} SUBSCRIBE\r\n"
         request += f"Event: {subscription.event}\r\n"
         request += f"Expires: {max(0, int(expires))}\r\n"
         if subscription.accept:
@@ -2631,6 +2628,43 @@ class SIPClient:
                 debug(f"Exception in subscription_callback: {ex}")
         return info
 
+    @staticmethod
+    def _subscription_response_matches(
+        subscription: SIPSubscription, message: SIPMessage
+    ) -> bool:
+        cseq = message.headers.get("CSeq", {})
+        from_header = message.headers.get("From", {})
+        to_header = message.headers.get("To", {})
+        if not isinstance(cseq, dict):
+            return False
+        raw_sequence = str(cseq.get("check", ""))
+        sequence = _safe_int(raw_sequence)
+        if (
+            re.fullmatch(r"[0-9]+", raw_sequence) is None
+            or sequence is None
+            or not 0 <= sequence < 2**31
+        ):
+            return False
+        return bool(
+            cseq.get("method") == "SUBSCRIBE"
+            and (
+                subscription._local_cseq is None
+                or sequence == subscription._local_cseq
+            )
+            and sequence != subscription._response_cseq
+            and isinstance(from_header, dict)
+            and from_header.get("tag", "") == subscription.local_tag
+            and isinstance(to_header, dict)
+            and (
+                not 200 <= int(message.status) < 300
+                or bool(to_header.get("tag"))
+            )
+            and (
+                not subscription.remote_tag
+                or to_header.get("tag", "") == subscription.remote_tag
+            )
+        )
+
     def _apply_subscribe_response(
         self,
         message: SIPMessage,
@@ -2640,30 +2674,38 @@ class SIPClient:
         call_id = str(message.headers.get("Call-ID", "") or "")
         with self._subscription_lock:
             subscription = self.subscriptions.get(call_id)
-            if subscription is None:
+            if (
+                subscription is None
+                or int(message.status) < 200
+                or not self._subscription_response_matches(
+                    subscription, message
+                )
+            ):
                 return None
 
             code = int(message.status)
+            subscription._response_cseq = int(message.headers["CSeq"]["check"])
             subscription.updated_at = time.time()
             subscription.last_response_code = code
             subscription.last_response_phrase = message.status.phrase
 
-            to_header = message.headers.get("To")
-            if isinstance(to_header, dict) and to_header.get("tag"):
-                subscription.remote_tag = to_header["tag"]
-
-            contact = message.headers.get("Contact")
-            if contact:
-                subscription.remote_target = self._extract_uri(str(contact))
-
-            expires_header = message.headers.get("Expires")
-            if expires_header is not None:
-                try:
-                    subscription.expires = int(expires_header)
-                except Exception:
-                    pass
-
             if 200 <= code < 300:
+                to_header = message.headers.get("To")
+                if isinstance(to_header, dict) and to_header.get("tag"):
+                    subscription.remote_tag = to_header["tag"]
+
+                contact = message.headers.get("Contact")
+                if contact:
+                    subscription.remote_target = self._extract_uri(
+                        str(contact)
+                    )
+
+                expires_header = str(
+                    message.headers.get("Expires", "")
+                ).strip()
+                if re.fullmatch(r"[0-9]+", expires_header) is not None:
+                    subscription.expires = int(expires_header)
+
                 if subscription.pending_expires == 0 or subscription.expires == 0:
                     subscription.status = "cancelling"
                     subscription.reason = None
@@ -2975,18 +3017,18 @@ class SIPClient:
         self.tagLibrary[subscription.call_id] = subscription.local_tag
 
         try:
-            request = self._build_subscribe_request(
-                subscription,
-                expires=subscription.pending_expires,
-            )
-
             with self.recvLock:
+                request = self._build_subscribe_request(
+                    subscription,
+                    expires=subscription.pending_expires,
+                )
                 self.send_raw(
                     request.encode("utf8"),
                     self._subscription_send_target(subscription),
                 )
                 deadline = time.monotonic() + self.subscription_timeout
                 retries = 0
+                auth_challenges: Dict[str, Tuple[SIPMessage, int]] = {}
 
                 while self.NSD and time.monotonic() < deadline:
                     response = self._recv_message_before(deadline)
@@ -3016,6 +3058,9 @@ class SIPClient:
                         response.headers.get("Call-ID") != request_call_id
                         or response_cseq_check != request_cseq_check
                         or response_cseq_method != request_cseq_method
+                        or not self._subscription_response_matches(
+                            subscription, response
+                        )
                     ):
                         self.parse_message(response)
                         continue
@@ -3028,18 +3073,9 @@ class SIPClient:
                         SIPStatus.UNAUTHORIZED,
                         SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
                     ) and retries < self.subscription_max_retries:
-                        header_name = "Authorization"
-                        if (
-                            response.status
-                            == SIPStatus.PROXY_AUTHENTICATION_REQUIRED
-                            or response.authentication_header
-                            == "Proxy-Authenticate"
-                        ):
-                            header_name = "Proxy-Authorization"
-
-                        auth_line = self._build_digest_auth_header(
+                        auth_line = self._build_digest_auth_headers(
+                            auth_challenges,
                             response,
-                            header_name=header_name,
                             method="SUBSCRIBE",
                             uri=subscription.remote_target
                             or subscription.target_uri,
@@ -3094,15 +3130,15 @@ class SIPClient:
             previous_pending = subscription.pending_expires
             subscription.pending_expires = 0
         try:
-            request = self._build_subscribe_request(subscription, expires=0)
-
             with self.recvLock:
+                request = self._build_subscribe_request(subscription, expires=0)
                 self.send_raw(
                     request.encode("utf8"),
                     self._subscription_send_target(subscription),
                 )
                 deadline = time.monotonic() + self.subscription_timeout
                 retries = 0
+                auth_challenges: Dict[str, Tuple[SIPMessage, int]] = {}
 
                 while self.NSD and time.monotonic() < deadline:
                     response = self._recv_message_before(deadline)
@@ -3132,6 +3168,9 @@ class SIPClient:
                         response.headers.get("Call-ID") != request_call_id
                         or response_cseq_check != request_cseq_check
                         or response_cseq_method != request_cseq_method
+                        or not self._subscription_response_matches(
+                            subscription, response
+                        )
                     ):
                         self.parse_message(response)
                         continue
@@ -3144,18 +3183,9 @@ class SIPClient:
                         SIPStatus.UNAUTHORIZED,
                         SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
                     ) and retries < self.subscription_max_retries:
-                        header_name = "Authorization"
-                        if (
-                            response.status
-                            == SIPStatus.PROXY_AUTHENTICATION_REQUIRED
-                            or response.authentication_header
-                            == "Proxy-Authenticate"
-                        ):
-                            header_name = "Proxy-Authorization"
-
-                        auth_line = self._build_digest_auth_header(
+                        auth_line = self._build_digest_auth_headers(
+                            auth_challenges,
                             response,
-                            header_name=header_name,
                             method="SUBSCRIBE",
                             uri=subscription.remote_target
                             or subscription.target_uri,
@@ -3841,10 +3871,7 @@ class SIPClient:
 
     def gen_register(self, request: SIPMessage, deregister=False) -> str:
         header_name = "Authorization"
-        if (
-            request.status == SIPStatus.PROXY_AUTHENTICATION_REQUIRED
-            or request.authentication_header == "Proxy-Authenticate"
-        ):
+        if request.status == SIPStatus.PROXY_AUTHENTICATION_REQUIRED:
             header_name = "Proxy-Authorization"
 
         auth_line = self._build_digest_auth_header(
@@ -3853,7 +3880,17 @@ class SIPClient:
             method="REGISTER",
             uri=self._registrar_uri(),
         )
+        return self._build_register_request(
+            request, auth_line=auth_line, deregister=deregister
+        )
 
+    def _build_register_request(
+        self,
+        request: SIPMessage,
+        *,
+        auth_line: str,
+        deregister: bool = False,
+    ) -> str:
         regRequest = f"REGISTER {self._registrar_uri()} SIP/2.0\r\n"
 
         regRequest += self._via_header(rport=True)
@@ -4062,7 +4099,12 @@ class SIPClient:
                     body += f"a=fmtp:{m} {fmtp}\r\n"
             body += "a=ptime:20\r\n"
             body += "a=maxptime:150\r\n"
-            body += f"a={sendtype}\r\n"
+            media_sendtype = (
+                media_spec.get("transmit_type", sendtype)
+                if isinstance(media_spec, dict)
+                else sendtype
+            )
+            body += f"a={media_sendtype}\r\n"
 
         tag = self.tagLibrary[request.headers["Call-ID"]]
         return self._build_response(
@@ -4244,6 +4286,7 @@ class SIPClient:
         self,
         request: SIPMessage,
         request_uri: Optional[str] = None,
+        invite_request: Optional[SIPMessage] = None,
     ) -> str:
         call_id = request.headers["Call-ID"]
         tag = self.tagLibrary.get(call_id)
@@ -4285,6 +4328,24 @@ class SIPClient:
         ackMessage += f"Call-ID: {request.headers['Call-ID']}\r\n"
         ackMessage += f"CSeq: {request.headers['CSeq']['check']} ACK\r\n"
         ackMessage += f"User-Agent: rfcvoip {rfcvoip.__version__}\r\n"
+        original = invite_request or getattr(
+            request, "_rfcvoip_invite_request", None
+        )
+        if isinstance(original, SIPMessage):
+            # RFC 3261 22.1 requires the ACK to repeat the credentials that
+            # authenticated its INVITE. Preserve multiple and folded fields.
+            copying_auth = False
+            original_headers = original.raw.split(b"\r\n\r\n", 1)[0]
+            for line in original_headers.split(b"\r\n")[1:]:
+                if not line.startswith((b" ", b"\t")):
+                    copying_auth = line.partition(b":")[0].strip().lower() in (
+                        b"authorization",
+                        b"proxy-authorization",
+                    )
+                if copying_auth:
+                    ackMessage += (
+                        line.decode("utf8", errors="replace") + "\r\n"
+                    )
         ackMessage += "Content-Length: 0\r\n\r\n"
 
         return ackMessage
@@ -4389,6 +4450,7 @@ class SIPClient:
             debug("Invited")
             deadline = time.monotonic() + self.invite_timeout
             retries = 0
+            auth_challenges: Dict[str, Tuple[SIPMessage, int]] = {}
             last_response: Optional[SIPMessage] = None
 
             while self.NSD and time.monotonic() < deadline:
@@ -4449,6 +4511,9 @@ class SIPClient:
                         "_rfcvoip_invite_request_uri",
                         target_uri,
                     )
+                    response._rfcvoip_invite_request = SIPMessage(
+                        invite.encode("utf8")
+                    )
                     self._set_last_invite_debug(
                         event="invite-provisional",
                         status=(
@@ -4471,24 +4536,21 @@ class SIPClient:
                     SIPStatus.UNAUTHORIZED,
                     SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
                 ) and retries < self.invite_max_retries:
-                    ack = self.gen_ack(response, request_uri=target_uri)
+                    ack = self.gen_ack(
+                        response,
+                        request_uri=target_uri,
+                        invite_request=SIPMessage(invite.encode("utf8")),
+                    )
                     self.send_raw(ack.encode("utf8"), self.ack_target(response))
-
-                    header_name = "Authorization"
-                    if (
-                        response.status == SIPStatus.PROXY_AUTHENTICATION_REQUIRED
-                        or response.authentication_header == "Proxy-Authenticate"
-                    ):
-                        header_name = "Proxy-Authorization"
 
                     branch = self._bump_branch(branch)
                     invite = self.gen_invite(
                         number, str(sess_id), ms, sendtype, branch, call_id
                     )
 
-                    auth_line = self._build_digest_auth_header(
+                    auth_line = self._build_digest_auth_headers(
+                        auth_challenges,
                         response,
-                        header_name=header_name,
                         method="INVITE",
                         uri=target_uri,
                         body=self._request_body_bytes(invite),
@@ -4500,6 +4562,9 @@ class SIPClient:
                         1,
                     )
                     self.send_raw(invite.encode("utf8"), self.signal_target())
+                    invite_call_id, invite_cseq_check, _invite_cseq_method = (
+                        self._request_transaction(invite)
+                    )
                     retries += 1
                     self._set_last_invite_debug(
                         event="invite-auth-sent",
@@ -4513,14 +4578,16 @@ class SIPClient:
                         + f"status={status_code} {response.status.phrase}",
                     )
 
-                    # Return now; receive loop handles subsequent messages.
-                    return SIPMessage(invite.encode("utf8")), call_id, sess_id
+                    continue
 
                 # Final response (>=200) â€” don't hang waiting for only 100/180.
                 setattr(
                     response,
                     "_rfcvoip_invite_request_uri",
                     target_uri,
+                )
+                response._rfcvoip_invite_request = SIPMessage(
+                    invite.encode("utf8")
                 )
                 self.queue_pending_invite_response(call_id, response)
                 self._set_last_invite_debug(
@@ -4622,7 +4689,60 @@ class SIPClient:
 
         # Preserve existing fallback behavior for older SIPMessage-like
         # objects and unusual responses with only one parsed auth header.
+        if (
+            getattr(message, "authentication_header", None)
+            in ("WWW-Authenticate", "Proxy-Authenticate")
+            and message.authentication_header != challenge_header
+        ):
+            raise SIPParseError(f"Missing {challenge_header} challenge.")
         return message.authentication
+
+    def _build_digest_auth_headers(
+        self,
+        challenges: Dict[str, Tuple[SIPMessage, int]],
+        challenge: SIPMessage,
+        *,
+        method: str,
+        uri: str,
+        body: bytes = b"",
+    ) -> str:
+        header_name = (
+            "Proxy-Authorization"
+            if challenge.status == SIPStatus.PROXY_AUTHENTICATION_REQUIRED
+            else "Authorization"
+        )
+        challenge_header = self._authorization_challenge_header(header_name)
+        current_auth = self._select_auth_challenge(challenge, challenge_header)
+        previous = challenges.get(header_name)
+        previous_count = 0
+        if previous is not None:
+            previous_auth = self._select_auth_challenge(
+                previous[0], challenge_header
+            )
+            if (previous_auth.get("realm"), previous_auth.get("nonce")) == (
+                current_auth.get("realm"),
+                current_auth.get("nonce"),
+            ):
+                previous_count = previous[1]
+        challenges[header_name] = (challenge, previous_count)
+        # Proxy and origin authentication can occur in successive responses.
+        # Rebuild both credentials for the new request rather than discarding
+        # the one already accepted by the other hop.
+        headers = []
+        for saved_header, (saved_challenge, count) in list(challenges.items()):
+            count += 1
+            headers.append(
+                self._build_digest_auth_header(
+                    saved_challenge,
+                    header_name=saved_header,
+                    method=method,
+                    uri=uri,
+                    body=body,
+                    nonce_count=f"{count:08x}",
+                )
+            )
+            challenges[saved_header] = (saved_challenge, count)
+        return "".join(headers)
 
     def _build_digest_auth_header(
         self,
@@ -4632,6 +4752,7 @@ class SIPClient:
         method: str,
         uri: str,
         body: bytes = b"",
+        nonce_count: str = "00000001",
     ) -> str:
         challenge_header = self._authorization_challenge_header(header_name)
         auth = self._select_auth_challenge(challenge, challenge_header)
@@ -4647,6 +4768,7 @@ class SIPClient:
                 method=method,
                 uri=uri,
                 body=body,
+                nonce_count=nonce_count,
             )
             self._record_digest_auth(
                 auth_line,
@@ -4760,28 +4882,7 @@ class SIPClient:
         if response.status == SIPStatus.BAD_REQUEST:
             self._handle_bad_request("DEREGISTER", response)
 
-        if response.status in (
-            SIPStatus.UNAUTHORIZED,
-            SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
-        ):
-            # 401 Unauthorized or 407 Proxy Authentication Required.
-            regRequest = self.gen_register(response, deregister=True)
-            response = self._send_register_request(
-                regRequest, action="Deregistering"
-            )
-            if response.status in (
-                SIPStatus.UNAUTHORIZED,
-                SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
-            ):
-                # At this point, it's reasonable to assume that
-                # this is caused by invalid credentials.
-                debug("Unauthorized")
-                raise InvalidAccountInfoError(
-                    "Invalid authentication credentials for SIP server "
-                    + f"{self.server}:{self.myPort}"
-                )
-            elif response.status == SIPStatus.BAD_REQUEST:
-                self._handle_bad_request("DEREGISTER", response)
+        response = self._authenticate_registration(response, deregister=True)
 
         if response.status == SIPStatus(500):
             # We raise so the calling function can sleep and try again
@@ -4790,6 +4891,47 @@ class SIPClient:
         if response.status == SIPStatus.OK:
             return True
         return False
+
+    def _authenticate_registration(
+        self, response: SIPMessage, *, deregister: bool = False
+    ) -> SIPMessage:
+        challenges: Dict[str, Tuple[SIPMessage, int]] = {}
+        while response.status in (
+            SIPStatus.UNAUTHORIZED,
+            SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
+        ):
+            header_name = (
+                "Proxy-Authorization"
+                if response.status == SIPStatus.PROXY_AUTHENTICATION_REQUIRED
+                else "Authorization"
+            )
+            # Permit one credential attempt per hop. A second challenge from
+            # that same hop remains an invalid-credentials failure.
+            if header_name in challenges:
+                debug(response.summary())
+                raise InvalidAccountInfoError(
+                    "Invalid authentication credentials for SIP server "
+                    + f"{self.server}:{self.myPort}"
+                )
+            auth_line = self._build_digest_auth_headers(
+                challenges,
+                response,
+                method="REGISTER",
+                uri=self._registrar_uri(),
+            )
+            request = self._build_register_request(
+                response, auth_line=auth_line, deregister=deregister
+            )
+            debug(_redact_sensitive_sip_headers(request))
+            response = self._send_register_request(
+                request,
+                action="Deregistering" if deregister else "Registering",
+            )
+            if response.status == SIPStatus.BAD_REQUEST:
+                self._handle_bad_request(
+                    "DEREGISTER" if deregister else "REGISTER", response
+                )
+        return response
 
     def register(self) -> bool:
         try:
@@ -4902,43 +5044,11 @@ class SIPClient:
         response = self._send_register_request(
             firstRequest, action="Registering"
         )
-        first_response = response
 
         if response.status == SIPStatus.BAD_REQUEST:
             self._handle_bad_request("REGISTER", response)
 
-        if response.status in (
-            SIPStatus.UNAUTHORIZED,
-            SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
-        ):
-            # 401 Unauthorized or 407 Proxy Authentication Required.
-            regRequest = self.gen_register(response)
-            response = self._send_register_request(
-                regRequest, action="Registering"
-            )
-            if response.status in (
-                SIPStatus.UNAUTHORIZED,
-                SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
-            ):
-                # At this point, it's reasonable to assume that
-                # this is caused by invalid credentials.
-                debug("=" * 50)
-                debug("Unauthorized, SIP Message Log:\n")
-                debug("SENT")
-                debug(firstRequest)
-                debug("\nRECEIVED")
-                debug(first_response.summary())
-                debug("\nSENT")
-                debug(_redact_sensitive_sip_headers(regRequest))
-                debug("\nRECEIVED")
-                debug(response.summary())
-                debug("=" * 50)
-                raise InvalidAccountInfoError(
-                    "Invalid authentication credentials for SIP server "
-                    + f"{self.server}:{self.myPort}"
-                )
-            elif response.status == SIPStatus.BAD_REQUEST:
-                self._handle_bad_request("REGISTER", response)
+        response = self._authenticate_registration(response)
 
         if response.status not in [
             SIPStatus(400),

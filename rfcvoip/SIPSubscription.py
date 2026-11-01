@@ -29,6 +29,8 @@ class SIPSubscription:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     _remote_cseq: Optional[int] = field(default=None, init=False, repr=False)
+    _local_cseq: Optional[int] = field(default=None, init=False, repr=False)
+    _response_cseq: Optional[int] = field(default=None, init=False, repr=False)
 
     def snapshot(self) -> Dict[str, Any]:
         return {
