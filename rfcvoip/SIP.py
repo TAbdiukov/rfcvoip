@@ -1,8 +1,10 @@
+from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from email import policy
 from email.parser import BytesParser
 from enum import Enum, IntEnum
-from threading import Event, Lock, RLock, Thread
+from threading import Event, Lock, RLock, Thread, local
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 from rfcvoip.util import acquired_lock_and_unblocked_socket
 from rfcvoip.SIPSubscription import SIPSubscription
@@ -1716,9 +1718,12 @@ class SIPClient:
         self._register_cancel_event: Optional[Event] = None
         self.registerFailures = 0
         self.recvLock = Lock()
+        self._receive_thread_state = local()
         self._pending_invite_lock = RLock()
         self._invite_debug_lock = RLock()
         self._subscription_lock = RLock()
+        self._pending_subscription_callbacks = deque()
+        self._subscription_callbacks_running = False
         self.pending_invite_responses: Dict[str, SIPMessage] = {}
         self.last_invite_debug: Dict[str, Any] = {}
         self.subscription_callback: Optional[
@@ -2254,6 +2259,39 @@ class SIPClient:
         request += "Content-Length: 0\r\n\r\n"
         return request
 
+    def _current_receive_state(self):
+        state = getattr(self, "_receive_thread_state", None)
+        if state is None:
+            state = local()
+            self._receive_thread_state = state
+        return state
+
+    def _check_receive_reentry(self) -> None:
+        state = self._current_receive_state()
+        if (
+            getattr(state, "in_call_callback", False)
+            and getattr(state, "owns_recv_lock", False)
+        ):
+            raise RuntimeError(
+                "A synchronous SIP transaction cannot start inside "
+                "callCallback while processing a received message. "
+                "Start the request from another thread."
+            )
+
+    @contextmanager
+    def _receive_transaction(self):
+        self._check_receive_reentry()
+        state = self._current_receive_state()
+        try:
+            with self.recvLock:
+                state.owns_recv_lock = True
+                try:
+                    yield
+                finally:
+                    state.owns_recv_lock = False
+        finally:
+            self._drain_subscription_callbacks()
+
     def options(
         self,
         target: str,
@@ -2266,6 +2304,7 @@ class SIPClient:
         codecs are only available when the peer includes an SDP body in the
         OPTIONS response.
         """
+        self._check_receive_reentry()
         if not self.NSD:
             raise RuntimeError("SIP client is not running.")
 
@@ -2284,7 +2323,7 @@ class SIPClient:
         retries = 0
         auth_challenges: Dict[str, Tuple[SIPMessage, int]] = {}
 
-        with self.recvLock:
+        with self._receive_transaction():
             self.send_raw(request.encode("utf8"), self.signal_target())
 
             while self.NSD and time.monotonic() < deadline:
@@ -2404,6 +2443,10 @@ class SIPClient:
         self, request: SIPMessage, response: str
     ) -> None:
         self.send_raw(response.encode("utf8"), self.response_target(request))
+        parts = response.split(" ", 2)
+        status = _safe_int(parts[1]) if len(parts) > 1 else None
+        if status is not None and status >= 200:
+            request._rfcvoip_final_response_sent = True
 
     @staticmethod
     def _request_header_value(request: str, header: str) -> str:
@@ -2622,11 +2665,38 @@ class SIPClient:
 
         callback = self.subscription_callback
         if callback is not None:
-            try:
-                callback(dict(info))
-            except Exception as ex:
-                debug(f"Exception in subscription_callback: {ex}")
+            with self._subscription_lock:
+                self._pending_subscription_callbacks.append(
+                    (callback, dict(info))
+                )
+            if not self.recvLock.locked():
+                self._drain_subscription_callbacks()
         return info
+
+    def _drain_subscription_callbacks(self) -> None:
+        pending = getattr(self, "_pending_subscription_callbacks", None)
+        if not pending:
+            return
+        with self._subscription_lock:
+            if self._subscription_callbacks_running:
+                return
+            self._subscription_callbacks_running = True
+        try:
+            while True:
+                with self._subscription_lock:
+                    if not pending:
+                        break
+                    callback, info = pending.popleft()
+                try:
+                    callback(info)
+                except Exception as ex:
+                    debug(f"Exception in subscription_callback: {ex}")
+        finally:
+            with self._subscription_lock:
+                self._subscription_callbacks_running = False
+                more_pending = bool(pending)
+            if more_pending and not self.recvLock.locked():
+                self._drain_subscription_callbacks()
 
     @staticmethod
     def _subscription_response_matches(
@@ -2938,6 +3008,21 @@ class SIPClient:
             if self.tagLibrary.get(subscription.call_id) == subscription.local_tag:
                 self.tagLibrary.pop(subscription.call_id, None)
 
+    def _clear_subscriptions(self) -> None:
+        with self._subscription_lock:
+            for subscription in self.subscriptions.values():
+                subscription.status = "terminated"
+                subscription.subscription_state = "terminated"
+                subscription.updated_at = time.time()
+                if (
+                    self.tagLibrary.get(subscription.call_id)
+                    == subscription.local_tag
+                ):
+                    self.tagLibrary.pop(subscription.call_id, None)
+            self.subscriptions.clear()
+            self._notify_response_cache.clear()
+            self._pending_subscription_callbacks.clear()
+
     def list_subscriptions(self) -> List[Dict[str, Any]]:
         with self._subscription_lock:
             subscriptions = sorted(
@@ -2990,6 +3075,7 @@ class SIPClient:
         expires: int = 3600,
         accept: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
+        self._check_receive_reentry()
         if not self.NSD:
             raise RuntimeError("SIP client is not running.")
 
@@ -3017,7 +3103,7 @@ class SIPClient:
         self.tagLibrary[subscription.call_id] = subscription.local_tag
 
         try:
-            with self.recvLock:
+            with self._receive_transaction():
                 request = self._build_subscribe_request(
                     subscription,
                     expires=subscription.pending_expires,
@@ -3119,6 +3205,7 @@ class SIPClient:
         *,
         event: Optional[str] = None,
     ) -> Dict[str, Any]:
+        self._check_receive_reentry()
         if not self.NSD:
             raise RuntimeError("SIP client is not running.")
 
@@ -3130,7 +3217,7 @@ class SIPClient:
             previous_pending = subscription.pending_expires
             subscription.pending_expires = 0
         try:
-            with self.recvLock:
+            with self._receive_transaction():
                 request = self._build_subscribe_request(subscription, expires=0)
                 self.send_raw(
                     request.encode("utf8"),
@@ -3290,7 +3377,12 @@ class SIPClient:
                 if sock is None:
                     break
                 with acquired_lock_and_unblocked_socket(self.recvLock, sock):
-                    self.recv()
+                    state = self._current_receive_state()
+                    state.owns_recv_lock = True
+                    try:
+                        self.recv()
+                    finally:
+                        state.owns_recv_lock = False
             except BlockingIOError:
                 time.sleep(0.01)
                 continue
@@ -3299,6 +3391,8 @@ class SIPClient:
                     time.sleep(0.01)
                     continue
                 break
+            finally:
+                self._drain_subscription_callbacks()
 
     def _delayed_recv_loop(self, delay: float = 1.0) -> None:
         if delay > 0:
@@ -3320,6 +3414,7 @@ class SIPClient:
             self.connection = None
             self.s = None
             self.out = None
+            self._clear_subscriptions()
 
         if was_running:
             self.phone._status = PhoneStatus.FAILED
@@ -3457,6 +3552,25 @@ class SIPClient:
             return call_id in phone_calls
         return self.callCallback is not None
 
+    def _dispatch_call_callback(self, message: SIPMessage) -> bool:
+        if self.callCallback is None:
+            return False
+        state = self._current_receive_state()
+        previous_callback = getattr(state, "in_call_callback", False)
+        state.in_call_callback = True
+        try:
+            self.callCallback(message)
+            return True
+        except Exception as ex:
+            debug(
+                f"Exception in callCallback: {ex}\n{message.summary()}",
+                f"Exception in callCallback: {ex} "
+                f"(start_line={message.heading!r})",
+            )
+            return False
+        finally:
+            state.in_call_callback = previous_callback
+
     def parse_message(self, message: SIPMessage) -> None:
         if message.type == SIPMessageType.MESSAGE:
             # Response generation and application callbacks rely on these
@@ -3529,14 +3643,7 @@ class SIPClient:
                 self._apply_subscribe_response(message)
 
             if self.callCallback is not None:
-                try:
-                    self.callCallback(message)
-                except Exception as ex:
-                    debug(
-                        f"Exception in callCallback: {ex}\n{message.summary()}",
-                        f"Exception in callCallback: {ex} "
-                        f"(start_line={str(message.heading,'utf8',errors='replace')})",
-                    )
+                self._dispatch_call_callback(message)
             else:
                 debug(
                     message.summary(),
@@ -3548,8 +3655,12 @@ class SIPClient:
             if self.callCallback is None:
                 request = self.gen_busy(message)
                 self._send_request_response(message, request)
-            else:
-                self.callCallback(message)
+            elif not self._dispatch_call_callback(message):
+                if not getattr(message, "_rfcvoip_final_response_sent", False):
+                    response = self.gen_response(
+                        message, SIPStatus.INTERNAL_SERVER_ERROR
+                    )
+                    self._send_request_response(message, response)
         elif message.method == "BYE":
             if not self._has_matching_call(message):
                 response = self.gen_response(
@@ -3558,7 +3669,7 @@ class SIPClient:
                 self._send_request_response(message, response)
                 return
             if self.callCallback is not None:
-                self.callCallback(message)
+                self._dispatch_call_callback(message)
             response = self.gen_ok(message)
             self._send_request_response(message, response)
             # BYE comes from client cause server only acts as mediator
@@ -3574,7 +3685,7 @@ class SIPClient:
             response = self.gen_ok(message)
             self._send_request_response(message, response)
             if self.callCallback is not None:
-                self.callCallback(message)
+                self._dispatch_call_callback(message)
         elif message.method == "OPTIONS":
             # Common keep-alive / capability probe. Reply 200 OK and include
             # local SDP capabilities when the requester accepts SDP.
@@ -3635,6 +3746,7 @@ class SIPClient:
 
     def stop(self) -> None:
         if not self.NSD:
+            self._clear_subscriptions()
             return
         try:
             self._cancel_pending_register_thread()
@@ -3643,7 +3755,12 @@ class SIPClient:
                 self.deregister()
         finally:
             self.NSD = False
-            self._close_sockets()
+            try:
+                self._close_sockets()
+            finally:
+                self.s = None
+                self.out = None
+                self._clear_subscriptions()
 
     def _close_sockets(self) -> None:
         if self.connection is not None:
@@ -4079,7 +4196,35 @@ class SIPClient:
         body += f"s=rfcvoip {rfcvoip.__version__}\r\n"
         body += f"c=IN {addr_type} {self.myIP}\r\n"
         body += "t=0 0\r\n"
-        for x, media_spec in ms.items():
+        media_specs = list(ms.items())
+        if media_specs and all(
+            isinstance(spec, dict) and "offer_index" in spec
+            for _port, spec in media_specs
+        ):
+            by_slot = {
+                spec["offer_index"]: (port, spec)
+                for port, spec in media_specs
+            }
+            media_specs = [
+                by_slot.get(index, (0, {"rejected_media": media}))
+                for index, media in enumerate(request.body.get("m", []))
+            ]
+        for x, media_spec in media_specs:
+            if (
+                isinstance(media_spec, dict)
+                and "rejected_media" in media_spec
+            ):
+                rejected = media_spec["rejected_media"]
+                protocol = _protocol_value(rejected.get("protocol", "RTP/AVP"))
+                methods = " ".join(
+                    str(m) for m in rejected.get("methods", [])
+                )
+                body += (
+                    f"m={rejected.get('type', 'audio')} 0 {protocol} "
+                    + (methods or "0")
+                    + "\r\n"
+                )
+                continue
             media_type, port_count, codecs = _sdp_media_spec_details(media_spec)
             body += (
                 f"m={media_type} "
@@ -4403,6 +4548,7 @@ class SIPClient:
         ms: Dict[int, Dict[str, "RTP.PayloadType"]],
         sendtype: "RTP.TransmitType",
     ) -> Tuple[SIPMessage, str, int]:
+        self._check_receive_reentry()
         branch = "z9hG4bK" + self.gen_call_id()[0:25]
         call_id = self.gen_call_id()
         sess_id = self.sessID.next()
@@ -4444,13 +4590,14 @@ class SIPClient:
         invite_call_id, invite_cseq_check, _invite_cseq_method = (
             self._request_transaction(invite)
         )
-        with self.recvLock:
+        with self._receive_transaction():
             self.send_raw(invite.encode("utf8"), self.signal_target())
             self._set_last_invite_debug(event="invite-sent")
             debug("Invited")
             deadline = time.monotonic() + self.invite_timeout
             retries = 0
             auth_challenges: Dict[str, Tuple[SIPMessage, int]] = {}
+            auth_acks: Dict[Tuple[str, str], str] = {}
             last_response: Optional[SIPMessage] = None
 
             while self.NSD and time.monotonic() < deadline:
@@ -4467,6 +4614,23 @@ class SIPClient:
                 cseq = response.headers.get("CSeq", {})
                 cseq_method = cseq.get("method") if isinstance(cseq, dict) else None
                 cseq_check = cseq.get("check") if isinstance(cseq, dict) else None
+                vias = response.headers.get("Via", [])
+                response_branch = vias[0].get("branch", "") if vias else ""
+                auth_key = (str(cseq_check or ""), str(response_branch))
+                if (
+                    response.headers.get("Call-ID") == invite_call_id
+                    and cseq_method == "INVITE"
+                    and response.status in (
+                        SIPStatus.UNAUTHORIZED,
+                        SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
+                    )
+                    and auth_key in auth_acks
+                ):
+                    self.send_raw(
+                        auth_acks[auth_key].encode("utf8"),
+                        self.ack_target(response),
+                    )
+                    continue
                 if (
                     response.headers.get("Call-ID") != invite_call_id
                     or cseq_check != invite_cseq_check
@@ -4542,6 +4706,7 @@ class SIPClient:
                         invite_request=SIPMessage(invite.encode("utf8")),
                     )
                     self.send_raw(ack.encode("utf8"), self.ack_target(response))
+                    auth_acks[auth_key] = ack
 
                     branch = self._bump_branch(branch)
                     invite = self.gen_invite(
@@ -4845,12 +5010,13 @@ class SIPClient:
         self.send_raw(message.encode("utf8"), self.dialog_target(request))
 
     def deregister(self) -> bool:
+        self._check_receive_reentry()
         attempts = 0
         max_attempts = max(1, rfcvoip.REGISTER_FAILURE_THRESHOLD)
 
         while attempts < max_attempts:
             try:
-                with self.recvLock:
+                with self._receive_transaction():
                     deregistered = self.__deregister()
                 if not deregistered:
                     debug("DEREGISTRATION FAILED")
@@ -4934,8 +5100,9 @@ class SIPClient:
         return response
 
     def register(self) -> bool:
+        self._check_receive_reentry()
         try:
-            with self.recvLock:
+            with self._receive_transaction():
                 if not self.NSD:
                     return False
                 registered = self.__register()

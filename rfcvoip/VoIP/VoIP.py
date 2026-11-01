@@ -742,6 +742,14 @@ class VoIPCall:
 
         if created_clients:
             group_ports = [client.inPort for client in created_clients]
+            offer_index = next(
+                (
+                    index
+                    for index, offered in enumerate(request.body.get("m", []))
+                    if offered is media
+                ),
+                None,
+            )
             with self._state_lock_for():
                 self._rtp_media_groups.append(
                     {
@@ -750,6 +758,7 @@ class VoIPCall:
                         "port_count": len(group_ports),
                         "codecs": dict(codecs),
                         "clients": list(created_clients),
+                        "offer_index": offer_index,
                     }
                 )
 
@@ -1038,6 +1047,7 @@ class VoIPCall:
         start_clients: bool = False,
         transmit_types: Optional[Dict[int, RTP.TransmitType]] = None,
         default_transmit_type: Optional[RTP.TransmitType] = None,
+        answer_request: Optional[SIP.SIPMessage] = None,
     ) -> Dict[int, Any]:
         m: Dict[int, Any] = {}
         default_transmit_type = _transmit_type_from_value(
@@ -1070,12 +1080,22 @@ class VoIPCall:
                         "port_count": int(group.get("port_count", len(clients))),
                         "codecs": dict(group.get("codecs", clients[0].assoc)),
                         "clients": list(clients),
+                        "offer_index": group.get("offer_index"),
                     }
                 )
             rtp_clients = list(getattr(self, "RTPClients", []))
 
         if media_groups:
-            for group in media_groups:
+            request = answer_request or getattr(self, "request", None)
+            offered_media = getattr(request, "body", {}).get("m", [])
+            preserve_slots = bool(offered_media) and (
+                len(offered_media) != len(media_groups)
+                or any(
+                    group.get("offer_index") not in (None, index)
+                    for index, group in enumerate(media_groups)
+                )
+            )
+            for index, group in enumerate(media_groups):
                 clients = group["clients"]
 
                 if start_clients:
@@ -1086,7 +1106,11 @@ class VoIPCall:
                 port_count = group["port_count"]
                 codecs = group["codecs"]
                 direction = media_direction(clients[0])
-                if port_count > 1 or direction != default_transmit_type:
+                if (
+                    port_count > 1
+                    or direction != default_transmit_type
+                    or preserve_slots
+                ):
                     m[base_port] = {
                         "media_type": group["media_type"],
                         "port_count": port_count,
@@ -1094,6 +1118,11 @@ class VoIPCall:
                     }
                     if direction != default_transmit_type:
                         m[base_port]["transmit_type"] = direction
+                    if preserve_slots:
+                        offer_index = group.get("offer_index")
+                        m[base_port]["offer_index"] = (
+                            index if offer_index is None else offer_index
+                        )
                 else:
                     m[base_port] = codecs
             return m
@@ -1163,7 +1192,22 @@ class VoIPCall:
             getattr(self, "_desired_sendmode", self.sendmode)
         )
         negotiated_sendmode = desired_sendmode
-        for i in request.body.get("m", []):
+        groups = getattr(self, "_rtp_media_groups", [])
+        active_slots = {
+            group["offer_index"]: group["port_count"]
+            for group in groups
+            if group.get("offer_index") is not None
+        }
+        original_media = getattr(self, "request", request).body.get("m", [])
+        for media_index, i in enumerate(request.body.get("m", [])):
+            if (
+                active_slots
+                and media_index < len(original_media)
+                and media_index not in active_slots
+            ):
+                # Previously rejected sections keep their SDP positions and
+                # remain rejected while retained RTP clients are reused.
+                continue
             if i.get("type") != "audio":
                 continue
             if (
@@ -1178,6 +1222,12 @@ class VoIPCall:
             try:
                 targets = _media_rtp_targets(request, i, i["port"])
                 if int(i.get("port_count", 1)) != len(targets):
+                    valid_layout = False
+                    break
+                if (
+                    media_index in active_slots
+                    and active_slots[media_index] != len(targets)
+                ):
                     valid_layout = False
                     break
             except (RTP.RTPParseError, TypeError, ValueError):
@@ -1242,6 +1292,7 @@ class VoIPCall:
                 for client, direction in zip(rtp_clients, target_directions)
             },
             default_transmit_type=negotiated_sendmode,
+            answer_request=request,
         )
         message = self.sip.gen_answer(
             request, self.session_id, m, negotiated_sendmode
@@ -1268,8 +1319,12 @@ class VoIPCall:
             client.outPort = remote_port
 
     def answer(self) -> None:
-        if self.state != CallState.RINGING:
-            raise InvalidStateError("Call is not ringing")
+        with self._state_lock_for():
+            if self.state != CallState.RINGING:
+                raise InvalidStateError("Call is not ringing")
+            if getattr(self, "_answer_in_progress", False):
+                raise InvalidStateError("Call is already being answered")
+            self._answer_in_progress = True
         try:
             m = self.gen_ms()
             debug(
@@ -1311,6 +1366,9 @@ class VoIPCall:
             self._set_state(CallState.ENDED)
             self._finalize_ended_call()
             raise
+        finally:
+            with self._state_lock_for():
+                self._answer_in_progress = False
         debug(
             f"Call {self.call_id} answered",
             f"Call {self.call_id}: state -> ANSWERED",
@@ -1553,8 +1611,9 @@ class VoIPCall:
                 f"Failed to send BYE for {self.call_id}: {ex}",
                 f"Call {self.call_id}: BYE send failed: {ex}",
             )
-        self._set_state(CallState.ENDED)
-        self._finalize_ended_call()
+        finally:
+            self._set_state(CallState.ENDED)
+            self._finalize_ended_call()
 
     def bye(self) -> None:
         if self.state == CallState.ANSWERED:

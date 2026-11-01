@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- SIP: Keep active I/O tied to its original socket during close/reopen and terminate signaling after fatal TLS read errors.
+- DNS: Honor SRV records that explicitly disable a service while allowing other advertised services and transports.
+- SIP: Replay authentication-challenge ACKs, isolate request callback failures, and preserve final responses already sent by callbacks.
+- SIP: Deliver subscription callbacks after releasing receive locks and discard subscription dialogs, replay caches, and queued events on shutdown.
+- SIP: Reject synchronous request reentry from low-level call callbacks before changing transaction state, avoiding receive-lock deadlocks.
+- VoIP: Preserve rejected media sections in SDP answers, prevent overlapping answer attempts from ending a valid call, and finish hangup cleanup when routing or warning handling raises.
+- RTP: Receive large UDP packets intact, stop permanently closed receive sockets, and honor short DTMF update intervals.
+- RTP: Correct queued audio timing after late event reports or lost resumed audio packets without replaying consumed PCM.
 - SIP: Preserve the account domain and TLS identity when `maddr` selects a different network destination.
 - SIP: Correlate subscription responses with their request and dialog, ignore stale or repeated responses, and preserve live targets and expiry after failed refreshes.
 - SIP: Complete configured INVITE authentication retries, retain both proxy and origin credentials, select challenges by response status, and copy INVITE credentials into ACK requests.

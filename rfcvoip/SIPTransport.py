@@ -20,6 +20,10 @@ class SIPFramingError(Exception):
     pass
 
 
+class SIPServiceUnavailableError(OSError):
+    pass
+
+
 class SIPTransport(Enum):
     UDP = "UDP"
     TCP = "TCP"
@@ -310,12 +314,22 @@ class SIPResolver:
                 for transport in self.transport_preference
                 if transport != SIPTransport.TLS
             ]
+        unavailable = {}
         for transport in transports:
-            srv = self._resolve_srv_for_transport(
-                uri.destination_host, transport, uri, source="srv-fallback"
-            )
+            try:
+                srv = self._resolve_srv_for_transport(
+                    uri.destination_host, transport, uri, source="srv-fallback"
+                )
+            except SIPServiceUnavailableError as ex:
+                unavailable[transport] = ex
+                continue
             if srv is not None:
                 return srv
+        default_transport = (
+            SIPTransport.TLS if uri.scheme == "sips" else SIPTransport.UDP
+        )
+        if default_transport in unavailable:
+            raise unavailable[default_transport]
         return None
 
     def _resolve_naptr(self, uri: SIPURIInfo) -> Optional[ResolvedSIPTarget]:
@@ -350,16 +364,23 @@ class SIPResolver:
             )
 
         records.sort(key=lambda item: (item[0], item[1]))
+        unavailable = None
         for _order, _preference, service, replacement, transport in records:
-            srv = self._resolve_srv_record(
-                replacement,
-                transport,
-                uri,
-                source="naptr",
-                service=service,
-            )
+            try:
+                srv = self._resolve_srv_record(
+                    replacement,
+                    transport,
+                    uri,
+                    source="naptr",
+                    service=service,
+                )
+            except SIPServiceUnavailableError as ex:
+                unavailable = ex
+                continue
             if srv is not None:
                 return srv
+        if unavailable is not None:
+            raise unavailable
         return None
 
     def _srv_name(self, host: str, transport: SIPTransport) -> str:
@@ -399,6 +420,17 @@ class SIPResolver:
         if not answers:
             return None
 
+        # RFC 2782's root target explicitly disables this service; it is
+        # different from an absent SRV record, which permits address fallback.
+        available = [
+            answer for answer in answers
+            if _strip_quotes(getattr(answer, "target", "")) != "."
+        ]
+        if not available:
+            raise SIPServiceUnavailableError(
+                f"SIP service {srv_name!r} is explicitly unavailable."
+            )
+        answers = available
         record = self._pick_srv_record(answers)
         target = _strip_quotes(getattr(record, "target", "")).rstrip(".")
         if not target:
@@ -561,38 +593,40 @@ class SIPConnection:
         raise OSError(f"Unable to resolve SIP target {self.target.host!r}")
 
     def send(self, data: bytes, target: Optional[Tuple[str, int]] = None) -> None:
-        if self.socket is None:
-            raise RuntimeError("SIP connection is not open.")
         with self._send_lock:
+            sock = self.socket
+            if sock is None:
+                raise RuntimeError("SIP connection is not open.")
             if self.target.transport == SIPTransport.UDP:
                 host, port = target or (self.target.host, self.target.port)
-                self.socket.sendto(
+                sock.sendto(
                     data,
-                    self._socket_address(host, int(port), self.socket.family),
+                    self._socket_address(host, int(port), sock.family),
                 )
             else:
-                self._send_stream(data)
+                self._send_stream(data, sock)
 
-    def _send_stream(self, data: bytes) -> None:
-        assert self.socket is not None
+    def _send_stream(self, data: bytes, sock: socket.socket) -> None:
         view = memoryview(data)
         deadline = time.monotonic() + self.send_timeout
         while view:
+            if self.socket is not sock:
+                raise OSError("SIP connection closed while sending")
             if time.monotonic() >= deadline:
                 raise TimeoutError("Timed out writing SIP stream data")
             try:
-                sent = self.socket.send(view)
+                sent = sock.send(view)
             except (BlockingIOError, ssl.SSLWantWriteError):
                 remaining = max(0.0, deadline - time.monotonic())
                 if remaining == 0:
                     raise TimeoutError("Timed out writing SIP stream data")
-                select.select([], [self.socket], [], remaining)
+                select.select([], [sock], [], remaining)
                 continue
             except ssl.SSLWantReadError:
                 remaining = max(0.0, deadline - time.monotonic())
                 if remaining == 0:
                     raise TimeoutError("Timed out during SIP TLS write")
-                select.select([self.socket], [], [], remaining)
+                select.select([sock], [], [], remaining)
                 continue
 
             if sent == 0:
@@ -600,15 +634,23 @@ class SIPConnection:
             view = view[sent:]
 
     def recv_raw_message(self) -> bytes:
-        if self.socket is None:
+        sock = self.socket
+        if sock is None:
             raise RuntimeError("SIP connection is not open.")
+        return self._recv_raw_message(sock)
+
+    def _recv_raw_message(self, sock: socket.socket) -> bytes:
+        if self.socket is not sock:
+            raise OSError("SIP connection closed while receiving")
         if self.target.transport == SIPTransport.UDP:
             # A datagram is consumed in one read. A smaller buffer either
             # truncates the SIP message or raises WSAEMSGSIZE on Windows.
-            data, address = self.socket.recvfrom(65535)
+            data, address = sock.recvfrom(65535)
+            if self.socket is not sock:
+                raise OSError("SIP connection closed while receiving")
             self.last_recv_address = (str(address[0]), int(address[1]))
             return data
-        return self._recv_stream_message()
+        return self._recv_stream_message(sock)
 
     def recv_raw_message_before(
         self,
@@ -616,33 +658,42 @@ class SIPConnection:
         *,
         running: Optional[Callable[[], bool]] = None,
     ) -> Optional[bytes]:
-        if self.socket is None:
+        sock = self.socket
+        if sock is None:
             raise RuntimeError("SIP connection is not open.")
 
-        old_timeout = self.socket.gettimeout()
-        self.socket.setblocking(False)
+        old_timeout = sock.gettimeout()
+        sock.setblocking(False)
         try:
             while time.monotonic() < deadline and (running is None or running()):
+                if self.socket is not sock:
+                    raise OSError("SIP connection closed while receiving")
                 if self.connection_oriented and self._stream_has_message():
-                    return self.recv_raw_message()
+                    return self._recv_raw_message(sock)
 
                 remaining = max(0.0, deadline - time.monotonic())
                 if remaining == 0:
                     return None
                 pending = (
                     self.target.transport == SIPTransport.TLS
-                    and self.socket.pending() > 0
+                    and sock.pending() > 0
                 )
                 if not pending:
-                    ready = select.select([self.socket], [], [], remaining)
+                    ready = select.select([sock], [], [], remaining)
                     if not ready[0]:
                         return None
                 try:
-                    return self.recv_raw_message()
+                    if self.socket is not sock:
+                        raise OSError("SIP connection closed while receiving")
+                    return self._recv_raw_message(sock)
                 except (BlockingIOError, ssl.SSLWantReadError, ssl.SSLWantWriteError):
                     continue
         finally:
-            self.socket.settimeout(old_timeout)
+            # close() can detach this socket while select/recv releases the
+            # interpreter lock. Never restore a replacement socket's timeout
+            # or mask the original error with an access through None.
+            if self.socket is sock:
+                sock.settimeout(old_timeout)
         return None
 
     def _discard_stream_keepalive_prefix(self) -> None:
@@ -724,15 +775,21 @@ class SIPConnection:
 
         return header_end + 4 + content_length
 
-    def _recv_stream_message(self) -> bytes:
-        assert self.socket is not None
+    def _recv_stream_message(self, sock: socket.socket) -> bytes:
         self._discard_stream_keepalive_prefix()
         message = self._pop_stream_message()
         if message is not None:
             return message
 
         while True:
-            chunk = self.socket.recv(8192)
+            try:
+                chunk = sock.recv(8192)
+            except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+                raise
+            except ssl.SSLError as ex:
+                raise ConnectionError("SIP TLS stream read failed") from ex
+            if self.socket is not sock:
+                raise OSError("SIP connection closed while receiving")
             if not chunk:
                 raise ConnectionError("SIP stream socket closed")
             self._stream_buffer += chunk

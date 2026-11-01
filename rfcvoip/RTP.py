@@ -3,6 +3,7 @@ from threading import Thread
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple, Union
 from collections import deque
 import audioop
+import errno
 import io
 import ipaddress
 import math
@@ -1182,6 +1183,10 @@ class RTPClient:
         self._receive_clock_epochs: Deque[Tuple[int, int, int, int]] = deque(
             maxlen=256
         )
+        self._receive_media_history: Deque[
+            Tuple[int, int, int, int, bool, Optional[int]]
+        ] = deque(maxlen=256)
+        self._receive_event_end: Optional[int] = None
         self.codec_priority_scores = dict(codec_priority_scores or {})
         self.codec_fmtp = {
             payload_type: list(settings)
@@ -1646,7 +1651,10 @@ class RTPClient:
         start_timestamp = self.outTimestamp & 0xFFFFFFFF
         total_duration = max(1, int((duration_ms * clock) / 1000))
         step = max(1, int((packet_ms * clock) / 1000))
-        interval_s = max(0.01, packet_ms / 1000.0)
+        # Report duration and update spacing must advance at the same rate.
+        # A 10 ms sleep floor otherwise stretches a requested 1 ms update
+        # interval into a tone ten times longer than its encoded duration.
+        interval_s = step / clock
 
         completed = 0
         while completed < total_duration and self.NSD:
@@ -1730,6 +1738,8 @@ class RTPClient:
             self._receive_sequence_order.clear()
             self._receive_media_sequence = self._receive_media_timestamp = None
             self._receive_clock_epochs.clear()
+            self._receive_media_history.clear()
+            self._receive_event_end = None
             self._received_dtmf.clear()
             self._received_dtmf_order.clear()
             self._received_dtmf_segments.clear()
@@ -1806,7 +1816,9 @@ class RTPClient:
                 if sin is None:
                     time.sleep(0.01)
                     continue
-                packet = sin.recv(8192)
+                # Receive the entire UDP datagram. An undersized buffer
+                # truncates RTP on Unix and raises WSAEMSGSIZE on Windows.
+                packet = sin.recv(65535)
                 if self.sendrecv in (
                     TransmitType.SENDRECV,
                     TransmitType.RECVONLY,
@@ -1816,8 +1828,15 @@ class RTPClient:
                 time.sleep(0.01)
             except RTPParseError as e:
                 debug(str(e))
-            except OSError:
+            except OSError as ex:
                 if self.NSD:
+                    if ex.errno in (errno.EBADF, errno.ENOTSOCK) or getattr(
+                        ex, "winerror", None
+                    ) == 10038:
+                        # This descriptor cannot recover. Release media
+                        # workers/readers instead of retrying it forever.
+                        self.stop()
+                        return
                     time.sleep(0.01)
 
     def trans(
@@ -1963,13 +1982,14 @@ class RTPClient:
         clock: int,
         sequence: Optional[int],
         offset_for_timestamp: Optional[Callable[[int], int]] = None,
+        event_duration: Optional[int] = None,
     ) -> int:
         """Map RTP clock changes and reordered packets onto one PCM timeline."""
         previous_timestamp = self._receive_media_timestamp
         if previous_timestamp is not None:
             timestamp = previous_timestamp + (
-                (timestamp - previous_timestamp + 0x80000000)
-                % 0x100000000 - 0x80000000
+                (timestamp - previous_timestamp + 0x80000000) % 0x100000000
+                - 0x80000000
             )
         previous_sequence = self._receive_media_sequence
         if sequence is None:
@@ -1986,7 +2006,8 @@ class RTPClient:
         def offset_at(value: int, rate: int) -> int:
             return (value * self.audio_sample_rate // rate) * alignment
 
-        if offset_for_timestamp is None:
+        is_audio = offset_for_timestamp is not None
+        if not is_audio:
             offset_for_timestamp = lambda value: offset_at(value, clock)
         epochs = self._receive_clock_epochs
         if not epochs:
@@ -1994,19 +2015,39 @@ class RTPClient:
                 (sequence, timestamp, clock, offset_for_timestamp(timestamp))
             )
         forward = (
-            previous_sequence is None
-            or sequence >= previous_sequence
+            previous_sequence is None or sequence >= previous_sequence
         ) and (previous_timestamp is None or timestamp >= previous_timestamp)
         if forward and clock != epochs[-1][2]:
             _, origin, previous_clock, pcm_origin = epochs[-1]
+            transition = timestamp
+            if (
+                is_audio
+                and previous_clock == PayloadType.EVENT.rate
+                and self._receive_event_end is not None
+                and origin <= self._receive_event_end <= timestamp
+            ):
+                transition = self._receive_event_end
             pcm_offset = pcm_origin + (
-                offset_at(timestamp, previous_clock)
+                offset_at(transition, previous_clock)
                 - offset_at(origin, previous_clock)
             )
-            epochs.append((sequence, timestamp, clock, pcm_offset))
+            epochs.append((sequence, transition, clock, pcm_offset))
         epoch = next(
-            (item for item in reversed(epochs) if item[0] <= sequence), epochs[0]
+            (item for item in reversed(epochs) if item[0] <= sequence),
+            epochs[0],
         )
+        if not forward and is_audio and epoch[2] != clock:
+            # The first resumed audio packet may itself arrive after a later
+            # audio packet established this clock. Place it relative to that
+            # known audio epoch rather than the preceding event's rate.
+            epoch = next(
+                (
+                    item
+                    for item in epochs
+                    if item[0] > sequence and item[2] == clock
+                ),
+                epoch,
+            )
         _, origin, _rate, pcm_origin = epoch
         result = pcm_origin + (
             offset_for_timestamp(timestamp) - offset_for_timestamp(origin)
@@ -2014,7 +2055,185 @@ class RTPClient:
         if forward:
             self._receive_media_sequence = sequence
             self._receive_media_timestamp = timestamp
+            if is_audio:
+                self._receive_event_end = None
+            elif event_duration is not None:
+                self._receive_event_end = timestamp + event_duration
+            elif (
+                self._receive_event_end is not None
+                and timestamp >= self._receive_event_end
+            ):
+                self._receive_event_end = None
+        event_end = (
+            None if event_duration is None else timestamp + event_duration
+        )
+        observation = (sequence, timestamp, clock, result, is_audio, event_end)
+        history = self._receive_media_history
+        oldest_sequence = min((item[0] for item in history), default=sequence)
+        repair_sequence = sequence
+        if not is_audio:
+            repair_sequence = min(
+                [sequence]
+                + [
+                    item[0]
+                    for item in history
+                    if not item[4] and item[1] == timestamp
+                ]
+                + [
+                    item[0] - 1
+                    for item in history
+                    if item[4] and item[1] > timestamp
+                ]
+            )
+        can_repair = bool(history) and repair_sequence >= oldest_sequence
+        if sequence >= oldest_sequence and observation not in history:
+            history.append(observation)
+        if not forward and not is_audio and can_repair:
+            self._repair_late_event_clock(repair_sequence, timestamp)
         return result
+
+    def _repair_late_event_clock(self, sequence: int, timestamp: int) -> None:
+        history = self._receive_media_history
+        prefix = [
+            item for item in self._receive_clock_epochs if item[0] < sequence
+        ]
+        if not prefix:
+            return
+        observations = sorted(
+            (item for item in history if item[0] >= sequence),
+            key=lambda item: (item[0], item[1]),
+        )
+        known_ends = {}
+        for _, stamp, _, _, audio, end in observations:
+            if not audio and end is not None:
+                known_ends[stamp] = max(end, known_ends.get(stamp, end))
+        if not any(
+            item[0] == sequence and item[1] == timestamp and not item[4]
+            for item in observations
+        ):
+            # Initial reports can be lost while a final retransmission is
+            # sent after audio resumes. Its timestamp still proves that the
+            # event began before the first later audio capture, regardless
+            # of the retransmission's own sequence number.
+            observations.insert(
+                0,
+                (
+                    sequence,
+                    timestamp,
+                    PayloadType.EVENT.rate,
+                    0,
+                    False,
+                    known_ends.get(timestamp),
+                ),
+            )
+        alignment = self.audio_sample_width * self.audio_channels
+
+        def offset_at(value: int, rate: int) -> int:
+            return value * self.audio_sample_rate // rate * alignment
+
+        epochs = list(prefix)
+        event_end = None
+        updates = []
+        first_audio = None
+        correction = None
+        latest_stamp = epochs[-1][1]
+        for seq, stamp, rate, old_offset, audio, end in observations:
+            if not audio:
+                end = known_ends.get(stamp, end)
+                if stamp < latest_stamp:
+                    # A final report can be retransmitted after audio has
+                    # resumed. Its end time applies to the earlier event;
+                    # it must not switch the current clock back again.
+                    updates.append((seq, stamp, rate, old_offset, audio, end))
+                    continue
+            latest_stamp = max(latest_stamp, stamp)
+            _, origin, previous_rate, pcm_origin = epochs[-1]
+            if rate != previous_rate:
+                transition = stamp
+                if (
+                    audio
+                    and previous_rate == PayloadType.EVENT.rate
+                    and (
+                        event_end is not None and origin <= event_end <= stamp
+                    )
+                ):
+                    transition = event_end
+                pcm_origin += offset_at(transition, previous_rate) - offset_at(
+                    origin, previous_rate
+                )
+                origin = transition
+                epochs.append((seq, origin, rate, pcm_origin))
+            new_offset = (
+                pcm_origin + offset_at(stamp, rate) - offset_at(origin, rate)
+            )
+            if audio:
+                delta = new_offset - old_offset
+                if first_audio is None:
+                    first_audio, correction = old_offset, delta
+                elif delta != correction:
+                    # Incomplete history cannot safely identify one suffix.
+                    return
+                event_end = None
+            elif end is not None:
+                event_end = end
+            elif event_end is not None and stamp >= event_end:
+                event_end = None
+            updates.append((seq, stamp, rate, new_offset, audio, end))
+        if first_audio is None or not correction:
+            return
+        if not self._shift_unread_receive_suffix(first_audio, correction):
+            return
+        self._receive_clock_epochs = deque(epochs, maxlen=256)
+        changed = {
+            (item[0], item[1], item[2], item[4]): item for item in updates
+        }
+        self._receive_media_history = deque(
+            (
+                changed.get((item[0], item[1], item[2], item[4]), item)
+                for item in history
+            ),
+            maxlen=256,
+        )
+        self._receive_event_end = event_end
+
+    def _shift_unread_receive_suffix(self, boundary: int, delta: int) -> bool:
+        manager = self.pmin
+        with manager.bufferLock:
+            cursor = manager.offset + manager.buffer.tell()
+            if delta < 0 and any(
+                start < boundary and start + len(data) > boundary + delta
+                for start, data in manager.log.items()
+            ):
+                return False
+            shifted = {}
+            for start, data in manager.log.items():
+                split = max(0, min(len(data), boundary - start))
+                if split:
+                    shifted[start] = data[:split]
+                old_start = max(start + split, cursor)
+                suffix = data[old_start - start :]
+                new_start = old_start + delta
+                if new_start < cursor:
+                    suffix = suffix[cursor - new_start :]
+                    new_start = cursor
+                if suffix:
+                    shifted[new_start] = suffix
+            if (
+                shifted
+                and max(shifted) - manager.offset > manager.max_log_span
+            ):
+                cutoff = max(shifted) - manager.max_log_span
+                shifted = {
+                    max(start, cutoff): data[max(0, cutoff - start) :]
+                    for start, data in shifted.items()
+                    if start + len(data) > cutoff
+                }
+                manager.offset = min(shifted)
+                manager.buffer = io.BytesIO()
+                manager._read_started = False
+            manager.log = shifted
+            manager.rebuild(False)
+        return True
 
     def parse_audio(
         self,
@@ -2080,6 +2299,8 @@ class RTPClient:
             self._receive_ssrc = ssrc
             self._receive_media_sequence = self._receive_media_timestamp = None
             self._receive_clock_epochs.clear()
+            self._receive_media_history.clear()
+            self._receive_event_end = None
         offset = self._receive_media_offset(
             timestamp,
             int(getattr(adapter, "rate", codec.rate)),
@@ -2212,6 +2433,9 @@ class RTPClient:
                     timestamp,
                     PayloadType.EVENT.rate,
                     packet.sequence,
+                    event_duration=(
+                        add_bytes(report[2:4]) if report[1] & 0x80 else None
+                    ),
                 )
             self._parse_telephone_event_report(
                 report,
