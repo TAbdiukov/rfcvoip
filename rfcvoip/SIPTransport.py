@@ -4,6 +4,7 @@ from threading import Lock
 from typing import Callable, Dict, Iterable, Optional, Tuple
 import ipaddress
 import random
+import re
 import select
 import socket
 import ssl
@@ -181,6 +182,13 @@ class SIPResolver:
             raw = raw[4:]
             has_scheme = True
 
+        # Userinfo may contain literal ';' and '?' characters. The '@'
+        # delimiter must be consumed before host parameters and headers.
+        user = None
+        if "@" in raw:
+            user, raw = raw.split("@", 1)
+            user = user or None
+
         raw = raw.split("?", 1)[0]
         host_part, *param_parts = raw.split(";")
         params: Dict[str, str] = {}
@@ -192,11 +200,6 @@ class SIPResolver:
             else:
                 key, val = param, ""
             params[key.strip().lower()] = val.strip()
-
-        user = None
-        if "@" in host_part:
-            user, host_part = host_part.rsplit("@", 1)
-            user = user or None
 
         host, port, explicit_port = split_hostport(host_part)
         if not host:
@@ -573,6 +576,8 @@ class SIPConnection:
         view = memoryview(data)
         deadline = time.monotonic() + self.send_timeout
         while view:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Timed out writing SIP stream data")
             try:
                 sent = self.socket.send(view)
             except (BlockingIOError, ssl.SSLWantWriteError):
@@ -690,6 +695,8 @@ class SIPConnection:
                 continue
 
             try:
+                if re.fullmatch(r"[0-9]+", value.strip()) is None:
+                    raise ValueError("Expected ASCII decimal digits")
                 content_length = int(value.strip())
             except ValueError as ex:
                 raise SIPFramingError(

@@ -1007,7 +1007,19 @@ class RTPAudioOutput:
         excess = min(self._size, (
             (excess + self._sample_alignment - 1) // self._sample_alignment
         ) * self._sample_alignment)
-        self._take_locked(excess)
+        remaining = excess
+        while remaining and self._chunks:
+            queued_at, chunk = self._chunks.popleft()
+            count = min(remaining, len(chunk))
+            self._size -= count
+            remaining -= count
+            if count < len(chunk):
+                # A sliced memoryview retains its whole original allocation.
+                # Copy the bounded tail so dropping a large live write also
+                # releases the discarded bytes instead of keeping them alive.
+                self._chunks.appendleft(
+                    (queued_at, memoryview(bytes(chunk[count:])))
+                )
         self.dropped_bytes += excess
 
     def write(self, offset: int, data: bytes) -> None:
@@ -1108,6 +1120,7 @@ class RTPClient:
         codec_priority_scores: Optional[Dict[Any, int]] = None,
         enabled_codecs: Optional[Any] = None,
         audio_output_mode: str = "buffered",
+        codec_fmtp: Optional[Dict[int, List[str]]] = None,
     ):
         if audio_output_mode not in ("buffered", "realtime"):
             raise RTPParseError(
@@ -1137,6 +1150,10 @@ class RTPClient:
         self._receive_sequences = set()
         self._receive_sequence_order: Deque[int] = deque()
         self.codec_priority_scores = dict(codec_priority_scores or {})
+        self.codec_fmtp = {
+            payload_type: list(settings)
+            for payload_type, settings in (codec_fmtp or {}).items()
+        }
         self.enabled_codecs = (
             None if enabled_codecs is None else tuple(enabled_codecs)
         )
@@ -1354,6 +1371,30 @@ class RTPClient:
                 reason=_codec_unavailable_reason(codec),
             )
 
+        configure_fmtp = getattr(adapter, "configure_fmtp", None)
+        if callable(configure_fmtp):
+            if payload_type is None:
+                payload_type = (
+                    self.preference_payload_type
+                    if codec == self.preference
+                    else next(
+                        (
+                            pt for pt, mapped in self.assoc.items()
+                            if mapped == codec
+                        ),
+                        None,
+                    )
+                )
+            try:
+                configure_fmtp(list(self.codec_fmtp.get(payload_type, [])))
+            except ValueError as ex:
+                raise UnsupportedCodecError(
+                    codec,
+                    payload_type=payload_type,
+                    operation="initialise",
+                    reason=str(ex),
+                ) from ex
+
         return adapter
 
     def audio_frame_size(self, duration_ms: Optional[int] = None) -> int:
@@ -1422,28 +1463,37 @@ class RTPClient:
         marker: bool,
         timestamp: int,
     ) -> None:
-        packet = self._build_rtp_packet(payload_type, payload, marker=marker, timestamp=timestamp)
         with self._socket_lock:
-            sout = getattr(self, "sout", None)
-        if (
-            sout is None
-            or not self.NSD
-            or self.sendrecv in (TransmitType.RECVONLY, TransmitType.INACTIVE)
-        ):
-            return
-        try:
-            sout.sendto(
-                packet,
-                self._socket_address(self.outIP, self.outPort),
+            # Immediate DTMF sends may race the audio transmitter. Reserve
+            # and send each sequence number under the same lock used by stop.
+            packet = self._build_rtp_packet(
+                payload_type,
+                payload,
+                marker=marker,
+                timestamp=timestamp,
             )
-        except OSError:
-            if self.NSD:
-                warnings.warn(
-                    "RTP Packet failed to send!",
-                    RuntimeWarning,
-                    stacklevel=2,
+            sout = getattr(self, "sout", None)
+            if (
+                sout is None
+                or not self.NSD
+                or self.sendrecv in (
+                    TransmitType.RECVONLY, TransmitType.INACTIVE,
                 )
-        self.outSequence = (self.outSequence + 1) & 0xFFFF
+            ):
+                return
+            try:
+                sout.sendto(
+                    packet,
+                    self._socket_address(self.outIP, self.outPort),
+                )
+            except OSError:
+                if self.NSD:
+                    warnings.warn(
+                        "RTP Packet failed to send!",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+            self.outSequence = (self.outSequence + 1) & 0xFFFF
 
     def _build_telephone_event_payload(
         self,
@@ -1635,6 +1685,17 @@ class RTPClient:
             # Some systems just reply to the port they receive from instead of
             # listening to the SDP.
             self.sout = self.sin
+            # A new socket lifetime begins a fresh inbound stream. Retaining
+            # the previous timestamp origin, decoder and duplicate history
+            # would discard a peer's restarted sequence/timestamp range.
+            self._receive_ssrc = self._receive_timestamp = None
+            self._receive_codec_adapters.clear()
+            self._receive_sequences.clear()
+            self._receive_sequence_order.clear()
+            self._received_dtmf.clear()
+            self._received_dtmf_order.clear()
+            self._received_dtmf_segments.clear()
+            self.pmin.rebuild(True)
             self.NSD = True
             try:
                 self._workers = [
@@ -1676,11 +1737,24 @@ class RTPClient:
     ) -> bytes:
         if length is None:
             length = self.audio_frame_size()
-        if not blocking:
+        if not blocking or length <= 0:
             return self.pmin.read(length)
-        while self.pmin.available() < length and self.NSD:
-            time.sleep(0.01)
-        return self.pmin.read(length)
+        chunks = []
+        remaining = length
+        while remaining and self.NSD:
+            # Drain incrementally so a read larger than the bounded receive
+            # buffer can complete without discarding its early audio. Keep
+            # availability and consumption atomic across concurrent readers.
+            with self.pmin.bufferLock:
+                count = min(remaining, self.pmin.available())
+                if count:
+                    chunks.append(self.pmin.read(count))
+                    remaining -= count
+            if not count:
+                time.sleep(0.01)
+        if remaining:
+            chunks.append(self.pmin.read(remaining))
+        return b"".join(chunks)
 
     def write(self, data: bytes) -> None:
         with self.pmout.bufferLock:

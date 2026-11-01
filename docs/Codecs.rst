@@ -98,6 +98,11 @@ Opus
     ``discord.py``, which can help provide or load libopus in some
     environments. In automatic sample-rate/channel mode, Opus uses 48000 Hz
     stereo. In ``"best"`` public bit-depth mode, it prefers 16-bit.
+    Outgoing Opus audio follows the peer's receive preference: mono by default,
+    stereo when the peer advertises ``stereo=1``. The public PCM format and
+    decoder can remain stereo while the outgoing stream is mono. Changing
+    the stereo preference in a reINVITE is rejected with 488 while existing
+    media continues with its established configuration.
 
 SILK
     Payload names ``SILK/24000``, ``SILK/16000``, ``SILK/12000``, and

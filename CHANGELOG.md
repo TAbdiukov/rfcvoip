@@ -6,18 +6,24 @@
 - SIP: Clean up failed startup and UDP binds, reject malformed digest authorization, and handle invalid SDP numbers safely.
 - SIP: Validate BYE, CANCEL, and NOTIFY dialog or transaction details; roll back failed subscriptions and discard terminated subscription tags.
 - SIP: Honor registrar-granted registration expiry and skip unusable digest challenges while respecting configured algorithm policies.
+- SIP: Preserve URI userinfo separators, normalize Via parameters without allowing routing-field collisions, reject malformed Content-Length syntax, and send 505 for unsupported SIP versions.
+- SIP: Enforce the total stream-send deadline even when a peer accepts only partial writes.
 - TLS: Verify the original SIP domain after DNS service lookup and read decrypted bytes already buffered by TLS.
 - VoIP: Restore audio after hold, preserve media on rejected renegotiation, and reject incompatible codec or port changes.
 - VoIP: Fix duplicate startup, fatal registration state, late INVITE failures, and call cleanup after signaling or callback startup errors.
 - VoIP: Preserve pending port reservations, bound SDP address expansion and UDP port ranges, reject impossible allocations promptly, and clean up partially constructed or answered calls.
 - VoIP: Resolve answer/CANCEL races, prevent cancelled calls from being revived, and finish local cleanup even if ACK transmission fails.
+- VoIP: Validate reINVITE dialog tags and sequence numbers, replay retransmission responses without reverting media, and serialize overlapping successful call setup responses.
 - RTP: Preserve incomplete PCM samples, align output buffers, suppress duplicate DTMF, and clear stale packet extensions.
 - RTP: Prevent old workers from restarting and clean up sockets when worker startup fails.
 - RTP: Recover DTMF after lost start packets, isolate callback failures, enforce media directions, and keep late packets from corrupting forward decoder state.
+- RTP: Release discarded realtime buffer memory, collect large blocking reads incrementally, reset inbound state on restart, and allocate sequence numbers atomically across concurrent sends.
 - RTP/VoIP/Telemetry: Reject payload numbers outside the RTP range and safely skip malformed payload methods.
 - Codecs: Fix signed wideband silence, PCM frame alignment, and Opus, SILK, and G.722 packet timing after resampling.
 - G.711: Match RTP timestamps to encoded audio and keep wideband frame padding, packet duration, and pacing consistent.
+- Opus: Apply the peer's stereo preference to outgoing audio, default to mono, and reject stereo changes that cannot be applied to an active retained adapter.
 - Telemetry: Reject unsupported explicit codec mappings instead of falling back to static payload types.
+- Telemetry: Keep unavailable optional codecs out of compatible codec reports even when enabled-codec metadata is stale.
 - Misc: Restore socket timeouts while holding the socket lock to prevent concurrent access races.
 - Tests: Expand regression and compatibility coverage for signaling, media, audio formats, and lifecycle failures, including native Opus roundtrips.
 - Documentation/CI: Document discord.py's bundled Windows libopus and DTMF recovery, and compile the renamed `rfcvoip` package in CI.

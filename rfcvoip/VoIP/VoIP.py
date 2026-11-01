@@ -44,6 +44,35 @@ def _media_fmtp_settings(media: Dict[str, Any], method: Any) -> List[str]:
     return []
 
 
+def _opus_stereo_preference(settings: List[str]) -> bool:
+    params = {}
+    for setting in settings:
+        for item in str(setting).split(";"):
+            key, separator, value = item.partition("=")
+            if separator:
+                params[key.strip().lower()] = value.strip()
+    return params.get("stereo") == "1"
+
+
+def _invite_transaction_key(
+    request: SIP.SIPMessage,
+) -> Optional[Tuple[Any, ...]]:
+    try:
+        via = request.headers["Via"][0]
+        branch = via.get("branch")
+        return (
+            request.headers["Call-ID"],
+            int(request.headers["CSeq"]["check"]),
+            branch,
+            tuple(via["address"]),
+            request.uri,
+            request.headers["From"].get("tag", ""),
+            request.headers["To"].get("tag", ""),
+        )
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+        return None
+
+
 def _payload_type_from_media_method(
     media: Dict[str, Any],
     method: Any,
@@ -120,10 +149,9 @@ def _sip_uri_user(value: Any) -> str:
     elif lower.startswith("sip:"):
         text = text[4:]
 
-    text = text.split("?", 1)[0].split(";", 1)[0]
     if "@" not in text:
         return ""
-    return text.rsplit("@", 1)[0].strip()
+    return text.split("@", 1)[0].split(":", 1)[0].strip()
 
 
 def _media_transmit_type(
@@ -347,6 +375,15 @@ class VoIPCall:
         self.rtpPortLow = self.phone.rtpPortLow
         self.sendmode = sendmode
         self._desired_sendmode = _transmit_type_from_value(sendmode)
+        self._initial_invite_key = _invite_transaction_key(request)
+        self._initial_invite_response = None
+        self._last_remote_invite_key = None
+        self._last_remote_invite_response = None
+        self._remote_invite_cseq = (
+            self._initial_invite_key[1]
+            if callstate == CallState.RINGING and self._initial_invite_key
+            else None
+        )
 
         self.dtmfLock = Lock()
         self.dtmf = io.StringIO()
@@ -617,6 +654,12 @@ class VoIPCall:
         )
 
         rtp_kwargs = {"dtmf": self.dtmf_callback}
+        if RTP.PayloadType.OPUS in codecs.values():
+            rtp_kwargs["codec_fmtp"] = {
+                payload_type: _media_fmtp_settings(media or {}, payload_type)
+                for payload_type, codec in codecs.items()
+                if codec == RTP.PayloadType.OPUS
+            }
         if audio_output_mode != "buffered":
             rtp_kwargs["audio_output_mode"] = audio_output_mode
 
@@ -1027,12 +1070,23 @@ class VoIPCall:
         """
         return self._rtp_media_answer_map(start_clients=True)
 
+    def _send_reinvite_response(
+        self, request: SIP.SIPMessage, message: str
+    ) -> None:
+        self.sip.send_response(request, message)
+        key = _invite_transaction_key(request)
+        if key is not None:
+            with self._state_lock_for():
+                self._last_remote_invite_key = key
+                self._last_remote_invite_response = message
+                self._remote_invite_cseq = key[1]
+
     def renegotiate(self, request: SIP.SIPMessage) -> None:
         if not self.phone._has_compatible_rtp_address_family(request):
             message = self.sip.gen_response(
                 request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
             )
-            self.sip.send_response(request, message)
+            self._send_reinvite_response(request, message)
             return
 
         rtp_targets: List[Tuple[str, int, Dict[str, Any]]] = []
@@ -1071,7 +1125,7 @@ class VoIPCall:
             message = self.sip.gen_response(
                 request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
             )
-            self.sip.send_response(request, message)
+            self._send_reinvite_response(request, message)
             return
 
         # These clients retain their codec adapters and payload mappings.
@@ -1096,19 +1150,30 @@ class VoIPCall:
                     session_bandwidth=request.body.get("b", []),
                     media_bandwidth=media.get("bandwidth", []),
                 )
+                or (
+                    codec == RTP.PayloadType.OPUS
+                    and (
+                        _opus_stereo_preference(
+                            _media_fmtp_settings(media, payload_type)
+                        )
+                        != _opus_stereo_preference(
+                            getattr(client, "codec_fmtp", {}).get(payload_type, [])
+                        )
+                    )
+                )
                 for payload_type, codec in client.assoc.items()
             ):
                 message = self.sip.gen_response(
                     request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
                 )
-                self.sip.send_response(request, message)
+                self._send_reinvite_response(request, message)
                 return
 
         m = self._rtp_media_answer_map()
         message = self.sip.gen_answer(
             request, self.session_id, m, negotiated_sendmode
         )
-        self.sip.send_response(request, message)
+        self._send_reinvite_response(request, message)
         self.sendmode = negotiated_sendmode
         for client, (remote_ip, remote_port, _connection) in zip(
             rtp_clients,
@@ -1138,6 +1203,7 @@ class VoIPCall:
                 # Commit the final response before sending it. A concurrent
                 # CANCEL can only win while the call is still ringing.
                 self.state = CallState.ANSWERED
+                self._initial_invite_response = message
             self.sip.send_response(self.request, message)
         except Exception:
             self._stop_rtp_clients()
@@ -2084,9 +2150,48 @@ class VoIPPhone:
 
         call = self._get_call(call_id)
         if call is not None:
-            debug("Re-negotiation detected!")
-            if call._get_state() != CallState.RINGING:
-                call.renegotiate(request)
+            key = _invite_transaction_key(request)
+            if key is not None and key == getattr(
+                call, "_initial_invite_key", None
+            ):
+                if call._get_state() == CallState.RINGING:
+                    message = getattr(call, "_initial_ringing_response", None)
+                    if message is None:
+                        message = self.sip.gen_response(
+                            request, SIP.SIPStatus.RINGING
+                        )
+                else:
+                    message = getattr(call, "_initial_invite_response", None)
+                if message is not None:
+                    self.sip.send_response(request, message)
+                    return
+            if not self.sip._has_matching_call(request):
+                message = self.sip.gen_response(
+                    request, SIP.SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST
+                )
+                self.sip.send_response(request, message)
+                return
+            if call._get_state() != CallState.ANSWERED:
+                message = self.sip.gen_response(
+                    request, SIP.SIPStatus.REQUEST_PENDING
+                )
+                self.sip.send_response(request, message)
+                return
+            if key is not None and key == getattr(
+                call, "_last_remote_invite_key", None
+            ):
+                self.sip.send_response(request, call._last_remote_invite_response)
+                return
+            previous_cseq = getattr(call, "_remote_invite_cseq", None)
+            if key is None or (
+                previous_cseq is not None and key[1] <= previous_cseq
+            ):
+                message = self.sip.gen_response(
+                    request, SIP.SIPStatus.INTERNAL_SERVER_ERROR
+                )
+                self.sip.send_response(request, message)
+                return
+            call.renegotiate(request)
             return
 
         to_header = request.headers.get("To", {})
@@ -2193,6 +2298,7 @@ class VoIPPhone:
                     raise RuntimeError(
                         "Call was removed before callback dispatch."
                     )
+                call._initial_ringing_response = message
                 callback = self.callCallback
                 if callback is None:
                     raise RuntimeError("Call callback is not configured.")
@@ -2289,10 +2395,27 @@ class VoIPPhone:
             self._send_ack(request)
             return
 
-        if _call_state_value(call) == CallState.ANSWERED:
+        with call._state_lock_for():
+            already_answering = (
+                call.state == CallState.ANSWERED
+                or getattr(call, "_answer_in_progress", False)
+            )
+            if not already_answering:
+                call._answer_in_progress = True
+        if already_answering:
             self._send_ack(request)
             return
 
+        try:
+            self._apply_outbound_answer(call, request)
+        finally:
+            with call._state_lock_for():
+                call._answer_in_progress = False
+
+    def _apply_outbound_answer(
+        self, call: VoIPCall, request: SIP.SIPMessage
+    ) -> None:
+        call_id = request.headers["Call-ID"]
         if not self._has_compatible_rtp_address_family(request):
             debug(
                 request.summary(),

@@ -241,6 +241,7 @@ or leave the default ``"buffered"`` to queue complete announcements.
     codec_priority_scores=None,
     enabled_codecs=None,
     audio_output_mode="buffered",
+    codec_fmtp=None,
 )
 
   ``assoc``
@@ -281,6 +282,12 @@ or leave the default ``"buffered"`` to queue complete announcements.
 
   ``codec_priority_scores`` and ``enabled_codecs``
     Optional per-client codec selection overrides.
+
+  ``codec_fmtp``
+    Optional mapping from negotiated payload numbers to peer FMTP setting
+    lists. Applied before codec initialization; Opus uses ``stereo=1`` to enable
+    outgoing stereo and otherwise sends mono. ``VoIPCall`` supplies the peer's
+    SDP settings automatically.
 
   ``audio_output_mode``
     ``"buffered"`` (default) preserves all queued PCM, including whole-file

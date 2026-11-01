@@ -192,12 +192,12 @@ def _parse_from_to_header(header: str, data: str) -> Dict[str, Any]:
     if not address:
         raise SIPParseError(f"Malformed {header} header: {data!r}")
 
-    address_user_host = address.split(";", 1)[0]
-    if len(address_user_host.rsplit("@", 1)) == 2:
-        number, host = address_user_host.rsplit("@", 1)
+    if "@" in address:
+        number, host = address.split("@", 1)
     else:
         number = None
-        host = address_user_host
+        host = address
+    host = host.split(";", 1)[0].split("?", 1)[0]
 
     if not host:
         raise SIPParseError(f"Malformed {header} header: {data!r}")
@@ -787,7 +787,7 @@ class SIPMessage:
         # Request: "METHOD sip:... SIP/2.0"
         if len(parts) >= 3:
             last = str(parts[-1], "utf8", errors="replace")
-            if last in self.SIPCompatibleVersions:
+            if re.fullmatch(r"SIP/\d+\.\d+", last):
                 self.type = SIPMessageType.MESSAGE
                 self.parse_sip_message(data)
                 return
@@ -809,7 +809,7 @@ class SIPMessage:
         if header == "Via":
             values = data if isinstance(data, list) else [data]
             for d in values:
-                pieces = d.split(";")
+                pieces = _split_top_level_semicolon(d)
                 sent_by = pieces[0].strip().split()
                 if len(sent_by) < 2:
                     continue
@@ -825,15 +825,28 @@ class SIPMessage:
                 Sets branch, maddr, ttl, received, and rport if defined
                 as per RFC 3261 20.7
                 """
+                seen_parameters = set()
                 for x in pieces[1:]:
                     x = x.strip()
                     if not x:
                         continue
                     if "=" in x:
                         key, val = x.split("=", 1)
-                        _via[key] = val
+                        val = val.strip()
                     else:
-                        _via[x] = None
+                        key, val = x, None
+                    key = key.strip().lower()
+                    if not key:
+                        raise SIPParseError("Malformed Via parameter name.")
+                    if key in seen_parameters:
+                        raise SIPParseError(
+                            f"Duplicate Via parameter {key!r}."
+                        )
+                    seen_parameters.add(key)
+                    if key in ("type", "transport", "address", "parameters"):
+                        _via.setdefault("parameters", {})[key] = val
+                    else:
+                        _via[key] = val
                 self.headers["Via"].append(_via)
         elif header == "From" or header == "To":
             self.headers[header] = _parse_from_to_header(header, data)
@@ -855,6 +868,8 @@ class SIPMessage:
             ]
         elif header == "Content-Length":
             try:
+                if re.fullmatch(r"[0-9]+", data.strip()) is None:
+                    raise ValueError("Expected ASCII decimal digits")
                 content_length = int(data.strip())
             except ValueError as ex:
                 raise SIPParseError(
@@ -1249,6 +1264,8 @@ class SIPMessage:
                 parsed_values = []
                 for value in values:
                     try:
+                        if re.fullmatch(r"[0-9]+", str(value).strip()) is None:
+                            raise ValueError("Expected ASCII decimal digits")
                         parsed_value = int(str(value).strip())
                     except ValueError as ex:
                         raise SIPParseError(
@@ -4102,7 +4119,7 @@ class SIPClient:
                     always_include_port=True,
                 )
             )
-            rendered_params = {"type", "transport", "address"}
+            rendered_params = {"type", "transport", "address", "parameters"}
             if "branch" in h_via.keys():
                 v_line += f';branch={h_via["branch"]}'
                 rendered_params.add("branch")
@@ -4119,6 +4136,11 @@ class SIPClient:
             for key, value in h_via.items():
                 if key in rendered_params:
                     continue
+                if value is None:
+                    v_line += f";{key}"
+                else:
+                    v_line += f";{key}={value}"
+            for key, value in h_via.get("parameters", {}).items():
                 if value is None:
                     v_line += f";{key}"
                 else:

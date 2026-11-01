@@ -579,6 +579,7 @@ def codec_info(
             and bool(availability.get("available", True))
             and fmtp_supported
         )
+    supported = bool(supported and availability.get("available", True))
 
     is_dynamic = (
         payload_type is None
@@ -874,7 +875,7 @@ def _codec_info_from_media(
             and bandwidth_supported
         ),
     )
-    info["codec_supported"] = codec_supported
+    info["codec_supported"] = codec_supported and info["available"]
     info["protocol_supported"] = protocol_supported
     info["fmtp_supported"] = fmtp_supported
     if rate is not None:

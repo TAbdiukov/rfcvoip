@@ -281,6 +281,7 @@ class OpusCodec(RTPCodec):
     def __init__(self):
         self._lib = _get_libopus_encode_handle()
         self._encoder = None
+        self._encoder_channels = 1
         self._decoder = None
         self._encode_rate_state = None
         self._decode_rate_state = None
@@ -296,6 +297,26 @@ class OpusCodec(RTPCodec):
         except Exception:
             pass
 
+    def configure_fmtp(self, settings: List[str]) -> None:
+        """Apply the peer's receive preference to the outgoing encoder.
+
+        RFC 7587 defaults ``stereo`` to zero. The decoder still accepts
+        stereo regardless of the peer's receive preference.
+        """
+        params = {}
+        for setting in settings or []:
+            for item in str(setting).split(";"):
+                key, separator, value = item.partition("=")
+                if separator:
+                    params[key.strip().lower()] = value.strip()
+        channels = 2 if params.get("stereo") == "1" else 1
+        if channels != self._encoder_channels:
+            if self._encoder:
+                self._lib.opus_encoder_destroy(self._encoder)
+                self._encoder = None
+            self._encoder_channels = channels
+            self._encode_rate_state = None
+
     def _ensure_encoder(self):
         if self._encoder:
             return self._encoder
@@ -303,7 +324,7 @@ class OpusCodec(RTPCodec):
         err = ctypes.c_int()
         encoder = self._lib.opus_encoder_create(
             self.rate,
-            self.channels,
+            self._encoder_channels,
             OPUS_APPLICATION_VOIP,
             ctypes.byref(err),
         )
@@ -353,12 +374,14 @@ class OpusCodec(RTPCodec):
 
     def _to_opus_pcm(self, payload: bytes) -> bytes:
         target_frame_size = self._encoding_frame_size(payload)
-        pcm16_48k = self._source_u8_to_pcm16(payload, self.rate)
+        pcm16_48k = self._source_u8_to_pcm16(
+            payload, self.rate, target_channels=self._encoder_channels
+        )
 
         # Resampling can initially yield a few fewer samples. Preserve the
         # intended valid frame duration and pad that shortfall with silence.
         # Unsupported input durations continue to use a 20 ms Opus frame.
-        target_bytes = target_frame_size * self.channels * 2
+        target_bytes = target_frame_size * self._encoder_channels * 2
         return pcm16_48k[:target_bytes].ljust(target_bytes, b"\x00")
 
     def encode(self, payload: bytes) -> bytes:
@@ -369,10 +392,10 @@ class OpusCodec(RTPCodec):
             )
 
         pcm16_48k = self._to_opus_pcm(payload)
-        frame_size = len(pcm16_48k) // (2 * self.channels)
-        pcm = (ctypes.c_int16 * (frame_size * self.channels)).from_buffer_copy(
-            pcm16_48k
-        )
+        frame_size = len(pcm16_48k) // (2 * self._encoder_channels)
+        pcm = (
+            ctypes.c_int16 * (frame_size * self._encoder_channels)
+        ).from_buffer_copy(pcm16_48k)
         encoded = (ctypes.c_ubyte * self.max_data_bytes)()
 
         encoded_len = self._lib.opus_encode(

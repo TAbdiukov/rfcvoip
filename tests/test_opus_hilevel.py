@@ -146,6 +146,7 @@ def test_encode_returns_libopus_packet_and_uses_valid_opus_frame(fake_libopus):
         bit_depth=16,
         channels=2,
     )
+    codec.configure_fmtp(["stereo=1"])
 
     encoded = codec.encode(b"\x01\x00" * 20)
 
