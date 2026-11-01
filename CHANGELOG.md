@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Codecs: Add optional AMR and AMR-WB sending/receiving through OpenCORE and VisualOn native libraries on Windows, macOS, and Linux, with availability reporting and codec priority tuning.
+- RTP/SDP: Support both RFC 4867 packet formats, aggregated AMR frames, receive comfort noise, mode sets and mode requests, and preserve negotiated settings across offers/answers and retained media.
+- Tests: Cover every AMR/AMR-WB mode with native encoders/decoders, framing and malformed packets, audio conversion, negotiation, and cross-platform native codec CI.
 - SIP/VoIP: Isolate signaling lifetimes so stale receivers, timers, transactions, and startup/shutdown completions cannot modify a restarted client or phone.
 - VoIP: ACK and terminate late accepted outbound dialogs after local cancellation, including answers received while CANCEL is being sent.
 - SIP/VoIP: Release ended and failed-setup dialog tags while retaining bounded context needed for late responses.

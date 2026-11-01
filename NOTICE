@@ -21,6 +21,14 @@ License:
   This project is distributed under the GNU General Public License version 3.
   See LICENSE for the full license text.
 
+Optional AMR native libraries:
+  AMR-NB encoding/decoding and AMR-WB decoding use OpenCORE AMR.
+  AMR-WB encoding uses VisualOn vo-amrwbenc.
+  https://opencore-amr.sourceforge.net/
+  https://github.com/mstorsjo/vo-amrwbenc
+  These libraries are distributed separately under the Apache License 2.0;
+  their source code and binaries are not bundled with rfcvoip.
+
 No warranty:
   This program is distributed WITHOUT ANY WARRANTY; without even the implied
   warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.

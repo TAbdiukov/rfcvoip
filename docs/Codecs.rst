@@ -41,7 +41,7 @@ selects the shared public PCM format. The other codecs convert to that format
 internally. Fixed phone settings apply to every media section.
 
 In ``"best"`` bit-depth mode, PCMU and PCMA prefer 8-bit public PCM. PCMU-WB,
-PCMA-WB, G.722, Opus, and SILK prefer 16-bit public PCM. ``telephone-event`` is
+PCMA-WB, G.722, Opus, SILK, AMR, and AMR-WB prefer 16-bit public PCM. ``telephone-event`` is
 not continuous audio and is not used to select public bit depth.
 
 Use these helpers instead of hard-coding frame lengths:
@@ -114,6 +114,71 @@ SILK
     the ``pysilk`` module. The ``silk`` extra installs ``silk-python``. In
     automatic sample-rate/channel mode, SILK uses its negotiated sample rate
     and mono audio. In ``"best"`` public bit-depth mode, it prefers 16-bit.
+
+AMR and AMR-WB
+    AMR uses OpenCORE's AMR-NB encoder and decoder. AMR-WB uses the VisualOn
+    ``vo-amrwbenc`` encoder and OpenCORE AMR-WB decoder. These are established
+    native libraries also integrated by FFmpeg; rfcvoip calls their public C
+    interfaces directly through Python's ``ctypes``. Speech coding is not
+    reimplemented in Python. No external executable or temporary audio file
+    is used for live media.
+
+    AMR is mono at 8000 Hz (default dynamic payload 118); AMR-WB is mono at
+    16000 Hz (default dynamic payload 119). Both use 20 ms speech frames and
+    prefer 16-bit public PCM. All eight AMR and nine AMR-WB speech modes are
+    supported, with the highest negotiated mode selected initially. Native
+    PCM conversion handles host endianness explicitly. Public audio can
+    still use every supported bit depth, rate, and mono/stereo setting.
+    SDP bandwidth checks and telemetry use the highest mode in the negotiated
+    mode set, so a low-bitrate-only offer can operate under its bandwidth cap.
+
+    Install the native runtime libraries separately:
+
+    * Debian/Ubuntu: ``sudo apt-get install libopencore-amrnb0 libopencore-amrwb0 libvo-amrwbenc0``.
+    * macOS: ``brew install opencore-amr vo-amrwbenc``.
+    * Windows, MSYS2 MINGW64: ``pacman -S mingw-w64-x86_64-opencore-amr mingw-w64-x86_64-vo-amrwbenc``.
+
+    Windows users should set ``RFCVOIP_AMR_LIBRARY_DIR`` to the directory
+    containing the DLLs, typically ``C:\\msys64\\mingw64\\bin``. This also
+    configures Windows' dependency search directory. The optional
+    ``RFCVOIP_AMRNB_LIBRARY``, ``RFCVOIP_AMRWB_LIBRARY``, and
+    ``RFCVOIP_AMRWBENC_LIBRARY`` environment variables select individual
+    library paths. Binaries must match Python's architecture. Linux shared
+    objects and macOS dylibs are discovered automatically, including normal
+    Intel and Apple Silicon Homebrew locations. The Python extras do not
+    install these native libraries. If a required encoder or decoder is
+    missing, that codec is reported unavailable and omitted from offers;
+    existing codecs remain usable.
+
+    RFC 4867 octet-aligned and bandwidth-efficient RTP are supported. Offers
+    advertise ``octet-align=1;mode-change-capability=2``; omitted ``octet-align`` in a peer's offer
+    correctly selects bandwidth-efficient operation. Answers preserve the
+    offered packet format and mode set. Aggregated packets, SID comfort-noise
+    frames, no-data frames, and AMR-WB speech-lost frames are accepted. Up to
+    50 frames (one second) may be carried in one packet; live transmission
+    sends one 20 ms frame per packet. Invalid/truncated packets are validated
+    completely before native decoding. The RTP Q bit is passed to the native
+    decoder as its bad-frame indicator.
+
+    ``mode-set``, ``mode-change-period`` (1 or 2), and
+    ``mode-change-neighbor`` are honored, including valid incoming codec mode
+    requests. CRC, robust sorting, interleaving, and multichannel AMR are not
+    implemented and are rejected during negotiation. Transmit DTX is disabled;
+    receive DTX/comfort noise is supported. ReINVITEs which change the active
+    AMR format or mode constraints are rejected while existing media continues.
+
+    Default preference scores are Opus 1000, AMR-WB 960, SILK 920--950,
+    G.722 910, G.711 wideband 850--900, AMR 750, PCMU 700, and PCMA 650.
+    Process-wide and per-phone overrides apply to AMR as to all other codecs.
+
+    Upstream references: `OpenCORE AMR <https://opencore-amr.sourceforge.net/>`_,
+    `VisualOn encoder <https://github.com/mstorsjo/vo-amrwbenc>`_,
+    `FFmpeg integration <https://ffmpeg.org/general.html#OpenCORE-AMR>`_, and
+    `RFC 4867 <https://www.rfc-editor.org/rfc/rfc4867.html>`_.
+    Prebuilt packages: `Homebrew OpenCORE <https://formulae.brew.sh/formula/opencore-amr>`_,
+    `Homebrew VisualOn <https://formulae.brew.sh/formula/vo-amrwbenc>`_,
+    `MSYS2 OpenCORE <https://packages.msys2.org/packages/mingw-w64-x86_64-opencore-amr>`_,
+    `MSYS2 VisualOn <https://packages.msys2.org/packages/mingw-w64-x86_64-vo-amrwbenc>`_.
 
 The ``no-compiler`` and ``all`` extras install the optional G.722, Opus, and
 SILK dependencies. The ``compiler`` extra is retained for compatibility and

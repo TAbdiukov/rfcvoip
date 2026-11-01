@@ -1534,6 +1534,37 @@ def _sdp_media_port_field(port: Any, port_count: int) -> str:
     return f"{port_text}/{port_count}" if port_count > 1 else port_text
 
 
+def _answer_fmtp_for_payload_type(
+    payload_type: int, codec: "RTP.PayloadType", offered: Dict[str, Any]
+) -> List[str]:
+    if codec not in (
+        rfcvoip.RTP.PayloadType.AMR,
+        rfcvoip.RTP.PayloadType.AMR_WB,
+    ):
+        return rfcvoip.RTP.fmtp_for_payload_type(payload_type, codec)
+
+    # RFC 4867 requires matching payload configuration in both directions.
+    # An omitted octet-align means bandwidth-efficient, even though our
+    # own offers prefer octet alignment. Echo the offered mode-set verbatim.
+    attributes = offered.get("attributes", {}).get(str(payload_type), {})
+    settings = attributes.get("fmtp", {}).get("settings", [])
+    params = {}
+    for setting in settings:
+        for item in str(setting).split(";"):
+            key, separator, value = item.partition("=")
+            if separator:
+                params[key.strip().lower()] = value.strip()
+    answer = ["octet-align=" + params.get("octet-align", "0")]
+    for key in (
+        "mode-set", "mode-change-period", "mode-change-neighbor",
+        "crc", "robust-sorting", "channels",
+    ):
+        if key in params:
+            answer.append(f"{key}={params[key]}")
+    answer.append("mode-change-capability=2")
+    return [";".join(answer)]
+
+
 def _bandwidths_to_list(value: Any) -> List[Dict[str, Any]]:
     if value is None:
         return []
@@ -1569,12 +1600,14 @@ def _enforceable_bandwidth_limit_bps(
     return min(limits) if limits else None
 
 
-def _codec_required_bandwidth_bps(codec: Any) -> Optional[int]:
-    """Return a registered codec's payload bitrate requirement, if fixed."""
+def _codec_required_bandwidth_bps(
+    codec: Any, fmtp: Optional[List[str]] = None
+) -> Optional[int]:
+    """Return a codec's payload bitrate requirement for negotiated modes."""
     try:
         from rfcvoip.codecs import codec_required_bandwidth_bps as required_bps
 
-        return required_bps(codec)
+        return required_bps(codec, fmtp=fmtp)
     except Exception:
         return None
 
@@ -1584,13 +1617,14 @@ def codec_bandwidth_supported(
     *,
     session_bandwidth: Any = None,
     media_bandwidth: Any = None,
+    fmtp: Optional[List[str]] = None,
 ) -> bool:
     """Return whether an SDP bandwidth limit can carry ``codec``.
 
     Unknown or non-enforceable bandwidth modifiers are treated as compatible;
     only clear AS/TIAS caps below a known codec's payload bitrate reject it.
     """
-    required = _codec_required_bandwidth_bps(codec)
+    required = _codec_required_bandwidth_bps(codec, fmtp=fmtp)
     limit = _enforceable_bandwidth_limit_bps(
         session_bandwidth=session_bandwidth,
         media_bandwidth=media_bandwidth,
@@ -4419,7 +4453,7 @@ class SIPClient:
                 by_slot.get(index, (0, {"rejected_media": media}))
                 for index, media in enumerate(request.body.get("m", []))
             ]
-        for x, media_spec in media_specs:
+        for media_index, (x, media_spec) in enumerate(media_specs):
             if (
                 isinstance(media_spec, dict)
                 and "rejected_media" in media_spec
@@ -4450,7 +4484,13 @@ class SIPClient:
                     + rfcvoip.RTP.rtpmap_for_payload_type(m, codec)
                     + "\r\n"
                 )
-                for fmtp in rfcvoip.RTP.fmtp_for_payload_type(m, codec):
+                offered_media = getattr(request, "body", {}).get("m", [])
+                offered = (
+                    offered_media[media_index]
+                    if media_index < len(offered_media)
+                    else {}
+                )
+                for fmtp in _answer_fmtp_for_payload_type(m, codec, offered):
                     body += f"a=fmtp:{m} {fmtp}\r\n"
             body += "a=ptime:20\r\n"
             body += "a=maxptime:150\r\n"

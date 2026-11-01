@@ -229,6 +229,8 @@ class PayloadType(Enum):
     DVI4_22050 = 17, 22050, 1, "DVI4"
     G729 = 18, 8000, 1, "G729"
     OPUS = "opus", 48000, 1, "opus"
+    AMR = "AMR", 8000, 1, "AMR"
+    AMR_WB = "AMR-WB", 16000, 1, "AMR-WB"
     SILK_24000 = "SILK/24000", 24000, 1, "SILK"
     SILK_16000 = "SILK/16000", 16000, 1, "SILK"
     SILK_12000 = "SILK/12000", 12000, 1, "SILK"
@@ -270,6 +272,8 @@ _AUDIO_PAYLOAD_TYPES = frozenset(
         PayloadType.DVI4_22050,
         PayloadType.G729,
         PayloadType.OPUS,
+        PayloadType.AMR,
+        PayloadType.AMR_WB,
         PayloadType.SILK_24000,
         PayloadType.SILK_16000,
         PayloadType.SILK_12000,
@@ -1144,6 +1148,7 @@ class RTPClient:
         audio_output_mode: str = "buffered",
         codec_fmtp: Optional[Dict[int, List[str]]] = None,
         receive_assoc: Optional[Dict[int, PayloadType]] = None,
+        receive_codec_fmtp: Optional[Dict[int, List[str]]] = None,
     ):
         if audio_output_mode not in ("buffered", "realtime"):
             raise RTPParseError(
@@ -1172,8 +1177,8 @@ class RTPClient:
             raise RTPParseError(
                 f"Unsupported RTP transmit type {sendrecv!r}."
             ) from ex
-        self._codec_adapters: Dict[PayloadType, Any] = {}
-        self._receive_codec_adapters: Dict[PayloadType, Any] = {}
+        self._codec_adapters: Dict[Any, Any] = {}
+        self._receive_codec_adapters: Dict[Any, Any] = {}
         self._receive_ssrc: Optional[int] = None
         self._receive_timestamp: Optional[int] = None
         self._receive_sequences = set()
@@ -1191,6 +1196,13 @@ class RTPClient:
         self.codec_fmtp = {
             payload_type: list(settings)
             for payload_type, settings in (codec_fmtp or {}).items()
+        }
+        self.receive_codec_fmtp = {
+            payload_type: list(settings)
+            for payload_type, settings in (
+                self.codec_fmtp
+                if receive_codec_fmtp is None else receive_codec_fmtp
+            ).items()
         }
         self.enabled_codecs = (
             None if enabled_codecs is None else tuple(enabled_codecs)
@@ -1355,6 +1367,27 @@ class RTPClient:
             )
         return channels
 
+    def _codec_adapter_key(
+        self,
+        codec: PayloadType,
+        payload_type: Optional[int] = None,
+        *,
+        receive: bool = False,
+    ):
+        if codec not in (PayloadType.AMR, PayloadType.AMR_WB):
+            return codec
+        if payload_type is None:
+            assoc = self.receive_assoc if receive else self.assoc
+            payload_type = (
+                self.preference_payload_type
+                if codec == self.preference and not receive
+                else next(
+                    (pt for pt, mapped in assoc.items() if mapped == codec),
+                    None,
+                )
+            )
+        return codec, payload_type
+
     def _codec_adapter(
         self,
         codec: PayloadType,
@@ -1363,18 +1396,23 @@ class RTPClient:
         receive: bool = False,
     ):
         adapters = self._receive_codec_adapters if receive else self._codec_adapters
-        adapter = adapters.get(codec)
+        key = self._codec_adapter_key(codec, payload_type, receive=receive)
+        adapter = adapters.get(key)
         if adapter is not None:
             return adapter
 
-        adapter = self._new_codec_adapter(codec, payload_type)
-        adapters[codec] = adapter
+        if isinstance(key, tuple):
+            payload_type = key[1]
+        adapter = self._new_codec_adapter(codec, payload_type, receive=receive)
+        adapters[key] = adapter
         return adapter
 
     def _new_codec_adapter(
         self,
         codec: PayloadType,
         payload_type: Optional[int] = None,
+        *,
+        receive: bool = False,
     ):
         from rfcvoip.codecs import create_codec
 
@@ -1424,7 +1462,10 @@ class RTPClient:
                     )
                 )
             try:
-                configure_fmtp(list(self.codec_fmtp.get(payload_type, [])))
+                settings = (
+                    self.receive_codec_fmtp if receive else self.codec_fmtp
+                )
+                configure_fmtp(list(settings.get(payload_type, [])))
             except ValueError as ex:
                 raise UnsupportedCodecError(
                     codec,
@@ -2306,6 +2347,7 @@ class RTPClient:
         if not same_source and self._receive_ssrc is not None:
             adapter = self._new_codec_adapter(
                 codec, getattr(packet, "payload_number", None),
+                receive=True,
             )
         else:
             adapter = self._codec_adapter(
@@ -2330,6 +2372,7 @@ class RTPClient:
                 adapter = self._new_codec_adapter(
                     codec,
                     getattr(packet, "payload_number", None),
+                    receive=True,
                 )
         try:
             data = adapter.decode(packet.payload)
@@ -2347,10 +2390,24 @@ class RTPClient:
             raise RTPParseError(
                 f"RTP audio decode failed for {codec}: {ex}"
             ) from ex
+        if (
+            codec in (PayloadType.AMR, PayloadType.AMR_WB)
+            and codec == self.preference
+            and packet.payload
+            and (previous is None or timestamp > previous)
+        ):
+            # CMR controls the opposite-direction encoder. Only validated
+            # packets on the forward receive timeline can change its mode.
+            self._codec_adapter(
+                codec, self.preference_payload_type
+            ).request_mode(packet.payload[0] >> 4)
         if not same_source:
             # A new source has its own timestamp origin and decoder history.
             # Commit the switch only after its first audio decoded correctly.
-            self._receive_codec_adapters = {codec: adapter}
+            key = self._codec_adapter_key(
+                codec, getattr(packet, "payload_number", None), receive=True
+            )
+            self._receive_codec_adapters = {key: adapter}
             self._receive_ssrc = ssrc
             self._receive_media_sequence = self._receive_media_timestamp = None
             self._receive_clock_epochs.clear()

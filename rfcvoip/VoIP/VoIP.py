@@ -55,6 +55,90 @@ def _opus_stereo_preference(settings: List[str]) -> bool:
     return params.get("stereo") == "1"
 
 
+def _amr_parameters(codec: RTP.PayloadType, settings: List[str]):
+    from rfcvoip.codecs import codec_class
+
+    return codec_class(codec).fmtp_parameters(settings)
+
+
+def _amr_setting_values(settings: List[str]) -> Dict[str, str]:
+    params = {}
+    for setting in settings:
+        for item in str(setting).split(";"):
+            key, separator, value = item.partition("=")
+            if separator:
+                params[key.strip().lower()] = value.strip()
+    return params
+
+
+def _amr_answer_matches_offer(
+    codec: RTP.PayloadType,
+    answer_settings: List[str],
+    offered: Dict[str, Any],
+    answer_payload_type: Optional[int] = None,
+) -> bool:
+    """Validate symmetric format and directional requirements (RFC 4867)."""
+    if codec not in (RTP.PayloadType.AMR, RTP.PayloadType.AMR_WB):
+        return True
+    answer = _amr_parameters(codec, answer_settings)
+    answer_values = _amr_setting_values(answer_settings)
+    methods = offered.get("methods", [])
+    if answer_payload_type is not None:
+        retained = [
+            method
+            for method in methods
+            if str(method) == str(answer_payload_type)
+        ]
+        if retained:
+            methods = retained
+    for method in methods:
+        try:
+            if _payload_type_from_media_method(offered, method) != codec:
+                continue
+            settings = _media_fmtp_settings(offered, method)
+            offer = _amr_parameters(codec, settings)
+            values = _amr_setting_values(settings)
+            if offer["octet-align"] != answer["octet-align"]:
+                continue
+            if "mode-set" in values and (
+                "mode-set" not in answer_values
+                or offer["mode-set"] != answer["mode-set"]
+            ):
+                continue
+            if answer["mode-change-period"] == 2 and (
+                values.get("mode-change-capability", "1") != "2"
+                and offer["mode-change-period"] != 2
+            ):
+                continue
+            if (
+                offer["mode-change-period"] == 2
+                and answer_values.get("mode-change-capability") == "1"
+            ):
+                continue
+            return True
+        except (KeyError, TypeError, ValueError):
+            continue
+    return False
+
+
+def _amr_receive_settings(
+    codec: RTP.PayloadType,
+    offered_settings: List[str],
+    answer_settings: List[str],
+) -> List[str]:
+    # mode-set applies in both directions, including a subset added by an
+    # answer to an unconstrained offer. Mode-change requirements describe
+    # the receiver and therefore remain those in our original offer.
+    offered = _amr_parameters(codec, offered_settings)
+    answer = _amr_parameters(codec, answer_settings)
+    values = _amr_setting_values(offered_settings)
+    if offered["octet-align"] == answer["octet-align"]:
+        answer_values = _amr_setting_values(answer_settings)
+        if "mode-set" in answer_values:
+            values["mode-set"] = answer_values["mode-set"]
+    return [";".join(f"{key}={value}" for key, value in values.items())]
+
+
 def _invite_transaction_key(
     request: SIP.SIPMessage,
 ) -> Optional[Tuple[Any, ...]]:
@@ -521,6 +605,7 @@ class VoIPCall:
                         )
                         and SIP.codec_bandwidth_supported(
                             codec,
+                            fmtp=_media_fmtp_settings(i, m),
                             session_bandwidth=session_bandwidth,
                             media_bandwidth=media_bandwidth,
                         )
@@ -625,6 +710,7 @@ class VoIPCall:
         baseport: int,
         media: Optional[Dict[str, Any]] = None,
         receive_assoc: Optional[Dict[int, RTP.PayloadType]] = None,
+        receive_fmtp: Optional[Dict[int, List[str]]] = None,
     ) -> None:
         debug(
             f"Creating RTP client(s) for {self.call_id}",
@@ -684,12 +770,19 @@ class VoIPCall:
         rtp_kwargs = {"dtmf": self.dtmf_callback}
         if receive_assoc is not None and receive_assoc != codecs:
             rtp_kwargs["receive_assoc"] = receive_assoc
-        if RTP.PayloadType.OPUS in codecs.values():
+        configured_codecs = (
+            RTP.PayloadType.OPUS,
+            RTP.PayloadType.AMR,
+            RTP.PayloadType.AMR_WB,
+        )
+        if any(codec in configured_codecs for codec in codecs.values()):
             rtp_kwargs["codec_fmtp"] = {
                 payload_type: _media_fmtp_settings(media or {}, payload_type)
                 for payload_type, codec in codecs.items()
-                if codec == RTP.PayloadType.OPUS
+                if codec in configured_codecs
             }
+        if receive_fmtp is not None:
+            rtp_kwargs["receive_codec_fmtp"] = receive_fmtp
         if audio_output_mode != "buffered":
             rtp_kwargs["audio_output_mode"] = audio_output_mode
 
@@ -1276,6 +1369,7 @@ class VoIPCall:
                 )
                 or not SIP.codec_bandwidth_supported(
                     codec,
+                    fmtp=_media_fmtp_settings(media, payload_type),
                     session_bandwidth=request.body.get("b", []),
                     media_bandwidth=media.get("bandwidth", []),
                 )
@@ -1288,6 +1382,15 @@ class VoIPCall:
                         != _opus_stereo_preference(
                             getattr(client, "codec_fmtp", {}).get(payload_type, [])
                         )
+                    )
+                )
+                or (
+                    codec in (RTP.PayloadType.AMR, RTP.PayloadType.AMR_WB)
+                    and _amr_parameters(
+                        codec, _media_fmtp_settings(media, payload_type)
+                    ) != _amr_parameters(
+                        codec,
+                        getattr(client, "codec_fmtp", {}).get(payload_type, []),
                     )
                 )
                 for payload_type, codec in client.assoc.items()
@@ -1327,6 +1430,13 @@ class VoIPCall:
             # the new receive direction as well. Apply it only once the
             # re-INVITE answer has been sent successfully.
             client.receive_assoc = dict(client.assoc)
+            if hasattr(client, "receive_codec_fmtp"):
+                if client.receive_codec_fmtp != client.codec_fmtp:
+                    client._receive_codec_adapters.clear()
+                client.receive_codec_fmtp = {
+                    pt: list(settings)
+                    for pt, settings in client.codec_fmtp.items()
+                }
             client.outIP = remote_ip
             client.outPort = remote_port
 
@@ -1458,8 +1568,13 @@ class VoIPCall:
                         codec,
                         _media_fmtp_settings(i, payload_type),
                     )
+                    and _amr_answer_matches_offer(
+                        codec, _media_fmtp_settings(i, payload_type), offered,
+                        payload_type,
+                    )
                     and SIP.codec_bandwidth_supported(
                         codec,
+                        fmtp=_media_fmtp_settings(i, payload_type),
                         session_bandwidth=session_bandwidth,
                         media_bandwidth=media_bandwidth,
                     )
@@ -1485,12 +1600,44 @@ class VoIPCall:
             self.sendmode = negotiated_sendmode
 
             receive_assoc = {}
+            receive_fmtp = {}
             for method in offered.get("methods", []):
                 try:
                     codec = _payload_type_from_media_method(offered, method)
                 except (KeyError, TypeError, ValueError):
                     continue
                 if codec in codecs.values():
+                    if codec in (RTP.PayloadType.AMR, RTP.PayloadType.AMR_WB):
+                        # Pair retained PTs first. Remapped alternatives must
+                        # match this particular offered configuration before
+                        # the answer's bidirectional mode-set is applied.
+                        candidates = [
+                            pt
+                            for pt, mapped in codecs.items()
+                            if mapped == codec
+                        ]
+                        if int(method) in candidates:
+                            candidates = [int(method)]
+                        single_offer = dict(offered, methods=[method])
+                        matched = next(
+                            (
+                                _media_fmtp_settings(i, pt)
+                                for pt in candidates
+                                if _amr_answer_matches_offer(
+                                    codec,
+                                    _media_fmtp_settings(i, pt),
+                                    single_offer,
+                                )
+                            ),
+                            None,
+                        )
+                        if matched is None:
+                            continue
+                        receive_fmtp[int(method)] = _amr_receive_settings(
+                            codec,
+                            _media_fmtp_settings(offered, method),
+                            matched,
+                        )
                     receive_assoc[int(method)] = codec
             if not any(
                 RTP.is_transmittable_audio_codec(codec)
@@ -1508,6 +1655,7 @@ class VoIPCall:
                 i["port"],
                 media=i,
                 receive_assoc=receive_assoc,
+                receive_fmtp=receive_fmtp or None,
             )
 
         rtp_clients = self._rtp_clients_snapshot()
@@ -2402,6 +2550,7 @@ class VoIPPhone:
                     continue
                 if not SIP.codec_bandwidth_supported(
                     codec,
+                    fmtp=_media_fmtp_settings(media, method),
                     session_bandwidth=request.body.get("b", []),
                     media_bandwidth=media.get("bandwidth", []),
                 ):

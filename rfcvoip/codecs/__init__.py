@@ -385,9 +385,16 @@ def codec_payload_kind(payload_type: PayloadType) -> Optional[str]:
     return getattr(cls, "payload_kind", None)
 
 
-def codec_required_bandwidth_bps(payload_type: PayloadType) -> Optional[int]:
+def codec_required_bandwidth_bps(
+    payload_type: PayloadType, fmtp: Optional[List[str]] = None
+) -> Optional[int]:
     cls = codec_class(payload_type)
-    if cls is None or cls.required_bandwidth_bps is None:
+    if cls is None:
+        return None
+    negotiated = getattr(cls, "negotiated_bandwidth_bps", None)
+    if fmtp is not None and callable(negotiated):
+        return int(negotiated(fmtp))
+    if cls.required_bandwidth_bps is None:
         return None
     return int(cls.required_bandwidth_bps)
 
