@@ -48,7 +48,7 @@ jobs:
           python -m pip check
 
       - name: Compile package
-        run: python -m compileall -q pyVoIP
+        run: python -m compileall -q rfcvoip
 
       - name: Run pytest
         run: python -m pytest

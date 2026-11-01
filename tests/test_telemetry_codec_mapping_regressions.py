@@ -57,3 +57,19 @@ def test_missing_rtpmap_uses_static_payload():
 
     assert report["can_start_call"] is True
     assert report["compatible"][0]["name"] == "PCMU"
+
+
+@pytest.mark.parametrize("payload_type", [-1, 128, "invalid"])
+def test_invalid_rtp_payload_number_cannot_report_call_compatibility(
+    payload_type,
+):
+    message = message_with_mapping(
+        payload_type, {"name": "PCMU", "frequency": 8000}
+    )
+
+    report = Telemetry.codec_support_report(message)
+
+    assert report["can_start_call"] is False
+    assert report["compatible"] == []
+    assert report["remote"][0]["supported"] is False
+    assert "payload" in report["remote"][0]["availability_reason"].lower()

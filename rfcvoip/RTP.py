@@ -527,6 +527,9 @@ def select_transmittable_audio_codec(
         except (TypeError, ValueError):
             rejected.append(f"{payload_type}:{codec} (invalid payload number)")
             continue
+        if not 0 <= payload_number <= 127:
+            rejected.append(f"{payload_type}:{codec} (invalid payload number)")
+            continue
 
         if is_transmittable_audio_codec(
             codec,
@@ -1194,6 +1197,9 @@ class RTPClient:
         self._dtmf_lock = threading.Lock()
         self._received_dtmf = set()
         self._received_dtmf_order: Deque[Tuple[int, int, int]] = deque()
+        self._received_dtmf_segments: Dict[
+            Tuple[int, int, int], Tuple[int, bool]
+        ] = {}
 
     @staticmethod
     def _preferred_source_sample_rate(codec: PayloadType) -> int:
@@ -1373,9 +1379,11 @@ class RTPClient:
         for payload_type, codec in self.assoc.items():
             if codec == PayloadType.EVENT:
                 try:
-                    return int(payload_type)
-                except Exception:
+                    number = int(payload_type)
+                except (TypeError, ValueError):
                     continue
+                if 0 <= number <= 127:
+                    return number
         return None
 
     def _build_rtp_packet(
@@ -1417,7 +1425,11 @@ class RTPClient:
         packet = self._build_rtp_packet(payload_type, payload, marker=marker, timestamp=timestamp)
         with self._socket_lock:
             sout = getattr(self, "sout", None)
-        if sout is None or not self.NSD:
+        if (
+            sout is None
+            or not self.NSD
+            or self.sendrecv in (TransmitType.RECVONLY, TransmitType.INACTIVE)
+        ):
             return
         try:
             sout.sendto(
@@ -1535,6 +1547,11 @@ class RTPClient:
         volume: int = 10,
     ) -> bool:
         if self._telephone_event_pt is None:
+            return False
+        if (
+            not self.NSD
+            or self.sendrecv in (TransmitType.RECVONLY, TransmitType.INACTIVE)
+        ):
             return False
 
         code = str(code or '').strip().upper()
@@ -1678,7 +1695,11 @@ class RTPClient:
                     time.sleep(0.01)
                     continue
                 packet = sin.recv(8192)
-                self.parse_packet(packet)
+                if self.sendrecv in (
+                    TransmitType.SENDRECV,
+                    TransmitType.RECVONLY,
+                ):
+                    self.parse_packet(packet)
             except BlockingIOError:
                 time.sleep(0.01)
             except RTPParseError as e:
@@ -1855,6 +1876,14 @@ class RTPClient:
                 (timestamp - (previous & 0xFFFFFFFF) + 0x80000000)
                 % 0x100000000 - 0x80000000
             )
+            if timestamp < previous:
+                # Reordered audio can still fill an unread buffer gap. Its
+                # decoder must not rewind the resampler/predictor history
+                # used by subsequent packets on the forward timeline.
+                adapter = self._new_codec_adapter(
+                    codec,
+                    getattr(packet, "payload_number", None),
+                )
         try:
             data = adapter.decode(packet.payload)
         except NotImplementedError as ex:
@@ -1983,24 +2012,46 @@ class RTPClient:
                 f"Unsupported telephone-event code {event_code}."
             )
         event = _DTMF_EVENT_TO_CHAR[event_code]
-        """
-        Commented out the following due to F841 (Unused variable).
-        Might use at some point though, so I'm saving the logic.
+        if self.dtmf is None:
+            return
 
-        byte = byte_to_bits(payload[1:2])
-        end = (byte[0] == '1')
-        volume = int(byte[2:], 2)
-        """
+        duration = add_bytes(payload[2:4])
+        end = bool(payload[1] & 0x80)
+        event_key = (packet.SSRC, packet.timestamp, event_code)
+        if event_key in self._received_dtmf:
+            previous_duration, previous_end = self._received_dtmf_segments[
+                event_key
+            ]
+            self._received_dtmf_segments[event_key] = (
+                max(duration, previous_duration),
+                end or previous_end,
+            )
+            return
 
-        if packet.marker:
-            if self.dtmf is not None:
-                event_key = (packet.SSRC, packet.timestamp, event_code)
-                if event_key in self._received_dtmf:
-                    return
-                self._received_dtmf.add(event_key)
-                self._received_dtmf_order.append(event_key)
-                if len(self._received_dtmf_order) > 256:
-                    self._received_dtmf.remove(
-                        self._received_dtmf_order.popleft()
-                    )
+        # Any update identifies the event, even if its marked first packet
+        # was lost. RFC 4733 splits events longer than 65535 clock ticks into
+        # unmarked continuation segments; those must not become extra digits.
+        preceding_segment = self._received_dtmf_segments.get(
+            (
+                packet.SSRC,
+                (packet.timestamp - 65535) & 0xFFFFFFFF,
+                event_code,
+            )
+        )
+        continuation = not packet.marker and preceding_segment == (65535, False)
+        self._received_dtmf.add(event_key)
+        self._received_dtmf_order.append(event_key)
+        self._received_dtmf_segments[event_key] = (duration, end)
+        if len(self._received_dtmf_order) > 256:
+            expired = self._received_dtmf_order.popleft()
+            self._received_dtmf.remove(expired)
+            self._received_dtmf_segments.pop(expired, None)
+        if not continuation:
+            try:
                 self.dtmf(event)
+            except Exception as ex:
+                warnings.warn(
+                    f"DTMF callback failed: {ex}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )

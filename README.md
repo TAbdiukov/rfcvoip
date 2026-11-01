@@ -66,8 +66,9 @@ pip install "rfcvoip[all]"
 The `opus`, `silk`, and `g722` extras install optional Python packages that do
 not require a C++ compiler. The `g722` extra requires `G722>=1.2.8`; older
 `G722` versions are not supported. For convenience, `no-compiler` installs all
-three optional codec extras together. Opus support still requires a loadable
-system `libopus` library at runtime.
+three optional codec extras together. Opus support requires a loadable `libopus`
+library at runtime. The `discord.py` package includes Windows binaries that
+rfcvoip discovers automatically; other platforms may require a system library.
 
 The `compiler` extra is retained for compatibility and currently does not
 install codec dependencies. The `all` extra currently matches `no-compiler`.

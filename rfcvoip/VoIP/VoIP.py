@@ -48,6 +48,12 @@ def _payload_type_from_media_method(
     media: Dict[str, Any],
     method: Any,
 ) -> RTP.PayloadType:
+    try:
+        payload_type = int(method)
+    except (TypeError, ValueError) as ex:
+        raise ValueError("RTP payload type must be an integer.") from ex
+    if not 0 <= payload_type <= 127:
+        raise ValueError("RTP payload type must be between 0 and 127.")
     attributes = media.get("attributes", {}).get(str(method), {})
     rtpmap_error = None
 
@@ -67,7 +73,7 @@ def _payload_type_from_media_method(
         raise rtpmap_error
 
     try:
-        return RTP.PayloadType(int(method))
+        return RTP.PayloadType(payload_type)
     except (TypeError, ValueError):
         pass
 
@@ -221,6 +227,10 @@ def _expanded_media_connections(
             raise RTP.RTPParseError(
                 "SDP connection address_count must be positive."
             )
+        if address_count > 65535 - len(expanded):
+            raise RTP.RTPParseError(
+                "SDP connection count exceeds the UDP port range."
+            )
 
         for offset in range(address_count):
             item = dict(connection)
@@ -251,11 +261,15 @@ def _media_rtp_targets(
     except (TypeError, ValueError) as ex:
         raise RTP.RTPParseError("Remote RTP base port must be an integer.") from ex
 
+    if not 1 <= remote_base_port <= 65535:
+        raise RTP.RTPParseError("Remote RTP port must be between 1 and 65535.")
+    connections = _expanded_media_connections(request, media)
+    if remote_base_port + len(connections) - 1 > 65535:
+        raise RTP.RTPParseError("Remote RTP ports exceed the UDP port range.")
+
     return [
         (connection["address"], remote_base_port + index, connection)
-        for index, connection in enumerate(
-            _expanded_media_connections(request, media)
-        )
+        for index, connection in enumerate(connections)
     ]
 
 
@@ -427,17 +441,13 @@ class VoIPCall:
                         # come up again if it happens.  However, this
                         # also resets all other warnings.
                         warnings.simplefilter("default")
-                        p = RTP.PayloadType("UNKNOWN")
-                        assoc[int(x)] = p
+                        continue
                     except KeyError:
-                        # fix issue 42
-                        # When rtpmap is not found, also set the found
-                        # element to UNKNOWN
+                        # A dynamic payload without rtpmap cannot be used.
                         warnings.warn(
                             f"RTP KeyError {x} not found.", stacklevel=20
                         )
-                        p = RTP.PayloadType("UNKNOWN")
-                        assoc[int(x)] = p
+                        continue
 
                 if e:
                     if pt:
@@ -914,6 +924,10 @@ class VoIPCall:
         return self.send_dtmf(digits, allow_abcd=allow_abcd)
 
     def _finalize_ended_call(self) -> None:
+        with self._state_lock_for():
+            if getattr(self, "_finalized", False):
+                return
+            self._finalized = True
         try:
             self.phone.release_ports(call=self)
         except Exception:
@@ -1107,18 +1121,29 @@ class VoIPCall:
     def answer(self) -> None:
         if self.state != CallState.RINGING:
             raise InvalidStateError("Call is not ringing")
-        m = self.gen_ms()
-        debug(
-            f"Answering call {self.call_id}",
-            "Call answer requested "
-            + f"call_id={self.call_id} local_rtp_ports={list(m.keys())}",
-        )
+        try:
+            m = self.gen_ms()
+            debug(
+                f"Answering call {self.call_id}",
+                "Call answer requested "
+                + f"call_id={self.call_id} local_rtp_ports={list(m.keys())}",
+            )
 
-        message = self.sip.gen_answer(
-            self.request, self.session_id, m, self.sendmode
-        )
-        self.sip.send_response(self.request, message)
-        self._set_state(CallState.ANSWERED)
+            message = self.sip.gen_answer(
+                self.request, self.session_id, m, self.sendmode
+            )
+            with self._state_lock_for():
+                if self.state != CallState.RINGING:
+                    raise InvalidStateError("Call ended while answering")
+                # Commit the final response before sending it. A concurrent
+                # CANCEL can only win while the call is still ringing.
+                self.state = CallState.ANSWERED
+            self.sip.send_response(self.request, message)
+        except Exception:
+            self._stop_rtp_clients()
+            self._set_state(CallState.ENDED)
+            self._finalize_ended_call()
+            raise
         debug(
             f"Call {self.call_id} answered",
             f"Call {self.call_id}: state -> ANSWERED",
@@ -1208,9 +1233,12 @@ class VoIPCall:
 
         for x in rtp_clients:
             x.start()
-        self.request.headers["Contact"] = request.headers["Contact"]
-        self.request.headers["To"]["tag"] = request.headers["To"]["tag"]
-        self._set_state(CallState.ANSWERED)
+        with self._state_lock_for():
+            if self.state == CallState.ENDED:
+                raise RTP.RTPParseError("Call ended during RTP setup.")
+            self.request.headers["Contact"] = request.headers["Contact"]
+            self.request.headers["To"]["tag"] = request.headers["To"]["tag"]
+            self.state = CallState.ANSWERED
         debug(
             f"Call {self.call_id} connected",
             f"Call {self.call_id}: state -> ANSWERED remote_contact={request.headers.get('Contact')}",
@@ -1931,6 +1959,8 @@ class VoIPPhone:
                 return False
             if connections <= 0 or port_count != connections:
                 return False
+            if int(media["port"]) + port_count - 1 > 65535:
+                return False
         return found_audio
 
     def _invite_targets_local_account(self, request: SIP.SIPMessage) -> bool:
@@ -2146,7 +2176,6 @@ class VoIPPhone:
             except RTP.RTPParseError as ex:
                 if sess_id in self.session_ids:
                     self.session_ids.remove(sess_id)
-                self.release_ports()
                 debug(
                     request.summary(),
                     "Rejecting INVITE after codec negotiation failed "
@@ -2210,17 +2239,38 @@ class VoIPPhone:
         )
 
         call = self._get_call(call_id)
-        if call is None or _call_state_value(call) != CallState.RINGING:
+        if call is None:
             return
+        with call._state_lock_for():
+            if call.state != CallState.RINGING:
+                return
+            call.state = CallState.ENDED
 
         call._stop_rtp_clients()
 
-        response = self.sip.gen_response(
-            call.request, SIP.SIPStatus.REQUEST_TERMINATED
-        )
-        self.sip.send_response(call.request, response)
+        try:
+            response = self.sip.gen_response(
+                call.request, SIP.SIPStatus.REQUEST_TERMINATED
+            )
+            self.sip.send_response(call.request, response)
+        finally:
+            call._set_state(CallState.ENDED)
+            call._finalize_ended_call()
+
+    def _end_unusable_call(
+        self, call: VoIPCall, request: SIP.SIPMessage
+    ) -> None:
+        call._stop_rtp_clients()
         call._set_state(CallState.ENDED)
         call._finalize_ended_call()
+        try:
+            self._send_ack(request)
+        except Exception as ex:
+            debug(f"Failed to ACK unusable call {call.call_id}: {ex}")
+        try:
+            self.sip.bye(request)
+        except Exception as ex:
+            debug(f"Failed to send BYE for unusable call {call.call_id}: {ex}")
 
     def _callback_RESP_OK(self, request: SIP.SIPMessage) -> None:
         debug("OK recieved")
@@ -2239,23 +2289,17 @@ class VoIPPhone:
             self._send_ack(request)
             return
 
+        if _call_state_value(call) == CallState.ANSWERED:
+            self._send_ack(request)
+            return
+
         if not self._has_compatible_rtp_address_family(request):
             debug(
                 request.summary(),
                 "Ending call after OK with incompatible RTP address family "
                 + f"call_id={call_id}",
             )
-            self._send_ack(request)
-            try:
-                self.sip.bye(request)
-            except Exception as ex:
-                debug(
-                    f"Failed to send BYE after RTP address mismatch: {ex}",
-                    f"Failed to send BYE for Call-ID={call_id}: {ex}",
-                )
-            call._stop_rtp_clients()
-            call._set_state(CallState.ENDED)
-            call._finalize_ended_call()
+            self._end_unusable_call(call, request)
             warnings.warn(
                 "Remote SDP uses an RTP address family that does not match "
                 + "myIP. CallState set to CallState.ENDED. "
@@ -2271,18 +2315,7 @@ class VoIPPhone:
                 "Ending call after OK with unassignable RTP audio connection "
                 + f"data call_id={call_id}",
             )
-            self._send_ack(request)
-            try:
-                self.sip.bye(request)
-            except Exception as ex:
-                debug(
-                    f"Failed to send BYE after RTP connection mismatch: {ex}",
-                    f"Failed to send BYE for Call-ID={call_id}: {ex}",
-                )
-
-            call._stop_rtp_clients()
-            call._set_state(CallState.ENDED)
-            call._finalize_ended_call()
+            self._end_unusable_call(call, request)
             warnings.warn(
                 "Remote SDP does not contain exactly one assignable RTP "
                 + "audio connection. CallState set to CallState.ENDED. "
@@ -2299,18 +2332,7 @@ class VoIPPhone:
                 + "within SDP bandwidth limits "
                 + f"call_id={call_id}",
             )
-            self._send_ack(request)
-            try:
-                self.sip.bye(request)
-            except Exception as ex:
-                debug(
-                    f"Failed to send BYE after SDP bandwidth mismatch: {ex}",
-                    f"Failed to send BYE for Call-ID={call_id}: {ex}",
-                )
-
-            call._stop_rtp_clients()
-            call._set_state(CallState.ENDED)
-            call._finalize_ended_call()
+            self._end_unusable_call(call, request)
             warnings.warn(
                 "Remote SDP does not offer a compatible audio codec that "
                 + "fits its SDP bandwidth limits. CallState set to "
@@ -2322,24 +2344,13 @@ class VoIPPhone:
 
         try:
             call.answered(request)
-        except RTP.RTPParseError as ex:
+        except (RTP.RTPParseError, OSError, RuntimeError) as ex:
             debug(
                 request.summary(),
                 "Ending call after OK because RTP negotiation failed "
                 + f"call_id={call_id}: {ex}",
             )
-            self._send_ack(request)
-            try:
-                self.sip.bye(request)
-            except Exception as bye_ex:
-                debug(
-                    f"Failed to send BYE after RTP negotiation failure: {bye_ex}",
-                    f"Failed to send BYE for Call-ID={call_id}: {bye_ex}",
-                )
-
-            call._stop_rtp_clients()
-            call._set_state(CallState.ENDED)
-            call._finalize_ended_call()
+            self._end_unusable_call(call, request)
             warnings.warn(
                 "Remote SDP could not be negotiated for RTP. "
                 + f"CallState set to CallState.ENDED. Call-ID={call_id}.",
@@ -2396,14 +2407,23 @@ class VoIPPhone:
 
     def _create_Call(self, request: SIP.SIPMessage, sess_id: int) -> None:
         call_id = request.headers["Call-ID"]
-        call = VoIPCall(
-            self,
-            CallState.RINGING,
-            request,
-            sess_id,
-            self.myIP,
-            sendmode=self.recvmode,
-        )
+        # Retain the partially initialized object so a failed media section
+        # cannot leave earlier clients or port reservations behind.
+        call = VoIPCall.__new__(VoIPCall)
+        try:
+            call.__init__(
+                self,
+                CallState.RINGING,
+                request,
+                sess_id,
+                self.myIP,
+                sendmode=self.recvmode,
+            )
+        except Exception:
+            call._stop_rtp_clients()
+            call._set_state(CallState.ENDED)
+            call._finalize_ended_call()
+            raise
         self._set_call(call_id, call)
 
     def start(self) -> None:
@@ -2551,6 +2571,10 @@ class VoIPPhone:
 
         if count <= 0:
             raise InvalidRangeError("'count' must be positive")
+        if count > self.rtpPortHigh - self.rtpPortLow + 1:
+            raise NoPortsAvailableError(
+                "Requested RTP port count exceeds the configured range"
+            )
 
         while True:
             with self.portsLock:
@@ -2563,8 +2587,14 @@ class VoIPPhone:
                     self.assignedPorts.extend(ports)
                     return ports
 
-            # If no ports are available attempt to cleanup any missed calls.
-            self.release_ports()
+            # Reclaim ended calls only. A reservation may belong to a call
+            # that is still being constructed and is not in self.calls yet.
+            for call in self._calls_snapshot():
+                if (
+                    isinstance(call, VoIPCall)
+                    and _call_state_value(call) == CallState.ENDED
+                ):
+                    call._finalize_ended_call()
 
             with self.portsLock:
                 starts_available = self._available_contiguous_port_starts_locked(

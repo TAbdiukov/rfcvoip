@@ -538,7 +538,11 @@ class SIPConnection:
                 sock.connect(sockaddr)
                 if self.target.transport == SIPTransport.TLS:
                     context = self.tls_context or ssl.create_default_context()
-                    server_name = self.tls_server_name or self.target.host
+                    server_name = (
+                        self.tls_server_name
+                        or self.target.uri_host
+                        or self.target.host
+                    )
                     sock = context.wrap_socket(sock, server_hostname=server_name)
                 return sock
             except BaseException as ex:
@@ -616,9 +620,14 @@ class SIPConnection:
                 remaining = max(0.0, deadline - time.monotonic())
                 if remaining == 0:
                     return None
-                ready = select.select([self.socket], [], [], remaining)
-                if not ready[0]:
-                    return None
+                pending = (
+                    self.target.transport == SIPTransport.TLS
+                    and self.socket.pending() > 0
+                )
+                if not pending:
+                    ready = select.select([self.socket], [], [], remaining)
+                    if not ready[0]:
+                        return None
                 try:
                     return self.recv_raw_message()
                 except (BlockingIOError, ssl.SSLWantReadError, ssl.SSLWantWriteError):

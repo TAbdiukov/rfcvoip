@@ -256,8 +256,8 @@ or leave the default ``"buffered"`` to queue complete announcements.
     ``TransmitType`` or matching string.
 
   ``dtmf``
-    Callback invoked with one DTMF character when a telephone-event start
-    packet is received.
+    Callback invoked once per telephone event. Later event packets can recover
+    the digit if the start packet was lost.
 
   ``audio_sample_rate``
     Public audio sample rate. When omitted, the selected codec's preferred
@@ -335,8 +335,8 @@ Methods:
     Convenience wrappers for G.711 codecs.
 
   **parse_telephone_event**\ (packet) -> None
-    Parses telephone-event payloads and calls the DTMF callback on marker
-    packets.
+    Parses telephone-event payloads and calls the DTMF callback once per event,
+    suppressing repeated updates and recovering events with lost start packets.
 
 Deprecated camelCase aliases remain available for compatibility and emit
 ``DeprecationWarning``.

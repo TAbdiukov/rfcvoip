@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import audioop
+import math
 
 from rfcvoip.audio_format import silence_bytes
 from rfcvoip.codecs.base import (
@@ -32,6 +33,13 @@ class PCMUCodec(RTPCodec):
         pcm16 = audioop.ulaw2lin(payload, 2)
         return self._pcm16_to_source_u8(pcm16, self.rate)
 
+    def rtp_timestamp_increment(
+        self, source_payload: bytes, encoded_payload: bytes
+    ) -> int:
+        if encoded_payload:
+            return len(encoded_payload)
+        return super().rtp_timestamp_increment(source_payload, encoded_payload)
+
 
 class PCMACodec(RTPCodec):
     payload_type = "PCMA"
@@ -55,6 +63,13 @@ class PCMACodec(RTPCodec):
     def decode(self, payload: bytes) -> bytes:
         pcm16 = audioop.alaw2lin(payload, 2)
         return self._pcm16_to_source_u8(pcm16, self.rate)
+
+    def rtp_timestamp_increment(
+        self, source_payload: bytes, encoded_payload: bytes
+    ) -> int:
+        if encoded_payload:
+            return len(encoded_payload)
+        return super().rtp_timestamp_increment(source_payload, encoded_payload)
 
 
 class _G711WidebandCoreCodec(RTPCodec, ABC):
@@ -131,8 +146,43 @@ class _G711WidebandCoreCodec(RTPCodec, ABC):
             )
         return pcm16
 
+    def _encoding_core_frames(self, source_payload: bytes) -> int:
+        source_bytes = len(source_payload) or self.source_frame_size()
+        core_samples = source_bytes * self.core_sample_rate / (
+            self.source_sample_rate
+            * self.source_sample_width
+            * self.source_channels
+        )
+        nearest = round(core_samples / self._core_frame_bytes)
+        # Preserve a whole 5 ms duration when the public sample count merely
+        # rounded by half a sample. Other durations pad to the next core frame.
+        tolerance = self.core_sample_rate / (2 * self.source_sample_rate) + 1e-9
+        if nearest > 0 and abs(
+            core_samples - nearest * self._core_frame_bytes
+        ) <= tolerance:
+            return nearest
+        return max(1, math.ceil(core_samples / self._core_frame_bytes))
+
+    def packet_duration_seconds(self, source_payload: bytes) -> float:
+        return (
+            self._encoding_core_frames(source_payload)
+            * self._core_frame_duration_ms / 1000.0
+        )
+
+    def rtp_timestamp_increment(
+        self, source_payload: bytes, encoded_payload: bytes
+    ) -> int:
+        if encoded_payload:
+            core_samples = len(encoded_payload) - 1
+            return max(1, core_samples * self.rate // self.core_sample_rate)
+        return super().rtp_timestamp_increment(source_payload, encoded_payload)
+
     def encode(self, payload: bytes) -> bytes:
+        frames = self._encoding_core_frames(payload)
         pcm16_8k = self._source_u8_to_pcm16(payload, self.core_sample_rate)
+        pcm16_8k = self._fit_bytes(
+            pcm16_8k, frames * self._core_pcm16_frame_bytes, b"\x00"
+        )
         pcm16_8k = self._pad_to_core_frames(pcm16_8k)
         core_payload = self._encode_core_pcm16(pcm16_8k)
         return bytes([self._mode_index]) + core_payload

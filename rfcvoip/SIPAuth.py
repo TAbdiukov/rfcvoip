@@ -9,7 +9,6 @@ import secrets
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
-
 __all__ = [
     "SUPPORTED_DIGEST_ALGORITHMS",
     "SIPAuthError",
@@ -63,7 +62,8 @@ _ALGORITHM_ALIASES = {
 }
 
 _ALGORITHM_PREFERENCE = {
-    algorithm: index for index, algorithm in enumerate(SUPPORTED_DIGEST_ALGORITHMS)
+    algorithm: index
+    for index, algorithm in enumerate(SUPPORTED_DIGEST_ALGORITHMS)
 }
 
 
@@ -177,7 +177,11 @@ def _ensure_supported_algorithm(
     algorithm = normalize_digest_algorithm(algorithm)
     supported = {
         normalize_digest_algorithm(item)
-        for item in (supported_algorithms or SUPPORTED_DIGEST_ALGORITHMS)
+        for item in (
+            SUPPORTED_DIGEST_ALGORITHMS
+            if supported_algorithms is None
+            else supported_algorithms
+        )
     }
     if algorithm not in supported:
         raise SIPAuthError(f"Unsupported SIP digest algorithm {algorithm!r}.")
@@ -383,7 +387,7 @@ def compute_digest_response(
     uri_value = str(uri or params.get("uri") or "")
     username_value = str(username or params.get("username") or "")
 
-    if not realm:
+    if params.get("realm") is None:
         raise SIPAuthError("Digest challenge is missing realm.")
     if not nonce_value:
         raise SIPAuthError("Digest challenge is missing nonce.")
@@ -451,21 +455,28 @@ def choose_digest_challenge(
     supported_algorithms: Optional[Iterable[str]] = None,
 ) -> Optional[Dict[str, str]]:
     supported = _ordered_algorithms(
-        supported_algorithms or SUPPORTED_DIGEST_ALGORITHMS
+        SUPPORTED_DIGEST_ALGORITHMS
+        if supported_algorithms is None
+        else supported_algorithms
     )
     if not supported:
         return None
-    preference = {algorithm: index for index, algorithm in enumerate(supported)}
+    preference = {
+        algorithm: index for index, algorithm in enumerate(supported)
+    }
 
     candidates: List[Tuple[int, int, Dict[str, str]]] = []
     for index, challenge in enumerate(challenges):
         if not isinstance(challenge, dict):
+            continue
+        if challenge.get("realm") is None or not challenge.get("nonce"):
             continue
         try:
             algorithm = _ensure_supported_algorithm(
                 challenge.get("algorithm"),
                 supported,
             )
+            _select_qop(challenge.get("qop"))
         except SIPAuthError:
             continue
         candidates.append(
@@ -502,6 +513,10 @@ def build_authorization_parameters(
     body: bytes = b"",
     supported_algorithms: Optional[Iterable[str]] = None,
 ) -> Dict[str, str]:
+    if challenge.get("realm") is None:
+        raise SIPAuthError("Digest challenge is missing realm.")
+    if supported_algorithms is not None:
+        supported_algorithms = tuple(supported_algorithms)
     algorithm = _ensure_supported_algorithm(
         challenge.get("algorithm"),
         supported_algorithms,
@@ -613,9 +628,13 @@ def verify_digest_response(
         # list allowed in a challenge. Its nonce count must be supplied by
         # the peer; calculation defaults are only suitable for generation.
         qop = _normalize_authorization_qop(authorization.get("qop"))
-        if qop is not None and re.fullmatch(
-            r"[0-9a-fA-F]{8}", str(authorization.get("nc") or "")
-        ) is None:
+        if (
+            qop is not None
+            and re.fullmatch(
+                r"[0-9a-fA-F]{8}", str(authorization.get("nc") or "")
+            )
+            is None
+        ):
             return False
         expected = compute_digest_response(
             authorization,

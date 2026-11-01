@@ -834,8 +834,9 @@ def _codec_info_from_media(
         except ValueError:
             pass
 
-    if codec is None:
-        return _unknown_codec_info(
+    payload_type_valid = payload_type is not None and 0 <= payload_type <= 127
+    if codec is None or not payload_type_valid:
+        info = _unknown_codec_info(
             media=media,
             payload_type=payload_type,
             name=name,
@@ -846,6 +847,11 @@ def _codec_info_from_media(
             session_bandwidth=session_bandwidth,
             media_bandwidth=media_bandwidth,
         )
+        if not payload_type_valid:
+            info["availability_reason"] = (
+                "Invalid RTP payload number; expected an integer from 0 to 127."
+            )
+        return info
 
     codec_supported = codec in getattr(rfcvoip, "RTPCompatibleCodecs", [])
     protocol_supported = _media_protocol_supported(media)

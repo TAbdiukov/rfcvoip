@@ -1649,6 +1649,7 @@ class SIPClient:
         self.myPort = myPort
 
         self.default_expires = 120
+        self._registration_expires: Optional[int] = None
         self.register_timeout = 30
 
         # How long invite() should wait for the *first* response that matches
@@ -2651,9 +2652,7 @@ class SIPClient:
             )
 
         if remove_subscription:
-            with self._subscription_lock:
-                if self.subscriptions.get(subscription.call_id) is subscription:
-                    self.subscriptions.pop(subscription.call_id, None)
+            self._discard_subscription(subscription)
 
         return info
 
@@ -2661,6 +2660,10 @@ class SIPClient:
         call_id = str(message.headers.get("Call-ID", "") or "")
         to_header = message.headers.get("To", {})
         local_tag = to_header.get("tag") if isinstance(to_header, dict) else ""
+        from_header = message.headers.get("From", {})
+        remote_tag = (
+            from_header.get("tag") if isinstance(from_header, dict) else ""
+        )
         event_header = str(message.headers.get("Event", "") or "").strip()
 
         with self._subscription_lock:
@@ -2669,12 +2672,16 @@ class SIPClient:
                 subscription is None
                 or (
                     subscription.local_tag
-                    and local_tag
                     and local_tag != subscription.local_tag
                 )
+                or not remote_tag
                 or (
-                    event_header
-                    and self._normalize_subscription_event(event_header)
+                    subscription.remote_tag
+                    and remote_tag != subscription.remote_tag
+                )
+                or not event_header
+                or (
+                    self._normalize_subscription_event(event_header)
                     != self._normalize_subscription_event(subscription.event)
                 )
             )
@@ -2739,9 +2746,14 @@ class SIPClient:
             snapshot=notify_snapshot,
         )
         if remove_subscription:
-            with self._subscription_lock:
-                if self.subscriptions.get(subscription.call_id) is subscription:
-                    self.subscriptions.pop(subscription.call_id, None)
+            self._discard_subscription(subscription)
+
+    def _discard_subscription(self, subscription: SIPSubscription) -> None:
+        with self._subscription_lock:
+            if self.subscriptions.get(subscription.call_id) is subscription:
+                self.subscriptions.pop(subscription.call_id, None)
+            if self.tagLibrary.get(subscription.call_id) == subscription.local_tag:
+                self.tagLibrary.pop(subscription.call_id, None)
 
     def list_subscriptions(self) -> List[Dict[str, Any]]:
         with self._subscription_lock:
@@ -2821,108 +2833,108 @@ class SIPClient:
             self.subscriptions[subscription.call_id] = subscription
         self.tagLibrary[subscription.call_id] = subscription.local_tag
 
-        request = self._build_subscribe_request(
-            subscription,
-            expires=subscription.pending_expires,
-        )
-
-        with self.recvLock:
-            self.send_raw(
-                request.encode("utf8"),
-                self._subscription_send_target(subscription),
+        try:
+            request = self._build_subscribe_request(
+                subscription,
+                expires=subscription.pending_expires,
             )
-            deadline = time.monotonic() + self.subscription_timeout
-            retries = 0
 
-            while self.NSD and time.monotonic() < deadline:
-                response = self._recv_message_before(deadline)
-                if response is None:
-                    continue
-
-                if response.type == SIPMessageType.MESSAGE:
-                    if response.method == "NOTIFY":
-                        self._handle_notify(response)
-                    else:
-                        self.parse_message(response)
-                    continue
-
-                cseq = response.headers.get("CSeq", {})
-                response_cseq_check = (
-                    cseq.get("check") if isinstance(cseq, dict) else None
+            with self.recvLock:
+                self.send_raw(
+                    request.encode("utf8"),
+                    self._subscription_send_target(subscription),
                 )
-                response_cseq_method = (
-                    cseq.get("method") if isinstance(cseq, dict) else None
-                )
-                (
-                    request_call_id,
-                    request_cseq_check,
-                    request_cseq_method,
-                ) = self._request_transaction(request)
-                if (
-                    response.headers.get("Call-ID") != request_call_id
-                    or response_cseq_check != request_cseq_check
-                    or response_cseq_method != request_cseq_method
-                ):
-                    self.parse_message(response)
-                    continue
+                deadline = time.monotonic() + self.subscription_timeout
+                retries = 0
 
-                status_code = int(response.status)
-                if 100 <= status_code < 200:
-                    continue
+                while self.NSD and time.monotonic() < deadline:
+                    response = self._recv_message_before(deadline)
+                    if response is None:
+                        continue
 
-                if response.status in (
-                    SIPStatus.UNAUTHORIZED,
-                    SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
-                ) and retries < self.subscription_max_retries:
-                    header_name = "Authorization"
+                    if response.type == SIPMessageType.MESSAGE:
+                        if response.method == "NOTIFY":
+                            self._handle_notify(response)
+                        else:
+                            self.parse_message(response)
+                        continue
+
+                    cseq = response.headers.get("CSeq", {})
+                    response_cseq_check = (
+                        cseq.get("check") if isinstance(cseq, dict) else None
+                    )
+                    response_cseq_method = (
+                        cseq.get("method") if isinstance(cseq, dict) else None
+                    )
+                    (
+                        request_call_id,
+                        request_cseq_check,
+                        request_cseq_method,
+                    ) = self._request_transaction(request)
                     if (
-                        response.status
-                        == SIPStatus.PROXY_AUTHENTICATION_REQUIRED
-                        or response.authentication_header
-                        == "Proxy-Authenticate"
+                        response.headers.get("Call-ID") != request_call_id
+                        or response_cseq_check != request_cseq_check
+                        or response_cseq_method != request_cseq_method
                     ):
-                        header_name = "Proxy-Authorization"
+                        self.parse_message(response)
+                        continue
 
-                    auth_line = self._build_digest_auth_header(
+                    status_code = int(response.status)
+                    if 100 <= status_code < 200:
+                        continue
+
+                    if response.status in (
+                        SIPStatus.UNAUTHORIZED,
+                        SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
+                    ) and retries < self.subscription_max_retries:
+                        header_name = "Authorization"
+                        if (
+                            response.status
+                            == SIPStatus.PROXY_AUTHENTICATION_REQUIRED
+                            or response.authentication_header
+                            == "Proxy-Authenticate"
+                        ):
+                            header_name = "Proxy-Authorization"
+
+                        auth_line = self._build_digest_auth_header(
+                            response,
+                            header_name=header_name,
+                            method="SUBSCRIBE",
+                            uri=subscription.remote_target
+                            or subscription.target_uri,
+                        )
+                        request = self._build_subscribe_request(
+                            subscription,
+                            expires=subscription.pending_expires,
+                            auth_line=auth_line,
+                        )
+                        self.send_raw(
+                            request.encode("utf8"),
+                            self._subscription_send_target(subscription),
+                        )
+                        retries += 1
+                        continue
+
+                    info = self._apply_subscribe_response(
                         response,
-                        header_name=header_name,
-                        method="SUBSCRIBE",
-                        uri=subscription.remote_target
-                        or subscription.target_uri,
-                    )
-                    request = self._build_subscribe_request(
-                        subscription,
-                        expires=subscription.pending_expires,
-                        auth_line=auth_line,
-                    )
-                    self.send_raw(
-                        request.encode("utf8"),
-                        self._subscription_send_target(subscription),
-                    )
-                    retries += 1
-                    continue
+                        emit_callback=False,
+                    ) or subscription.snapshot()
+                    if 200 <= status_code < 300:
+                        return info
 
-                info = self._apply_subscribe_response(
-                    response,
-                    emit_callback=False,
-                ) or subscription.snapshot()
-                if 200 <= status_code < 300:
-                    return info
+                    raise RuntimeError(
+                        f"SUBSCRIBE failed with SIP {status_code} "
+                        + f"{response.status.phrase} "
+                        + f"(Call-ID={subscription.call_id})."
+                    )
 
-                with self._subscription_lock:
-                    self.subscriptions.pop(subscription.call_id, None)
-                raise RuntimeError(
-                    f"SUBSCRIBE failed with SIP {status_code} "
-                    + f"{response.status.phrase} "
-                    + f"(Call-ID={subscription.call_id})."
-                )
-
-        with self._subscription_lock:
-            self.subscriptions.pop(subscription.call_id, None)
-        raise TimeoutError(
-            f"SUBSCRIBE timed out after {self.subscription_timeout}s "
-            + f"(Call-ID={subscription.call_id})."
-        )
+            raise TimeoutError(
+                f"SUBSCRIBE timed out after {self.subscription_timeout}s "
+                + f"(Call-ID={subscription.call_id})."
+            )
+        except Exception:
+            self._discard_subscription(subscription)
+            raise
 
     def unsubscribe_from(
         self,
@@ -2940,113 +2952,117 @@ class SIPClient:
         with self._subscription_lock:
             previous_pending = subscription.pending_expires
             subscription.pending_expires = 0
-        request = self._build_subscribe_request(subscription, expires=0)
+        try:
+            request = self._build_subscribe_request(subscription, expires=0)
 
-        with self.recvLock:
-            self.send_raw(
-                request.encode("utf8"),
-                self._subscription_send_target(subscription),
-            )
-            deadline = time.monotonic() + self.subscription_timeout
-            retries = 0
-
-            while self.NSD and time.monotonic() < deadline:
-                response = self._recv_message_before(deadline)
-                if response is None:
-                    continue
-
-                if response.type == SIPMessageType.MESSAGE:
-                    if response.method == "NOTIFY":
-                        self._handle_notify(response)
-                    else:
-                        self.parse_message(response)
-                    continue
-
-                cseq = response.headers.get("CSeq", {})
-                response_cseq_check = (
-                    cseq.get("check") if isinstance(cseq, dict) else None
+            with self.recvLock:
+                self.send_raw(
+                    request.encode("utf8"),
+                    self._subscription_send_target(subscription),
                 )
-                response_cseq_method = (
-                    cseq.get("method") if isinstance(cseq, dict) else None
-                )
-                (
-                    request_call_id,
-                    request_cseq_check,
-                    request_cseq_method,
-                ) = self._request_transaction(request)
-                if (
-                    response.headers.get("Call-ID") != request_call_id
-                    or response_cseq_check != request_cseq_check
-                    or response_cseq_method != request_cseq_method
-                ):
-                    self.parse_message(response)
-                    continue
+                deadline = time.monotonic() + self.subscription_timeout
+                retries = 0
 
-                status_code = int(response.status)
-                if 100 <= status_code < 200:
-                    continue
+                while self.NSD and time.monotonic() < deadline:
+                    response = self._recv_message_before(deadline)
+                    if response is None:
+                        continue
 
-                if response.status in (
-                    SIPStatus.UNAUTHORIZED,
-                    SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
-                ) and retries < self.subscription_max_retries:
-                    header_name = "Authorization"
+                    if response.type == SIPMessageType.MESSAGE:
+                        if response.method == "NOTIFY":
+                            self._handle_notify(response)
+                        else:
+                            self.parse_message(response)
+                        continue
+
+                    cseq = response.headers.get("CSeq", {})
+                    response_cseq_check = (
+                        cseq.get("check") if isinstance(cseq, dict) else None
+                    )
+                    response_cseq_method = (
+                        cseq.get("method") if isinstance(cseq, dict) else None
+                    )
+                    (
+                        request_call_id,
+                        request_cseq_check,
+                        request_cseq_method,
+                    ) = self._request_transaction(request)
                     if (
-                        response.status
-                        == SIPStatus.PROXY_AUTHENTICATION_REQUIRED
-                        or response.authentication_header
-                        == "Proxy-Authenticate"
+                        response.headers.get("Call-ID") != request_call_id
+                        or response_cseq_check != request_cseq_check
+                        or response_cseq_method != request_cseq_method
                     ):
-                        header_name = "Proxy-Authorization"
+                        self.parse_message(response)
+                        continue
 
-                    auth_line = self._build_digest_auth_header(
+                    status_code = int(response.status)
+                    if 100 <= status_code < 200:
+                        continue
+
+                    if response.status in (
+                        SIPStatus.UNAUTHORIZED,
+                        SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
+                    ) and retries < self.subscription_max_retries:
+                        header_name = "Authorization"
+                        if (
+                            response.status
+                            == SIPStatus.PROXY_AUTHENTICATION_REQUIRED
+                            or response.authentication_header
+                            == "Proxy-Authenticate"
+                        ):
+                            header_name = "Proxy-Authorization"
+
+                        auth_line = self._build_digest_auth_header(
+                            response,
+                            header_name=header_name,
+                            method="SUBSCRIBE",
+                            uri=subscription.remote_target
+                            or subscription.target_uri,
+                        )
+                        request = self._build_subscribe_request(
+                            subscription,
+                            expires=0,
+                            auth_line=auth_line,
+                        )
+                        self.send_raw(
+                            request.encode("utf8"),
+                            self._subscription_send_target(subscription),
+                        )
+                        retries += 1
+                        continue
+
+                    info = self._apply_subscribe_response(
                         response,
-                        header_name=header_name,
-                        method="SUBSCRIBE",
-                        uri=subscription.remote_target
-                        or subscription.target_uri,
-                    )
-                    request = self._build_subscribe_request(
-                        subscription,
-                        expires=0,
-                        auth_line=auth_line,
-                    )
-                    self.send_raw(
-                        request.encode("utf8"),
-                        self._subscription_send_target(subscription),
-                    )
-                    retries += 1
-                    continue
+                        emit_callback=False,
+                    ) or subscription.snapshot()
+                    if 200 <= status_code < 300:
+                        return info
 
-                info = self._apply_subscribe_response(
-                    response,
-                    emit_callback=False,
-                ) or subscription.snapshot()
-                if 200 <= status_code < 300:
-                    return info
+                    if status_code == int(
+                        SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST
+                    ):
+                        self._discard_subscription(subscription)
+                        info["status"] = "terminated"
+                        return info
 
-                if status_code == int(
-                    SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST
-                ):
                     with self._subscription_lock:
-                        self.subscriptions.pop(subscription.call_id, None)
-                    info["status"] = "terminated"
-                    return info
+                        subscription.pending_expires = previous_pending
+                    raise RuntimeError(
+                        f"Unsubscribe failed with SIP {status_code} "
+                        + f"{response.status.phrase} "
+                        + f"(Call-ID={subscription.call_id})."
+                    )
 
-                with self._subscription_lock:
-                    subscription.pending_expires = previous_pending
-                raise RuntimeError(
-                    f"Unsubscribe failed with SIP {status_code} "
-                    + f"{response.status.phrase} "
-                    + f"(Call-ID={subscription.call_id})."
-                )
-
-        with self._subscription_lock:
-            subscription.pending_expires = previous_pending
-        raise TimeoutError(
-            f"Unsubscribe timed out after {self.subscription_timeout}s "
-            + f"(Call-ID={subscription.call_id})."
-        )
+            with self._subscription_lock:
+                subscription.pending_expires = previous_pending
+            raise TimeoutError(
+                f"Unsubscribe timed out after {self.subscription_timeout}s "
+                + f"(Call-ID={subscription.call_id})."
+            )
+        except Exception:
+            with self._subscription_lock:
+                subscription.pending_expires = previous_pending
+            raise
 
     def _gen_sip_version_not_supported_raw(self, raw: bytes) -> str:
         """
@@ -3177,11 +3193,64 @@ class SIPClient:
 
     def _has_matching_call(self, message: SIPMessage) -> bool:
         call_id = message.headers.get("Call-ID")
+        get_call = getattr(self.phone, "_get_call", None)
+        phone_calls = getattr(self.phone, "calls", None)
+        call = (
+            get_call(call_id)
+            if callable(get_call)
+            else phone_calls.get(call_id)
+            if isinstance(phone_calls, dict)
+            else None
+        )
+        original = getattr(call, "request", None)
+        if isinstance(original, SIPMessage):
+            local_tag = self.tagLibrary.get(call_id, "")
+            original_from = original.headers.get("From", {})
+            original_to = original.headers.get("To", {})
+            received_from = message.headers.get("From", {})
+            received_to = message.headers.get("To", {})
+
+            if message.method == "CANCEL":
+                # CANCEL belongs to the original INVITE transaction, rather
+                # than whichever dialog happens to share its Call-ID.
+                try:
+                    original_via = original.headers["Via"][0]
+                    received_via = message.headers["Via"][0]
+                    return (
+                        original.type == SIPMessageType.MESSAGE
+                        and original.method == "INVITE"
+                        and original_from.get("tag") != local_tag
+                        and message.uri == original.uri
+                        and message.headers["CSeq"]["check"]
+                        == original.headers["CSeq"]["check"]
+                        and received_from.get("tag") == original_from.get("tag")
+                        and received_to.get("tag") == original_to.get("tag")
+                        and received_via.get("branch")
+                        == original_via.get("branch")
+                        and received_via["address"] == original_via["address"]
+                    )
+                except (KeyError, IndexError, TypeError):
+                    return False
+
+            remote_message = getattr(call, "remote_sip_message", None)
+            if original_from.get("tag") == local_tag:
+                remote_headers = getattr(remote_message, "headers", {})
+                remote_tag = remote_headers.get("To", {}).get("tag", "")
+            else:
+                remote_tag = original_from.get("tag", "")
+            return bool(
+                local_tag
+                and remote_tag
+                and received_to.get("tag") == local_tag
+                and received_from.get("tag") == remote_tag
+            )
+
+        # Preserve SIPClient use with a lower-level callback and legacy
+        # phone objects which expose call membership without dialog data.
         has_call_id = getattr(self.phone, "has_call_id", None)
         if callable(has_call_id):
             return bool(has_call_id(call_id))
 
-        phone_calls = getattr(self.phone, "calls", None)
         if isinstance(phone_calls, dict):
             return call_id in phone_calls
         return self.callCallback is not None
@@ -4563,9 +4632,37 @@ class SIPClient:
         if self.NSD:
             self.register()
 
+    def _registration_response_expires(
+        self, response: SIPMessage
+    ) -> Optional[int]:
+        # A binding-specific expiry takes precedence over the response's
+        # general Expires field. Other registered devices can appear in the
+        # same Contact list, so only use our own binding's parameter.
+        local_contact = self._contact_uri()
+        contacts = response.headers.get("Contact", "")
+        if not isinstance(contacts, list):
+            contacts = [contacts]
+        for contact_header in contacts:
+            for contact in _split_top_level_comma(str(contact_header)):
+                parts = _split_top_level_semicolon(contact)
+                if self._extract_uri(parts[0]) != local_contact:
+                    continue
+                for part in parts[1:]:
+                    key, separator, value = part.partition("=")
+                    if separator and key.strip().lower() == "expires":
+                        expires = _safe_int(value.strip().strip('"'))
+                        if expires is not None and expires >= 0:
+                            return expires
+
+        expires = _safe_int(response.headers.get("Expires"))
+        return expires if expires is not None and expires >= 0 else None
+
     def __start_register_timer(self, delay: Optional[int] = None):
         if delay is None:
-            delay = max(1, self.default_expires - 5)
+            expires = self._registration_expires
+            if expires is None:
+                expires = self.default_expires
+            delay = max(1, expires - 5)
         else:
             delay = max(0, int(delay))
         if self.NSD:
@@ -4643,6 +4740,9 @@ class SIPClient:
         debug(response.raw)
 
         if response.status == SIPStatus.OK:
+            self._registration_expires = self._registration_response_expires(
+                response
+            )
             return True
 
         if response.status in (
