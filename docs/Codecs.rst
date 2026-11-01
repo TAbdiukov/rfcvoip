@@ -136,10 +136,10 @@ AMR and AMR-WB
 
     * Debian/Ubuntu: ``sudo apt-get install libopencore-amrnb0 libopencore-amrwb0 libvo-amrwbenc0``.
     * macOS: ``brew install opencore-amr vo-amrwbenc``.
-    * Windows, MSYS2 MINGW64: ``pacman -S mingw-w64-x86_64-opencore-amr mingw-w64-x86_64-vo-amrwbenc``.
+    * Windows, MSYS2 UCRT64: ``pacman -S mingw-w64-ucrt-x86_64-opencore-amr mingw-w64-ucrt-x86_64-vo-amrwbenc``.
 
     Windows users should set ``RFCVOIP_AMR_LIBRARY_DIR`` to the directory
-    containing the DLLs, typically ``C:\\msys64\\mingw64\\bin``. This also
+    containing the DLLs, typically ``C:\\msys64\\ucrt64\\bin``. This also
     configures Windows' dependency search directory. The optional
     ``RFCVOIP_AMRNB_LIBRARY``, ``RFCVOIP_AMRWB_LIBRARY``, and
     ``RFCVOIP_AMRWBENC_LIBRARY`` environment variables select individual
@@ -178,8 +178,8 @@ AMR and AMR-WB
     `RFC 4867 <https://www.rfc-editor.org/rfc/rfc4867.html>`_.
     Prebuilt packages: `Homebrew OpenCORE <https://formulae.brew.sh/formula/opencore-amr>`_,
     `Homebrew VisualOn <https://formulae.brew.sh/formula/vo-amrwbenc>`_,
-    `MSYS2 OpenCORE <https://packages.msys2.org/packages/mingw-w64-x86_64-opencore-amr>`_,
-    `MSYS2 VisualOn <https://packages.msys2.org/packages/mingw-w64-x86_64-vo-amrwbenc>`_.
+    `MSYS2 OpenCORE <https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-opencore-amr>`_,
+    `MSYS2 VisualOn <https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-vo-amrwbenc>`_.
 
 The ``no-compiler`` and ``all`` extras install the optional G.722, Opus, and
 SILK dependencies. The ``compiler`` extra is retained for compatibility and

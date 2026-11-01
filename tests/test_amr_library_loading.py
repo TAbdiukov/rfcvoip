@@ -298,6 +298,9 @@ def test_refresh_retries_after_native_libraries_become_available(
 def test_missing_optional_libraries_never_prevent_package_import():
     program = """
 import ctypes
+# macOS Python 3.14 initializes system libc when ctypes.util is imported.
+# Keep required OS libraries available before simulating absent codec libraries.
+import ctypes.util
 def unavailable(*args, **kwargs):
     raise OSError("all optional native libraries unavailable")
 ctypes.CDLL = unavailable

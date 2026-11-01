@@ -10,6 +10,7 @@
 - RTP/SDP: Keep AMR packet formats and mode restrictions independent for each payload and media direction, including remapped payload numbers.
 - Codecs/Telemetry: Validate AMR bandwidth limits against the highest negotiated speech mode and report the corresponding bitrate in codec telemetry.
 - Tests: Cover every AMR/AMR-WB mode with native encoders/decoders, framing and malformed packets, audio conversion, negotiation, and cross-platform native codec CI.
+- Documentation/CI: Use supported MSYS2 UCRT64 packages for Windows AMR libraries and keep missing-library tests compatible with macOS Python 3.14.
 - SIP/VoIP: Isolate signaling lifetimes so stale receivers, timers, transactions, and startup/shutdown completions cannot modify a restarted client or phone.
 - VoIP: ACK and terminate late accepted outbound dialogs after local cancellation, including answers received while CANCEL is being sent.
 - SIP/VoIP: Release ended and failed-setup dialog tags while retaining bounded context needed for late responses.

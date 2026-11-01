@@ -38,18 +38,18 @@ jobs:
         id: msys2
         uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-opencore-amr
-            mingw-w64-x86_64-vo-amrwbenc
+            mingw-w64-ucrt-x86_64-opencore-amr
+            mingw-w64-ucrt-x86_64-vo-amrwbenc
       - name: Configure Windows library directory
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: |
-          "RFCVOIP_AMR_LIBRARY_DIR=$env:MSYS2_LOCATION\mingw64\bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RFCVOIP_AMR_LIBRARY_DIR=$env:MSYS2_LOCATION\ucrt64\bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Install package and tests
         run: python -m pip install -e . pytest
       - name: Run native codec and signaling tests

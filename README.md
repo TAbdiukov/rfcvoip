@@ -85,14 +85,14 @@ them):
 sudo apt-get install libopencore-amrnb0 libopencore-amrwb0 libvo-amrwbenc0
 # macOS (Homebrew)
 brew install opencore-amr vo-amrwbenc
-# Windows (in a 64-bit MSYS2 MINGW64 shell)
-pacman -S mingw-w64-x86_64-opencore-amr mingw-w64-x86_64-vo-amrwbenc
+# Windows (in an MSYS2 UCRT64 shell)
+pacman -S mingw-w64-ucrt-x86_64-opencore-amr mingw-w64-ucrt-x86_64-vo-amrwbenc
 ```
 
 On Windows, point to the directory containing the DLLs before importing rfcvoip:
 
 ```powershell
-$env:RFCVOIP_AMR_LIBRARY_DIR = 'C:\msys64\mingw64\bin'
+$env:RFCVOIP_AMR_LIBRARY_DIR = 'C:\msys64\ucrt64\bin'
 ```
 
 The libraries must match the Python process architecture. Individual absolute
