@@ -545,6 +545,6 @@ class AMRWBCodec(_AMRCodec):
     preferred_source_sample_rate = 16000
     source_sample_rate = 16000
     default_payload_type = 119
-    priority_score = 960
+    priority_score = 945
     required_bandwidth_bps = 23850
     extra_packages = ("opencore-amr", "vo-amrwbenc")

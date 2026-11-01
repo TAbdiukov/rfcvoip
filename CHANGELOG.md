@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Codecs: Lower AMR-WB's default priority to 945, between SILK/24000 and SILK/16000; retain AMR at 750.
 - Codecs: Add optional AMR and AMR-WB sending/receiving through OpenCORE and VisualOn native libraries on Windows, macOS, and Linux, with availability reporting and codec priority tuning.
 - RTP/SDP: Support both RFC 4867 packet formats, aggregated AMR frames, receive comfort noise, mode sets and mode requests, and preserve negotiated settings across offers/answers and retained media.
 - Tests: Cover every AMR/AMR-WB mode with native encoders/decoders, framing and malformed packets, audio conversion, negotiation, and cross-platform native codec CI.

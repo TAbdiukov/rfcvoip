@@ -100,9 +100,10 @@ paths can also be configured with `RFCVOIP_AMRNB_LIBRARY`,
 `RFCVOIP_AMRWB_LIBRARY`, and `RFCVOIP_AMRWBENC_LIBRARY`. After installing
 libraries in a running process, call `rfcvoip.refresh_supported_codecs()`.
 AMR-WB needs both its encoder and decoder libraries before it is advertised.
-AMR-WB is preferred after Opus; AMR is preferred before PCMU/PCMA. Both support
-octet-aligned and bandwidth-efficient RTP, all speech modes, and negotiated
-mode sets. See [codec details](docs/Codecs.rst) for supported SDP features.
+AMR-WB is preferred after Opus and SILK/24000; AMR is preferred before
+PCMU/PCMA. Both support octet-aligned and bandwidth-efficient RTP, all speech
+modes, and negotiated mode sets. See [codec details](docs/Codecs.rst) for
+supported SDP features.
 
 Installing from a source checkout:
 

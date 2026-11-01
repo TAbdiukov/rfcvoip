@@ -167,8 +167,9 @@ AMR and AMR-WB
     receive DTX/comfort noise is supported. ReINVITEs which change the active
     AMR format or mode constraints are rejected while existing media continues.
 
-    Default preference scores are Opus 1000, AMR-WB 960, SILK 920--950,
-    G.722 910, G.711 wideband 850--900, AMR 750, PCMU 700, and PCMA 650.
+    Default preference scores are Opus 1000, SILK/24000 950, AMR-WB 945,
+    SILK/16000 940, SILK/12000 930, SILK/8000 920, G.722 910,
+    G.711 wideband 850--900, AMR 750, PCMU 700, and PCMA 650.
     Process-wide and per-phone overrides apply to AMR as to all other codecs.
 
     Upstream references: `OpenCORE AMR <https://opencore-amr.sourceforge.net/>`_,
