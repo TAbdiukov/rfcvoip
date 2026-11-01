@@ -368,11 +368,18 @@ class VoIPCall:
     ):
         self._state_lock = RLock()
         self.state = callstate
+        self._outbound = callstate == CallState.DIALING
         self.phone = phone
         self.audio_output_mode = getattr(phone, "audio_output_mode", "buffered")
         self.sip = self.phone.sip
         self.request = request
         self.call_id = request.headers["Call-ID"]
+        self._registered = False
+        self._local_tag = (
+            request.headers.get("From", {}).get("tag")
+            if self._outbound
+            else getattr(self.sip, "tagLibrary", {}).get(self.call_id)
+        )
         self.remote_sip_message = (
             request if callstate == CallState.RINGING else None
         )
@@ -1003,6 +1010,12 @@ class VoIPCall:
             if getattr(self, "_finalized", False):
                 return
             self._finalized = True
+        if getattr(self, "_outbound", False):
+            remember = getattr(
+                self.phone, "_remember_ended_outbound_invite", None
+            )
+            if callable(remember):
+                remember(self.request)
         try:
             self.phone.release_ports(call=self)
         except Exception:
@@ -1023,14 +1036,13 @@ class VoIPCall:
         except Exception:
             pass
 
-        if self.call_id in self.phone.calls:
-            remove_call = getattr(self.phone, "_remove_call", None)
-            if callable(remove_call):
-                remove_call(self.call_id, expected=self)
-            else:
-                calls = getattr(self.phone, "calls", {})
-                if calls.get(self.call_id) is self:
-                    del calls[self.call_id]
+        remove_call = getattr(self.phone, "_remove_call", None)
+        if callable(remove_call):
+            remove_call(self.call_id, expected=self)
+        else:
+            calls = getattr(self.phone, "calls", {})
+            if calls.get(self.call_id) is self:
+                del calls[self.call_id]
 
     def genMs(self) -> Dict[int, Any]:
         warnings.warn(
@@ -1344,7 +1356,8 @@ class VoIPCall:
                 self.state = CallState.ANSWERED
                 self._initial_invite_response = message
             self._send_invite_response(self.request, message)
-        except Exception:
+        except Exception as ex:
+            ended_during_preparation = self._get_state() == CallState.ENDED
             remember = getattr(self.phone, "_remember_invite_response", None)
             cached = getattr(self.phone, "_cached_invite_response", None)
             if (
@@ -1365,6 +1378,10 @@ class VoIPCall:
             self._stop_rtp_clients()
             self._set_state(CallState.ENDED)
             self._finalize_ended_call()
+            if ended_during_preparation and not isinstance(
+                ex, InvalidStateError
+            ):
+                raise InvalidStateError("Call ended while answering") from ex
             raise
         finally:
             with self._state_lock_for():
@@ -1575,8 +1592,10 @@ class VoIPCall:
             self._finalize_ended_call()
 
     def cancel(self) -> None:
-        if self.state not in (CallState.DIALING, CallState.RINGING):
-            raise InvalidStateError("Call is not dialing")
+        with self._state_lock_for():
+            if self.state not in (CallState.DIALING, CallState.RINGING):
+                raise InvalidStateError("Call is not dialing")
+            self.state = CallState.ENDED
         debug(
             f"Cancelling call {self.call_id}",
             f"Call {self.call_id}: cancel requested",
@@ -1758,6 +1777,9 @@ class VoIPPhone:
         self.rtpPortLow = rtpPortLow
         self.rtpPortHigh = rtpPortHigh
         self.NSD = False
+        self._phone_start_generation = 0
+        self._start_in_progress = False
+        self._starting_sip_generation = None
 
         self._call_state_lock = RLock()
         self.portsLock = RLock()
@@ -1825,6 +1847,7 @@ class VoIPPhone:
         # INVITE response can arrive in that window via the receive loop.
         self._outbound_call_creation_depth = 0
         self._invite_response_cache = OrderedDict()
+        self._ended_outbound_invites = OrderedDict()
         self.sip = SIP.SIPClient(
             server,
             port,
@@ -1853,6 +1876,8 @@ class VoIPPhone:
 
     def _set_call(self, call_id: str, call: VoIPCall) -> None:
         with self._call_state_lock:
+            if isinstance(call, VoIPCall):
+                call._registered = True
             self.calls[call_id] = call
 
     def _remove_call(
@@ -1863,13 +1888,80 @@ class VoIPPhone:
     ) -> Optional[VoIPCall]:
         with self._call_state_lock:
             call = self.calls.get(call_id)
-            if expected is not None and call is not expected:
+            if (
+                expected is not None
+                and call is not None
+                and call is not expected
+            ):
                 return None
+            if expected is not None and (
+                call is expected or getattr(expected, "_registered", False)
+            ):
+                local_tag = getattr(expected, "_local_tag", None)
+                tags = getattr(self.sip, "tagLibrary", {})
+                if local_tag is not None and tags.get(call_id) == local_tag:
+                    tags.pop(call_id, None)
             return self.calls.pop(call_id, None)
 
     def _calls_snapshot(self) -> List[VoIPCall]:
         with self._call_state_lock:
             return list(self.calls.values())
+
+    def _discard_orphan_dialog_tag(self, call_id: str, local_tag: Any) -> None:
+        with self._call_state_lock:
+            tags = getattr(self.sip, "tagLibrary", {})
+            if (
+                call_id not in self.calls
+                and local_tag is not None
+                and tags.get(call_id) == local_tag
+            ):
+                tags.pop(call_id, None)
+
+    def _remember_ended_outbound_invite(self, request: SIP.SIPMessage) -> None:
+        call_id = request.headers.get("Call-ID")
+        if not call_id:
+            return
+        with self._call_state_lock:
+            cache = self._ended_outbound_invites
+            now = time.monotonic()
+            while cache and next(iter(cache.values()))[0] <= now:
+                cache.popitem(last=False)
+            cache[call_id] = (now + 32.0, request)
+            cache.move_to_end(call_id)
+            while len(cache) > 256:
+                cache.popitem(last=False)
+
+    def _ended_outbound_invite(
+        self, response: SIP.SIPMessage
+    ) -> Optional[SIP.SIPMessage]:
+        with self._call_state_lock:
+            cache = self._ended_outbound_invites
+            now = time.monotonic()
+            while cache and next(iter(cache.values()))[0] <= now:
+                cache.popitem(last=False)
+            entry = cache.get(response.headers.get("Call-ID"))
+            if entry is None:
+                return None
+            original = entry[1]
+        if self._matches_outbound_invite(response, original):
+            return original
+        return None
+
+    @staticmethod
+    def _matches_outbound_invite(
+        response: SIP.SIPMessage, original: SIP.SIPMessage
+    ) -> bool:
+        try:
+            return (
+                response.headers["CSeq"]["method"] == "INVITE"
+                and original.headers["CSeq"]["method"] == "INVITE"
+                and int(response.headers["CSeq"]["check"])
+                == int(original.headers["CSeq"]["check"])
+                and response.headers["From"]["tag"]
+                == original.headers["From"]["tag"]
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
 
     @staticmethod
     def _run_call_callback(
@@ -1965,6 +2057,8 @@ class VoIPPhone:
         original_request = getattr(request, "_rfcvoip_invite_request", None)
         if original_request is None and call is not None:
             original_request = getattr(call, "request", None)
+        if original_request is None:
+            original_request = self._ended_outbound_invite(request)
         request_uri = getattr(request, "_rfcvoip_invite_request_uri", None)
         if request_uri is None:
             request_uri = getattr(original_request, "uri", None)
@@ -2544,8 +2638,14 @@ class VoIPPhone:
                 if proposed not in self.session_ids:
                     self.session_ids.append(proposed)
                     sess_id = proposed
+            ringing_tag = None
             try:
-                message = self.sip.gen_ringing(request)
+                try:
+                    message = self.sip.gen_ringing(request)
+                finally:
+                    ringing_tag = getattr(self.sip, "tagLibrary", {}).get(
+                        call_id
+                    )
                 self._send_invite_response(request, message)
                 self._create_Call(request, sess_id)
             except RTP.RTPParseError as ex:
@@ -2556,14 +2656,18 @@ class VoIPPhone:
                     "Rejecting INVITE after codec negotiation failed "
                     + f"call_id={call_id}: {ex}",
                 )
-                message = self.sip.gen_response(
-                    request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
-                )
-                self._send_invite_response(request, message)
+                try:
+                    message = self.sip.gen_response(
+                        request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
+                    )
+                    self._send_invite_response(request, message)
+                finally:
+                    self._discard_orphan_dialog_tag(call_id, ringing_tag)
                 return
             except Exception:
                 if sess_id in self.session_ids:
                     self.session_ids.remove(sess_id)
+                self._discard_orphan_dialog_tag(call_id, ringing_tag)
                 raise
 
             try:
@@ -2590,12 +2694,14 @@ class VoIPPhone:
                 if call is not None:
                     call._stop_rtp_clients()
                     call._set_state(CallState.ENDED)
-                    call._finalize_ended_call()
                 try:
                     message = self.sip.gen_busy(request)
                     self._send_invite_response(request, message)
                 except Exception as ex:
                     debug(f"Failed to reject undispatched call {call_id}: {ex}")
+                finally:
+                    if call is not None:
+                        call._finalize_ended_call()
                 raise
 
     def _callback_MSG_Bye(self, request: SIP.SIPMessage) -> None:
@@ -2640,6 +2746,8 @@ class VoIPPhone:
     def _end_unusable_call(
         self, call: VoIPCall, request: SIP.SIPMessage
     ) -> None:
+        if getattr(call, "_outbound", False):
+            request._rfcvoip_invite_request = call.request
         call._stop_rtp_clients()
         call._set_state(CallState.ENDED)
         call._finalize_ended_call()
@@ -2662,20 +2770,45 @@ class VoIPPhone:
 
         call = self._get_call(call_id)
         if call is None:
-            if self._queue_unmatched_final_invite_response(request):
+            ended_invite = self._ended_outbound_invite(request)
+            if ended_invite is not None:
+                request._rfcvoip_invite_request = ended_invite
+            elif self._queue_unmatched_final_invite_response(request):
                 return
             debug("Unknown/No call")
             # Still ACK 200 OK to stop retransmits.
-            self._send_ack(request)
+            if ended_invite is None:
+                self._send_ack(request)
+            else:
+                try:
+                    self._send_ack(request)
+                except Exception as ex:
+                    debug(f"Failed to ACK late accepted call {call_id}: {ex}")
+            if ended_invite is not None:
+                # CANCEL can lose to a remote answer. The resulting dialog
+                # must be ended even though the local call is already gone.
+                try:
+                    self.sip.bye(request)
+                except Exception as ex:
+                    debug(f"Failed to end late accepted call {call_id}: {ex}")
             return
 
+        if getattr(call, "_outbound", False) and not self._matches_outbound_invite(
+            request, call.request
+        ):
+            self._send_ack(request)
+            return
         with call._state_lock_for():
+            already_ended = call.state == CallState.ENDED
             already_answering = (
                 call.state == CallState.ANSWERED
                 or getattr(call, "_answer_in_progress", False)
             )
-            if not already_answering:
+            if not already_answering and not already_ended:
                 call._answer_in_progress = True
+        if already_ended:
+            self._end_unusable_call(call, request)
+            return
         if already_answering:
             self._send_ack(request)
             return
@@ -2824,20 +2957,55 @@ class VoIPPhone:
         self._set_call(call_id, call)
 
     def start(self) -> None:
-        if self.NSD:
-            raise RuntimeError("Attempted to start already started VoIPPhone")
-        self._status = PhoneStatus.REGISTERING
+        with self._call_state_lock:
+            sip_generation = getattr(self.sip, "_run_generation", None)
+            starting_generation = self._starting_sip_generation
+            if self.NSD or self.sip.NSD or (
+                self._start_in_progress
+                and (
+                    starting_generation is None
+                    or sip_generation in (
+                        starting_generation, starting_generation + 1
+                    )
+                )
+            ):
+                raise RuntimeError(
+                    "Attempted to start already started VoIPPhone"
+                )
+            self._phone_start_generation += 1
+            generation = self._phone_start_generation
+            self._start_in_progress = True
+            self._starting_sip_generation = sip_generation
+            self._status = PhoneStatus.REGISTERING
         try:
             self.sip.start()
-            self.NSD = self.sip.NSD
+            with self._call_state_lock:
+                if generation == self._phone_start_generation:
+                    self.NSD = self.sip.NSD
         except Exception:
-            self._status = PhoneStatus.FAILED
-            self.sip.stop()
-            self.NSD = False
+            # SIPClient.start cleans up only the SIP run it owns. Calling
+            # stop() here could tear down a replacement that started while
+            # the old connection was opening or registering.
+            with self._call_state_lock:
+                if generation == self._phone_start_generation:
+                    self.NSD = self.sip.NSD
+                    if not self.NSD:
+                        self._status = PhoneStatus.FAILED
             raise
+        finally:
+            with self._call_state_lock:
+                if generation == self._phone_start_generation:
+                    self._start_in_progress = False
+                    self._starting_sip_generation = None
 
     def stop(self, failed=False) -> None:
-        self._status = PhoneStatus.DEREGISTERING
+        with self._call_state_lock:
+            self._phone_start_generation += 1
+            generation = self._phone_start_generation
+            sip_generation = getattr(self.sip, "_run_generation", None)
+            self._start_in_progress = False
+            self._starting_sip_generation = None
+            self._status = PhoneStatus.DEREGISTERING
         try:
             for call in self._calls_snapshot():
                 call_id = call.call_id
@@ -2879,11 +3047,27 @@ class VoIPPhone:
                     except Exception:
                         self._remove_call(call_id, expected=call)
         finally:
-            try:
-                self.sip.stop()
-            finally:
-                self.NSD = False
-                self._status = PhoneStatus.FAILED if failed else PhoneStatus.INACTIVE
+            with self._call_state_lock:
+                owned = generation == self._phone_start_generation
+            if owned:
+                try:
+                    if sip_generation is None:
+                        self.sip.stop()
+                    else:
+                        self.sip.stop(expected_generation=sip_generation)
+                finally:
+                    with self._call_state_lock:
+                        if generation == self._phone_start_generation:
+                            self.NSD = bool(
+                                self.sip.NSD
+                                and getattr(self.sip, "_run_generation", None)
+                                != sip_generation
+                            )
+                            if not self.NSD:
+                                self._status = (
+                                    PhoneStatus.FAILED
+                                    if failed else PhoneStatus.INACTIVE
+                                )
 
     def fatal(self) -> None:
         self.stop(failed=True)

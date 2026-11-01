@@ -439,7 +439,11 @@ def _ordered_algorithms(algorithms: Iterable[str]) -> List[str]:
     normalized = []
     for algorithm in algorithms:
         try:
-            normalized.append(_ensure_supported_algorithm(algorithm))
+            algorithm = _ensure_supported_algorithm(algorithm)
+            # Some recognized algorithms (notably SHA-512/256) depend on
+            # the Python/OpenSSL build or its active security policy.
+            _hash_bytes(b"", algorithm)
+            normalized.append(algorithm)
         except SIPAuthError:
             continue
 
@@ -555,7 +559,7 @@ def build_authorization_parameters(
     )
 
     opaque = challenge.get("opaque")
-    if opaque:
+    if opaque is not None:
         params["opaque"] = str(opaque)
     return params
 

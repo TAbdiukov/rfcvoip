@@ -1850,16 +1850,64 @@ class RTPClient:
         wait = wait or time.sleep
         next_due = clock()
         previous_send = None
+        hold_started = None
+        timestamp_clock = int(self.preference.rate)
+        after_event = False
+        event_gap = 0.0
         while self.NSD:
             if self.sendrecv in (TransmitType.RECVONLY, TransmitType.INACTIVE):
+                if hold_started is None:
+                    hold_started = clock()
                 wait(0.02)
                 next_due = clock()
                 continue
+            if hold_started is not None:
+                # Suppressing RTP does not stop its sampling clock. Keep the
+                # pause in the peer's timeline while preserving queued PCM.
+                paused = clock() - hold_started
+                if after_event:
+                    event_gap += paused
+                else:
+                    self.outTimestamp = (
+                        self.outTimestamp + round(paused * timestamp_clock)
+                    ) & 0xFFFFFFFF
+                hold_started = None
 
             with self._dtmf_lock:
-                pending_dtmf = self._pending_dtmf.popleft() if self._pending_dtmf else None
+                pending_dtmf = (
+                    self._pending_dtmf.popleft()
+                    if self._pending_dtmf
+                    else None
+                )
             if pending_dtmf is not None:
-                self.transmit_dtmf(pending_dtmf)
+                previous_timestamp, previous_gap = self.outTimestamp, event_gap
+                if event_gap:
+                    self.outTimestamp = (
+                        self.outTimestamp
+                        + round(event_gap * PayloadType.EVENT.rate)
+                    ) & 0xFFFFFFFF
+                    event_gap = 0.0
+                started, timestamp = clock(), self.outTimestamp
+                if self.transmit_dtmf(pending_dtmf):
+                    duration = (
+                        (self.outTimestamp - timestamp) & 0xFFFFFFFF
+                    ) / PayloadType.EVENT.rate
+                    # Final retransmissions take time after the tone ends.
+                    # Carry that pause at the next payload's clock rate.
+                    event_gap = max(0.0, clock() - started - duration)
+                    after_event = True
+                elif self.NSD and self.sendrecv in (
+                    TransmitType.RECVONLY,
+                    TransmitType.INACTIVE,
+                ):
+                    # Hold can begin after the queue was checked. No event
+                    # started, so preserve its digit and uncommitted pause.
+                    self.outTimestamp, event_gap = (
+                        previous_timestamp,
+                        previous_gap,
+                    )
+                    with self._dtmf_lock:
+                        self._pending_dtmf.appendleft(pending_dtmf)
                 next_due = clock()
                 continue
 
@@ -1868,6 +1916,13 @@ class RTPClient:
                 self.preference_payload_type,
             )
             size = adapter.source_frame_size()
+            timestamp_clock = int(adapter.rate)
+            if event_gap:
+                self.outTimestamp = (
+                    self.outTimestamp + round(event_gap * timestamp_clock)
+                ) & 0xFFFFFFFF
+                event_gap = 0.0
+            after_event = False
             period = adapter.packet_duration_seconds(bytes(size))
             # Ordinary wakeup jitter is absorbed by the next absolute deadline.
             # A whole missed interval starts a fresh epoch, preventing bursts

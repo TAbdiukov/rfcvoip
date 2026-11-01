@@ -30,7 +30,6 @@ import rfcvoip
 import hashlib
 import ipaddress
 import socket
-import random
 import re
 import time
 import uuid
@@ -1615,6 +1614,19 @@ def _bandwidth_context(
     }
 
 
+@dataclass
+class _SIPRunCleanup:
+    generation: int
+    was_running: bool
+    connection: Optional[SIPConnection]
+    sock: Any
+    out: Any
+    register_event: Optional[Event]
+    subscriptions: Dict[str, SIPSubscription]
+    notify_cache: Dict[Any, Any]
+    callbacks: Any
+
+
 class SIPClient:
     def __init__(
         self,
@@ -1635,7 +1647,9 @@ class SIPClient:
         tls_context: Optional[ssl.SSLContext] = None,
         tls_server_name: Optional[str] = None,
     ):
+        self._lifecycle_lock = RLock()
         self.NSD = False
+        self._run_generation = 0
         self.server = server
         self.requested_transport = (
             None if transport is None else SIPTransport.from_uri(transport)
@@ -1684,6 +1698,7 @@ class SIPClient:
         self.callCallback = callCallback
         self.fatalCallback = fatalCallback
 
+        self._tag_lock = Lock()
         self.tags: List[str] = []
         self.tagLibrary = {"register": self.gen_tag()}
 
@@ -1708,6 +1723,7 @@ class SIPClient:
         self.subscribeCounter = Counter()
         self.byeCounter = Counter()
         self.callID = Counter()
+        self._call_id_seed = uuid.uuid4().hex
         self.sessID = Counter()
         self.optionsCounter = Counter()
         self.register_call_id: Optional[str] = None
@@ -1956,6 +1972,7 @@ class SIPClient:
         data: bytes,
         target: Optional[Tuple[str, int]] = None,
     ) -> None:
+        self._check_receive_generation()
         if target is None:
             target = self.signal_target()
 
@@ -2012,7 +2029,11 @@ class SIPClient:
             return None
 
     def _recv_message_before(self, deadline: float) -> Optional[SIPMessage]:
-        while time.monotonic() < deadline:
+        generation = self._check_receive_generation()
+        while (
+            generation == self._run_generation
+            and time.monotonic() < deadline
+        ):
             connection = self.connection
             if connection is None:
                 sock = getattr(self, "s", None)
@@ -2032,16 +2053,19 @@ class SIPClient:
                     )
                 except SIPFramingError as ex:
                     debug(f"SIP stream framing error while waiting: {ex}")
-                    self._fail_signaling_connection()
+                    self._fail_signaling_connection(connection, generation)
                     return None
                 except ConnectionError as ex:
                     if not connection.connection_oriented:
                         raise
                     debug(f"SIP stream connection failed while waiting: {ex}")
-                    self._fail_signaling_connection()
+                    self._fail_signaling_connection(connection, generation)
                     return None
                 if raw is None:
                     return None
+
+            if generation != self._run_generation:
+                return None
 
             if self._is_keepalive_packet(raw):
                 continue
@@ -2278,19 +2302,63 @@ class SIPClient:
                 "Start the request from another thread."
             )
 
+    def _check_receive_generation(self) -> int:
+        generation = getattr(self, "_run_generation", 0)
+        state = self._current_receive_state()
+        if (
+            getattr(state, "owns_recv_lock", False)
+            and getattr(state, "generation", generation) != generation
+        ):
+            raise RuntimeError(
+                "SIP client stopped or restarted during transaction."
+            )
+        return generation
+
     @contextmanager
-    def _receive_transaction(self):
+    def _registration_generation(self, generation: int):
+        state = self._current_receive_state()
+        previous = getattr(state, "registration_generation", None)
+        state.registration_generation = generation
+        try:
+            yield
+        finally:
+            state.registration_generation = previous
+
+    @contextmanager
+    def _receive_transaction(self, generation: Optional[int] = None):
         self._check_receive_reentry()
         state = self._current_receive_state()
+        if generation is None:
+            generation = getattr(self, "_run_generation", 0)
         try:
             with self.recvLock:
+                if generation != getattr(self, "_run_generation", 0):
+                    raise RuntimeError(
+                        "SIP client stopped or restarted before transaction."
+                    )
                 state.owns_recv_lock = True
+                state.generation = generation
                 try:
                     yield
                 finally:
                     state.owns_recv_lock = False
         finally:
             self._drain_subscription_callbacks()
+        if generation != getattr(self, "_run_generation", 0):
+            raise RuntimeError(
+                "SIP client stopped or restarted during transaction."
+            )
+
+    @contextmanager
+    def _invite_transaction(self, call_id: str, generation: int):
+        try:
+            with self._receive_transaction(generation):
+                yield
+        except Exception:
+            self.tagLibrary.pop(call_id, None)
+            with self._pending_invite_lock:
+                self.pending_invite_responses.pop(call_id, None)
+            raise
 
     def options(
         self,
@@ -2305,6 +2373,7 @@ class SIPClient:
         OPTIONS response.
         """
         self._check_receive_reentry()
+        generation = self._check_receive_generation()
         if not self.NSD:
             raise RuntimeError("SIP client is not running.")
 
@@ -2323,7 +2392,7 @@ class SIPClient:
         retries = 0
         auth_challenges: Dict[str, Tuple[SIPMessage, int]] = {}
 
-        with self._receive_transaction():
+        with self._receive_transaction(generation):
             self.send_raw(request.encode("utf8"), self.signal_target())
 
             while self.NSD and time.monotonic() < deadline:
@@ -2684,7 +2753,10 @@ class SIPClient:
         try:
             while True:
                 with self._subscription_lock:
-                    if not pending:
+                    if (
+                        pending is not self._pending_subscription_callbacks
+                        or not pending
+                    ):
                         break
                     callback, info = pending.popleft()
                 try:
@@ -2693,8 +2765,11 @@ class SIPClient:
                     debug(f"Exception in subscription_callback: {ex}")
         finally:
             with self._subscription_lock:
-                self._subscription_callbacks_running = False
-                more_pending = bool(pending)
+                if pending is self._pending_subscription_callbacks:
+                    self._subscription_callbacks_running = False
+                    more_pending = bool(pending)
+                else:
+                    more_pending = False
             if more_pending and not self.recvLock.locked():
                 self._drain_subscription_callbacks()
 
@@ -3008,9 +3083,23 @@ class SIPClient:
             if self.tagLibrary.get(subscription.call_id) == subscription.local_tag:
                 self.tagLibrary.pop(subscription.call_id, None)
 
-    def _clear_subscriptions(self) -> None:
+    def _clear_subscriptions(
+        self, cleanup: Optional[_SIPRunCleanup] = None
+    ) -> None:
         with self._subscription_lock:
-            for subscription in self.subscriptions.values():
+            subscriptions = (
+                self.subscriptions
+                if cleanup is None else cleanup.subscriptions
+            )
+            cache = (
+                self._notify_response_cache
+                if cleanup is None else cleanup.notify_cache
+            )
+            callbacks = (
+                self._pending_subscription_callbacks
+                if cleanup is None else cleanup.callbacks
+            )
+            for subscription in subscriptions.values():
                 subscription.status = "terminated"
                 subscription.subscription_state = "terminated"
                 subscription.updated_at = time.time()
@@ -3019,9 +3108,9 @@ class SIPClient:
                     == subscription.local_tag
                 ):
                     self.tagLibrary.pop(subscription.call_id, None)
-            self.subscriptions.clear()
-            self._notify_response_cache.clear()
-            self._pending_subscription_callbacks.clear()
+            subscriptions.clear()
+            cache.clear()
+            callbacks.clear()
 
     def list_subscriptions(self) -> List[Dict[str, Any]]:
         with self._subscription_lock:
@@ -3076,6 +3165,7 @@ class SIPClient:
         accept: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         self._check_receive_reentry()
+        generation = self._check_receive_generation()
         if not self.NSD:
             raise RuntimeError("SIP client is not running.")
 
@@ -3103,7 +3193,7 @@ class SIPClient:
         self.tagLibrary[subscription.call_id] = subscription.local_tag
 
         try:
-            with self._receive_transaction():
+            with self._receive_transaction(generation):
                 request = self._build_subscribe_request(
                     subscription,
                     expires=subscription.pending_expires,
@@ -3206,6 +3296,7 @@ class SIPClient:
         event: Optional[str] = None,
     ) -> Dict[str, Any]:
         self._check_receive_reentry()
+        generation = self._check_receive_generation()
         if not self.NSD:
             raise RuntimeError("SIP client is not running.")
 
@@ -3217,7 +3308,7 @@ class SIPClient:
             previous_pending = subscription.pending_expires
             subscription.pending_expires = 0
         try:
-            with self._receive_transaction():
+            with self._receive_transaction(generation):
                 request = self._build_subscribe_request(subscription, expires=0)
                 self.send_raw(
                     request.encode("utf8"),
@@ -3370,15 +3461,20 @@ class SIPClient:
         response += "Content-Length: 0\r\n\r\n"
         return response
 
-    def recv_loop(self) -> None:
-        while self.NSD:
+    def recv_loop(self, generation: Optional[int] = None) -> None:
+        if generation is None:
+            generation = self._run_generation
+        while self.NSD and generation == self._run_generation:
             try:
                 sock = getattr(self, "s", None)
                 if sock is None:
                     break
                 with acquired_lock_and_unblocked_socket(self.recvLock, sock):
+                    if not self.NSD or generation != self._run_generation:
+                        break
                     state = self._current_receive_state()
                     state.owns_recv_lock = True
+                    state.generation = generation
                     try:
                         self.recv()
                     finally:
@@ -3394,29 +3490,33 @@ class SIPClient:
             finally:
                 self._drain_subscription_callbacks()
 
-    def _delayed_recv_loop(self, delay: float = 1.0) -> None:
+    def _delayed_recv_loop(
+        self, delay: float = 1.0, generation: Optional[int] = None
+    ) -> None:
+        if generation is None:
+            generation = self._run_generation
         if delay > 0:
             time.sleep(delay)
-        self.recv_loop()
+        if self.NSD and generation == self._run_generation:
+            self.recv_loop(generation)
 
-    def _fail_signaling_connection(self) -> None:
+    def _fail_signaling_connection(
+        self,
+        expected_connection: Optional[SIPConnection] = None,
+        generation: Optional[int] = None,
+    ) -> None:
+        cleanup = self._detach_run(generation, expected_connection)
+        if cleanup is None:
+            return
         # A stream with lost message boundaries or EOF cannot be read again.
         # Disable registration before invoking fatal cleanup: receive processing
         # already owns recvLock, so synchronous deregistration would deadlock.
-        was_running = self.NSD
-        self.NSD = False
-        self._cancel_pending_register_thread()
         try:
-            self._close_sockets()
+            self._cleanup_detached_run(cleanup)
         except Exception as ex:
             debug(f"Error closing failed SIP connection: {ex}")
-        finally:
-            self.connection = None
-            self.s = None
-            self.out = None
-            self._clear_subscriptions()
 
-        if was_running:
+        if cleanup.was_running and cleanup.generation == self._run_generation:
             self.phone._status = PhoneStatus.FAILED
             if self.fatalCallback is not None:
                 try:
@@ -3426,6 +3526,7 @@ class SIPClient:
 
     def recv(self) -> None:
         connection = self.connection
+        generation = self._run_generation
         if connection is None:
             return
 
@@ -3436,13 +3537,19 @@ class SIPClient:
             raise
         except SIPFramingError as ex:
             debug(f"SIP stream framing error: {ex}")
-            self._fail_signaling_connection()
+            self._fail_signaling_connection(connection, generation)
             return
         except ConnectionError as ex:
             if not connection.connection_oriented:
                 raise
             debug(f"SIP stream connection failed: {ex}")
-            self._fail_signaling_connection()
+            self._fail_signaling_connection(connection, generation)
+            return
+
+        if (
+            connection is not self.connection
+            or generation != self._run_generation
+        ):
             return
 
         if self._is_keepalive_packet(raw):
@@ -3707,71 +3814,171 @@ class SIPClient:
             )
 
     def start(self) -> None:
-        if self.NSD:
-            raise RuntimeError("Attempted to start already started SIPClient")
-        self.NSD = True
+        with self._lifecycle_lock:
+            if self.NSD:
+                raise RuntimeError(
+                    "Attempted to start already started SIPClient"
+                )
+            self.NSD = True
+            self._run_generation += 1
+            generation = self._run_generation
         try:
             target = self.proxy_target or self.server_target
-            self.connection = SIPConnection(
+            connection = SIPConnection(
                 self.myIP,
                 self.myPort,
                 target,
                 tls_context=self.tls_context,
                 tls_server_name=self.tls_server_name,
             )
-            self.connection.open()
-            self.s = self.connection.socket
-            self.out = self.s
+            with self._lifecycle_lock:
+                stale = generation != self._run_generation
+                if not stale:
+                    self.connection = connection
+            if stale:
+                if connection is not self.connection:
+                    connection.close()
+                return
+            connection.open()
+            with self._lifecycle_lock:
+                stale = (
+                    generation != self._run_generation
+                    or self.connection is not connection
+                )
+                if not stale:
+                    self.s = connection.socket
+                    self.out = self.s
+            if stale:
+                if connection is not self.connection:
+                    connection.close()
+                return
             if self.myPort == 0:
                 getsockname = getattr(self.s, "getsockname", None)
                 if callable(getsockname):
                     self.myPort = int(getsockname()[1])
-            self.register()
-            if self.NSD:
+            with self._registration_generation(generation):
+                self.register()
+            if self.NSD and generation == self._run_generation:
                 t = Thread(
                     target=self._delayed_recv_loop,
+                    args=(1.0, generation),
                     name="SIP Receive",
                     daemon=True,
                 )
                 t.start()
         except Exception:
-            self.NSD = False
-            self._cancel_pending_register_thread()
-            try:
-                self._close_sockets()
-            finally:
-                self.s = None
-                self.out = None
+            cleanup = self._detach_run(generation)
+            if cleanup is not None:
+                self._cleanup_detached_run(cleanup)
             raise
 
-    def stop(self) -> None:
-        if not self.NSD:
-            self._clear_subscriptions()
-            return
+    def stop(self, *, expected_generation: Optional[int] = None) -> None:
+        with self._lifecycle_lock:
+            generation = self._run_generation
+            if (
+                expected_generation is not None
+                and expected_generation != generation
+            ):
+                return
+            expected = getattr(
+                self._current_receive_state(), "registration_generation", None
+            )
+            if expected is not None and expected != generation:
+                return
+            registered = self.NSD and self.registerThread is not None
         try:
-            self._cancel_pending_register_thread()
-            if self.registerThread:
+            if registered:
                 # Only run if registerThread exists
-                self.deregister()
+                with self._registration_generation(generation):
+                    self.deregister()
         finally:
-            self.NSD = False
-            try:
-                self._close_sockets()
-            finally:
-                self.s = None
-                self.out = None
-                self._clear_subscriptions()
+            cleanup = self._detach_run(generation)
+            if cleanup is not None:
+                self._cleanup_detached_run(cleanup)
 
-    def _close_sockets(self) -> None:
-        if self.connection is not None:
-            self.connection.close()
+    def _detach_run(
+        self,
+        generation: Optional[int] = None,
+        expected_connection: Optional[SIPConnection] = None,
+    ) -> Optional[_SIPRunCleanup]:
+        with self._subscription_lock, self._lifecycle_lock:
+            if (
+                generation is not None and generation != self._run_generation
+            ) or (
+                expected_connection is not None
+                and self.connection is not expected_connection
+            ):
+                return None
+            cleanup = _SIPRunCleanup(
+                generation=self._run_generation + 1,
+                was_running=self.NSD,
+                connection=self.connection,
+                sock=getattr(self, "s", None),
+                out=getattr(self, "out", None),
+                register_event=self._register_cancel_event,
+                subscriptions=self.subscriptions,
+                notify_cache=self._notify_response_cache,
+                callbacks=self._pending_subscription_callbacks,
+            )
             self.connection = None
-            return
+            self.s = self.out = None
+            self._register_cancel_event = None
+            self.registerThread = None
+            self.subscriptions = {}
+            self._notify_response_cache = {}
+            self._pending_subscription_callbacks = deque()
+            self._subscription_callbacks_running = False
+            self._run_generation = cleanup.generation
+            self.NSD = False
+            return cleanup
 
-        if hasattr(self, "s") and self.s:
-            self.s.close()
-        if hasattr(self, "out") and self.out:
-            self.out.close()
+    def _cleanup_detached_run(self, cleanup: _SIPRunCleanup) -> None:
+        try:
+            self._cancel_pending_register_thread(
+                cleanup.register_event, captured=True
+            )
+        finally:
+            try:
+                self._clear_subscriptions(cleanup)
+            finally:
+                self._close_sockets(cleanup)
+
+    def _close_sockets(self, cleanup: Optional[_SIPRunCleanup] = None) -> None:
+        if cleanup is None:
+            with self._lifecycle_lock:
+                connection = self.connection
+                sock = getattr(self, "s", None)
+                out = getattr(self, "out", None)
+                self.connection = None
+                self.s = self.out = None
+        else:
+            connection = cleanup.connection
+            sock = cleanup.sock
+            out = cleanup.out
+        with self._lifecycle_lock:
+            live_connection = self.connection
+            live_sockets = (
+                getattr(self, "s", None), getattr(self, "out", None),
+                getattr(live_connection, "socket", None),
+            )
+            connection_socket = getattr(connection, "socket", None)
+            reused = connection is not None and (
+                connection is live_connection
+                or (
+                    connection_socket is not None
+                    and any(connection_socket is live for live in live_sockets)
+                )
+            )
+        if connection is not None and not reused:
+            connection.close()
+            return
+        if sock is not None and not any(sock is live for live in live_sockets):
+            sock.close()
+        if (
+            out is not None and out is not sock
+            and not any(out is live for live in live_sockets)
+        ):
+            out.close()
 
     def genCallID(self) -> str:
         warnings.warn(
@@ -3783,7 +3990,8 @@ class SIPClient:
         return self.gen_call_id()
 
     def gen_call_id(self) -> str:
-        hash = hashlib.sha256(str(self.callID.next()).encode("utf8"))
+        value = f"{self._call_id_seed}:{self.callID.next()}"
+        hash = hashlib.sha256(value.encode("utf8"))
         hhash = hash.hexdigest()
         return f"{hhash[0:32]}@{self.myIP}:{self.myPort}"
 
@@ -3802,7 +4010,8 @@ class SIPClient:
         return self.gen_last_call_id()
 
     def gen_last_call_id(self) -> str:
-        hash = hashlib.sha256(str(self.callID.current() - 1).encode("utf8"))
+        value = f"{self._call_id_seed}:{self.callID.current() - 1}"
+        hash = hashlib.sha256(value.encode("utf8"))
         hhash = hash.hexdigest()
         return f"{hhash[0:32]}@{self.myIP}:{self.myPort}"
 
@@ -3817,13 +4026,14 @@ class SIPClient:
 
     def gen_tag(self) -> str:
         # Keep as True instead of NSD so it can generate a tag on deregister.
-        while True:
-            rand = str(random.randint(1, 4294967296)).encode("utf8")
-            tag = hashlib.md5(rand).hexdigest()[0:8]
-            if tag not in self.tags:
-                self.tags.append(tag)
-                return tag
-        return ""
+        with self._tag_lock:
+            while True:
+                tag = uuid.uuid4().hex[:8]
+                active_tags = tuple(getattr(self, "tagLibrary", {}).values())
+                if tag not in self.tags and tag not in active_tags:
+                    self.tags.append(tag)
+                    del self.tags[:-1024]
+                    return tag
 
     def genSIPVersionNotSupported(self, request: SIPMessage) -> str:
         warnings.warn(
@@ -4020,7 +4230,7 @@ class SIPClient:
             f'To: "{self.username}" '
             + f"<{self._registrar_uri(user=self.username)}>\r\n"
         )
-        call_id = request.headers.get("Call-ID", self.gen_call_id())
+        call_id = request.headers.get("Call-ID") or self.gen_call_id()
         regRequest += f"Call-ID: {call_id}\r\n"
         regRequest += f"CSeq: {self.registerCounter.next()} REGISTER\r\n"
         regRequest += self._contact_header(include_instance=True)
@@ -4384,7 +4594,15 @@ class SIPClient:
         return self.gen_bye(request)
 
     def gen_bye(self, request: SIPMessage) -> str:
-        tag = self.tagLibrary[request.headers["Call-ID"]]
+        tag = self.tagLibrary.get(request.headers["Call-ID"])
+        if tag is None:
+            original = getattr(request, "_rfcvoip_invite_request", None)
+            if original is not None:
+                tag = original.headers.get("From", {}).get("tag")
+        if not tag:
+            raise SIPRequestError(
+                "Cannot construct BYE without a local dialog tag."
+            )
         c = self._dialog_remote_uri(request)
         byeRequest = f"BYE {c} SIP/2.0\r\n"
         byeRequest += self._via_header(rport=True)
@@ -4549,6 +4767,7 @@ class SIPClient:
         sendtype: "RTP.TransmitType",
     ) -> Tuple[SIPMessage, str, int]:
         self._check_receive_reentry()
+        generation = self._check_receive_generation()
         branch = "z9hG4bK" + self.gen_call_id()[0:25]
         call_id = self.gen_call_id()
         sess_id = self.sessID.next()
@@ -4590,7 +4809,7 @@ class SIPClient:
         invite_call_id, invite_cseq_check, _invite_cseq_method = (
             self._request_transaction(invite)
         )
-        with self._receive_transaction():
+        with self._invite_transaction(call_id, generation):
             self.send_raw(invite.encode("utf8"), self.signal_target())
             self._set_last_invite_debug(event="invite-sent")
             debug("Invited")
@@ -5011,13 +5230,23 @@ class SIPClient:
 
     def deregister(self) -> bool:
         self._check_receive_reentry()
+        generation = self._check_receive_generation()
+        expected = getattr(
+            self._current_receive_state(), "registration_generation", None
+        )
+        if expected is not None and expected != generation:
+            return False
         attempts = 0
         max_attempts = max(1, rfcvoip.REGISTER_FAILURE_THRESHOLD)
 
         while attempts < max_attempts:
+            if generation != getattr(self, "_run_generation", 0):
+                return False
             try:
-                with self._receive_transaction():
+                with self._receive_transaction(generation):
                     deregistered = self.__deregister()
+                if generation != getattr(self, "_run_generation", 0):
+                    return False
                 if not deregistered:
                     debug("DEREGISTRATION FAILED")
                     return False
@@ -5026,6 +5255,8 @@ class SIPClient:
 
                 return deregistered
             except Exception as e:
+                if generation != getattr(self, "_run_generation", 0):
+                    return False
                 debug(f"DEREGISTRATION ERROR: {e}")
                 if isinstance(e, RetryRequiredError):
                     attempts += 1
@@ -5101,62 +5332,100 @@ class SIPClient:
 
     def register(self) -> bool:
         self._check_receive_reentry()
+        generation = self._check_receive_generation()
+        expected = getattr(
+            self._current_receive_state(), "registration_generation", None
+        )
+        if expected is not None and expected != generation:
+            return False
         try:
-            with self._receive_transaction():
+            with self._receive_transaction(generation):
                 if not self.NSD:
                     return False
                 registered = self.__register()
-            if not self.NSD:
-                return False
+            with self._lifecycle_lock:
+                if not self.NSD or generation != self._run_generation:
+                    return False
+                if not registered:
+                    self.registerFailures += 1
+                else:
+                    self.phone._status = PhoneStatus.REGISTERED
+                    self.registerFailures = 0
+                failed = (
+                    self.registerFailures >= rfcvoip.REGISTER_FAILURE_THRESHOLD
+                )
             if not registered:
                 debug("REGISTRATION FAILED")
-                self.registerFailures += 1
-            else:
-                self.phone._status = PhoneStatus.REGISTERED
-                self.registerFailures = 0
-
-            if self.registerFailures >= rfcvoip.REGISTER_FAILURE_THRESHOLD:
+            if failed:
                 debug("Too many registration failures, stopping.")
-                self.stop()
-                if self.fatalCallback is not None:
+                with self._registration_generation(generation):
+                    self.stop()
+                if (
+                    not self.NSD and self._run_generation == generation + 1
+                    and self.fatalCallback is not None
+                ):
                     self.fatalCallback()
                 return False
-            self.__start_register_timer()
-
-            return registered
+            with self._registration_generation(generation):
+                self.__start_register_timer()
+            return registered if generation == self._run_generation else False
         except Exception as e:
             debug(f"REGISTRATION ERROR: {e}")
             # A failed stream or a concurrent stop already handled shutdown.
             # Do not retry it or deliver a second fatal notification.
-            if not self.NSD:
-                return False
-            self.registerFailures += 1
-            if self.registerFailures >= rfcvoip.REGISTER_FAILURE_THRESHOLD:
-                self.stop()
-                if self.fatalCallback is not None:
+            with self._lifecycle_lock:
+                if not self.NSD or generation != self._run_generation:
+                    return False
+                self.registerFailures += 1
+                failed = (
+                    self.registerFailures >= rfcvoip.REGISTER_FAILURE_THRESHOLD
+                )
+            if failed:
+                with self._registration_generation(generation):
+                    self.stop()
+                if (
+                    not self.NSD and self._run_generation == generation + 1
+                    and self.fatalCallback is not None
+                ):
                     self.fatalCallback()
                 return False
             if isinstance(e, RetryRequiredError):
                 time.sleep(5)
-                return self.register()
-            self.__start_register_timer(delay=0)
+                if generation != getattr(self, "_run_generation", 0):
+                    return False
+                with self._registration_generation(generation):
+                    return self.register()
+            with self._registration_generation(generation):
+                self.__start_register_timer(delay=0)
             return False
 
-    def _cancel_pending_register_thread(self) -> None:
-        cancel_event = self._register_cancel_event
+    def _cancel_pending_register_thread(
+        self, cancel_event: Optional[Event] = None, *, captured: bool = False
+    ) -> None:
+        if not captured:
+            cancel_event = self._register_cancel_event
         if cancel_event is not None:
             cancel_event.set()
-            self._register_cancel_event = None
+            if self._register_cancel_event is cancel_event:
+                self._register_cancel_event = None
 
     def _run_delayed_register(
         self,
         delay: float,
         cancel_event: Event,
+        generation: Optional[int] = None,
     ) -> None:
+        if generation is None:
+            generation = self._run_generation
         if cancel_event.wait(delay):
             return
-        if self.NSD:
-            self.register()
+        if (
+            self.NSD
+            and not cancel_event.is_set()
+            and generation == self._run_generation
+        ):
+            with self._registration_generation(generation):
+                self.register()
 
     def _registration_response_expires(
         self, response: SIPMessage
@@ -5184,6 +5453,11 @@ class SIPClient:
         return expires if expires is not None and expires >= 0 else None
 
     def __start_register_timer(self, delay: Optional[int] = None):
+        generation = getattr(
+            self._current_receive_state(), "registration_generation", None
+        )
+        if generation is None:
+            generation = self._run_generation
         if delay is None:
             expires = self._registration_expires
             if expires is None:
@@ -5191,19 +5465,31 @@ class SIPClient:
             delay = max(1, expires - 5)
         else:
             delay = max(0, int(delay))
-        if self.NSD:
-            debug("New register thread")
-            # self.subscribe(response)
-            self._cancel_pending_register_thread()
-            cancel_event = Event()
-            self._register_cancel_event = cancel_event
-            self.registerThread = Thread(
-                target=self._run_delayed_register,
-                args=(float(delay), cancel_event),
-                name="SIP Register CSeq: " + f"{self.registerCounter.x}",
-                daemon=True,
-            )
-            self.registerThread.start()
+        with self._lifecycle_lock:
+            if not self.NSD or generation != self._run_generation:
+                return
+            previous_event = self._register_cancel_event
+        self._cancel_pending_register_thread(previous_event, captured=True)
+        with self._lifecycle_lock:
+            if not self.NSD or generation != self._run_generation:
+                return
+        cancel_event = Event()
+        thread = Thread(
+            target=self._run_delayed_register,
+            args=(float(delay), cancel_event, generation),
+            name="SIP Register CSeq: " + f"{self.registerCounter.x}",
+            daemon=True,
+        )
+        with self._lifecycle_lock:
+            stale = not self.NSD or generation != self._run_generation
+            if not stale:
+                self._register_cancel_event = cancel_event
+                self.registerThread = thread
+        if stale:
+            cancel_event.set()
+            return
+        debug("New register thread")
+        thread.start()
 
     def __register(self) -> bool:
         self.phone._status = PhoneStatus.REGISTERING

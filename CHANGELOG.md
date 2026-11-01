@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- SIP/VoIP: Isolate signaling lifetimes so stale receivers, timers, transactions, and startup/shutdown completions cannot modify a restarted client or phone.
+- VoIP: ACK and terminate late accepted outbound dialogs after local cancellation, including answers received while CANCEL is being sent.
+- SIP/VoIP: Release ended and failed-setup dialog tags while retaining bounded context needed for late responses.
+- SIP: Generate distinct Call-IDs across client instances, preserve the last generated ID during authentication, and bound recent tag history without depending on MD5.
+- Authentication: Skip digest algorithms unavailable in the Python runtime and preserve supplied empty opaque values.
+- DNS: Include zero-weight SRV records in the RFC 2782 zero-ticket selection case.
+- RTP: Preserve timestamp gaps across hold and DTMF retransmissions, and retain queued digits when hold races event startup.
 - SIP: Keep active I/O tied to its original socket during close/reopen and terminate signaling after fatal TLS read errors.
 - DNS: Honor SRV records that explicitly disable a service while allowing other advertised services and transports.
 - SIP: Replay authentication-challenge ACKs, isolate request callback failures, and preserve final responses already sent by callbacks.

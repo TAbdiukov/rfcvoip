@@ -456,7 +456,11 @@ class SIPResolver:
         if total_weight <= 0:
             return random.choice(candidates)
 
-        ticket = random.randint(1, total_weight)
+        # RFC 2782 gives zero-weight records a small chance via ticket zero.
+        # They must precede positive weights when choosing the first sum that
+        # reaches the inclusive ticket.
+        candidates.sort(key=lambda item: int(getattr(item, "weight", 0)) > 0)
+        ticket = random.randint(0, total_weight)
         running = 0
         for record in candidates:
             running += max(0, int(getattr(record, "weight", 0)))
