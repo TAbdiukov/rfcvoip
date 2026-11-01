@@ -229,7 +229,7 @@ class PublicAudioFormat:
     @property
     def frame_size(self) -> int:
         samples = int(round(self.sample_rate * (self.frame_ms / 1000.0)))
-        return max(1, samples * self.channels * self.sample_width)
+        return max(1, samples) * self.channels * self.sample_width
 
     def as_dict(self) -> Dict[str, Any]:
         return {

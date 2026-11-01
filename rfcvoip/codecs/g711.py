@@ -165,7 +165,8 @@ class _G711WidebandCoreCodec(RTPCodec, ABC):
         expected_length = self.source_frame_size(
             self._core_frame_duration_ms * frame_count
         )
-        return self._fit_bytes(decoded, expected_length, b"\x80")
+        pad = b"\x80" if self.source_bit_depth == 8 else b"\x00"
+        return self._fit_bytes(decoded, expected_length, pad)
 
 
 class PCMUWBCodec(_G711WidebandCoreCodec):

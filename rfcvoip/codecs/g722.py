@@ -185,12 +185,31 @@ class G722Codec(RTPCodec):
     def source_frame_size(self, duration_ms: Optional[int] = None) -> int:
         return super().source_frame_size(duration_ms)
 
+    def packet_duration_seconds(self, source_payload: bytes) -> float:
+        return self.frame_duration_ms / 1000.0
+
+    def rtp_timestamp_increment(
+        self, source_payload: bytes, encoded_payload: bytes
+    ) -> int:
+        if encoded_payload:
+            return max(
+                1,
+                int(
+                    round(len(encoded_payload) * 8 * self.rate / self.bit_rate)
+                ),
+            )
+        return super().rtp_timestamp_increment(source_payload, encoded_payload)
+
     def encode(self, payload: bytes) -> bytes:
         expected = self.source_frame_size()
         pad = b"\x80" if self.source_bit_depth == 8 else b"\x00"
         payload = self._fit_bytes(payload or b"", expected, pad)
 
         pcm16_16k = self._source_u8_to_pcm16(payload, self.codec_sample_rate)
+        native_samples = int(
+            round(self.codec_sample_rate * self.frame_duration_ms / 1000.0)
+        )
+        pcm16_16k = self._fit_bytes(pcm16_16k, native_samples * 2, b"\x00")
         pcm16_16k = _pad_pcm16_to_even_sample_count(pcm16_16k)
 
         samples = _pcm16le_to_samples(pcm16_16k)
@@ -208,13 +227,11 @@ class G722Codec(RTPCodec):
         public = self._pcm16_to_source_u8(pcm16_16k, self.codec_sample_rate)
 
         # 64 kbps G.722: 160 payload bytes = 20 ms.
-        expected_length = int(
-            round(
-                (len(payload) / 8000.0)
-                * self.source_sample_rate
-                * self.source_sample_width
-                * self.source_channels
-            )
+        expected_samples = int(
+            round((len(payload) / 8000.0) * self.source_sample_rate)
+        )
+        expected_length = (
+            expected_samples * self.source_sample_width * self.source_channels
         )
         pad = b"\x80" if self.source_bit_depth == 8 else b"\x00"
         return self._fit_bytes(public, expected_length, pad)

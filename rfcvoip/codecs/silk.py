@@ -187,6 +187,14 @@ class SilkCodec(RTPCodec):
     def _pcm16_bytes_per_frame(self) -> int:
         return self._samples_per_frame * 2
 
+    def packet_duration_seconds(self, source_payload: bytes) -> float:
+        return self.frame_duration_ms / 1000.0
+
+    def rtp_timestamp_increment(
+        self, source_payload: bytes, encoded_payload: bytes
+    ) -> int:
+        return self._samples_per_frame
+
     @staticmethod
     def _fit(data: bytes, length: int, pad: bytes) -> bytes:
         if len(data) >= length:

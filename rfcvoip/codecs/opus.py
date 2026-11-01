@@ -9,6 +9,7 @@ from rfcvoip.codecs.base import CodecAvailability, RTPCodec
 
 
 OPUS_APPLICATION_VOIP = 2048
+_OPUS_FRAME_SIZES = (120, 240, 480, 960, 1920, 2880)
 
 _LIBOPUS_ENCODE_HANDLE = None
 _LIBOPUS_ENCODE_LOCK = threading.Lock()
@@ -328,18 +329,35 @@ class OpusCodec(RTPCodec):
 
     @staticmethod
     def _valid_frame_size(frame_size: int) -> bool:
-        return frame_size in {120, 240, 480, 960, 1920, 2880}
+        return frame_size in _OPUS_FRAME_SIZES
+
+    def _encoding_frame_size(self, source_payload: bytes) -> int:
+        source_bytes = len(source_payload) or self.source_frame_size()
+        frame_size = source_bytes * self.rate / (
+            self.source_sample_rate
+            * self.source_sample_width
+            * self.source_channels
+        )
+        nearest = min(_OPUS_FRAME_SIZES, key=lambda size: abs(size - frame_size))
+        # A valid duration may round to a fractional public sample count.
+        tolerance = self.rate / (2 * self.source_sample_rate) + 1e-9
+        return nearest if abs(nearest - frame_size) <= tolerance else 960
+
+    def packet_duration_seconds(self, source_payload: bytes) -> float:
+        return self._encoding_frame_size(source_payload) / self.rate
+
+    def rtp_timestamp_increment(
+        self, source_payload: bytes, encoded_payload: bytes
+    ) -> int:
+        return self._encoding_frame_size(source_payload)
 
     def _to_opus_pcm(self, payload: bytes) -> bytes:
+        target_frame_size = self._encoding_frame_size(payload)
         pcm16_48k = self._source_u8_to_pcm16(payload, self.rate)
 
-        frame_size = len(pcm16_48k) // (2 * self.channels)
-        if self._valid_frame_size(frame_size):
-            return pcm16_48k
-
-        # The transmitter normally feeds 160 bytes = 20 ms @ 8 kHz. Keep a
-        # valid Opus frame even if a caller passes an unusual size.
-        target_frame_size = 960
+        # Resampling can initially yield a few fewer samples. Preserve the
+        # intended valid frame duration and pad that shortfall with silence.
+        # Unsupported input durations continue to use a 20 ms Opus frame.
         target_bytes = target_frame_size * self.channels * 2
         return pcm16_48k[:target_bytes].ljust(target_bytes, b"\x00")
 

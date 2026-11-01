@@ -827,7 +827,7 @@ def _codec_info_from_media(
         except ValueError:
             codec = None
 
-    if codec is None and payload_type is not None:
+    if codec is None and payload_type is not None and not rtpmap:
         try:
             codec = RTP.PayloadType(payload_type)
             source = "static"

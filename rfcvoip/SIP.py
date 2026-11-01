@@ -1315,7 +1315,14 @@ class SIPMessage:
                         f"Malformed SDP body field name: {key!r}"
                     )
                 if key:
-                    handle(key, value)
+                    try:
+                        handle(key, value)
+                    except ValueError as ex:
+                        if not strict:
+                            raise
+                        raise SIPParseError(
+                            f"Malformed SDP body field: {line!r}"
+                        ) from ex
                 elif strict:
                     raise SIPParseError("SDP body field name cannot be empty.")
 
@@ -1747,6 +1754,7 @@ class SIPClient:
                 return str(sender_address), int(sender_port)
 
             sender_address, sender_port = via["address"]
+            sender_address = via.get("received") or sender_address
             return sender_address, int(sender_port)
         except Exception:
             return self.signal_target()
@@ -3292,24 +3300,35 @@ class SIPClient:
         if self.NSD:
             raise RuntimeError("Attempted to start already started SIPClient")
         self.NSD = True
-        target = self.proxy_target or self.server_target
-        self.connection = SIPConnection(
-            self.myIP,
-            self.myPort,
-            target,
-            tls_context=self.tls_context,
-            tls_server_name=self.tls_server_name,
-        )
-        self.connection.open()
-        self.s = self.connection.socket
-        self.out = self.s
-        self.register()
-        t = Thread(
-            target=self._delayed_recv_loop,
-            name="SIP Receive",
-            daemon=True,
-        )
-        t.start()
+        try:
+            target = self.proxy_target or self.server_target
+            self.connection = SIPConnection(
+                self.myIP,
+                self.myPort,
+                target,
+                tls_context=self.tls_context,
+                tls_server_name=self.tls_server_name,
+            )
+            self.connection.open()
+            self.s = self.connection.socket
+            self.out = self.s
+            self.register()
+            if self.NSD:
+                t = Thread(
+                    target=self._delayed_recv_loop,
+                    name="SIP Receive",
+                    daemon=True,
+                )
+                t.start()
+        except Exception:
+            self.NSD = False
+            self._cancel_pending_register_thread()
+            try:
+                self._close_sockets()
+            finally:
+                self.s = None
+                self.out = None
+            raise
 
     def stop(self) -> None:
         if not self.NSD:

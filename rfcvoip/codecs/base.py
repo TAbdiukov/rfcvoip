@@ -148,17 +148,10 @@ class RTPCodec:
         duration_ms = (
             self.frame_duration_ms if duration_ms is None else duration_ms
         )
-        return max(
-            1,
-            int(
-                round(
-                    self.source_sample_rate
-                    * self.source_sample_width
-                    * self.source_channels
-                    * (duration_ms / 1000.0)
-                )
-            ),
+        samples = max(
+            1, int(round(self.source_sample_rate * (duration_ms / 1000.0)))
         )
+        return samples * self.source_sample_width * self.source_channels
 
     def packet_duration_seconds(self, source_payload: bytes) -> float:
         bytes_per_second = (

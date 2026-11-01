@@ -8,14 +8,14 @@ if TYPE_CHECKING:
 
 @contextmanager
 def acquired_lock_and_unblocked_socket(lock: "Lock", socket: "socket"):
-    """Alongside an acquired Lock, a corresponding socket will become
-    non-blocking, and then blocking once the Lock is released.
+    """Make a socket non-blocking while holding its corresponding lock.
 
-    Lock will release and socket will become blocking even during exceptions"""
-    timeout = socket.gettimeout()
-    try:
-        with lock:
+    Restore its original timeout before releasing the lock, even on errors.
+    """
+    with lock:
+        timeout = socket.gettimeout()
+        try:
             socket.setblocking(False)
             yield
-    finally:
-        socket.settimeout(timeout)
+        finally:
+            socket.settimeout(timeout)

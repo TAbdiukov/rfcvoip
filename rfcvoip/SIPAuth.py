@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
@@ -300,15 +301,17 @@ def validate_nonce(
 ) -> bool:
     try:
         payload_token, signature = str(nonce or "").split(".", 1)
-    except ValueError:
+        payload_bytes = payload_token.encode("ascii")
+        signature_bytes = signature.encode("ascii")
+    except (ValueError, UnicodeError):
         return False
 
     expected = hmac.new(
         _nonce_secret_bytes(secret),
-        payload_token.encode("ascii"),
+        payload_bytes,
         hashlib.sha256,
     ).hexdigest()
-    if not hmac.compare_digest(expected, signature):
+    if not hmac.compare_digest(expected.encode("ascii"), signature_bytes):
         return False
 
     padding = "=" * (-len(payload_token) % 4)
@@ -319,6 +322,8 @@ def validate_nonce(
     except Exception:
         return False
 
+    if not isinstance(payload, dict):
+        return False
     if str(payload.get("ctx", "")) != str(context or ""):
         return False
 
@@ -600,15 +605,24 @@ def verify_digest_response(
         return False
 
     actual = str(authorization.get("response") or "").strip().strip('"')
-    if not actual:
+    if not actual or not actual.isascii():
         return False
 
     try:
+        # An Authorization field contains one chosen qop, rather than the
+        # list allowed in a challenge. Its nonce count must be supplied by
+        # the peer; calculation defaults are only suitable for generation.
+        qop = _normalize_authorization_qop(authorization.get("qop"))
+        if qop is not None and re.fullmatch(
+            r"[0-9a-fA-F]{8}", str(authorization.get("nc") or "")
+        ) is None:
+            return False
         expected = compute_digest_response(
             authorization,
             password=password,
             stored_ha1=stored_ha1,
             method=method,
+            qop=qop,
             body=body,
             supported_algorithms=supported_algorithms,
         )

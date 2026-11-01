@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- SIP: Preserve NAT response routing and explicit ports when using `maddr`.
+- SIP: Clean up failed startup and UDP binds, reject malformed digest authorization, and handle invalid SDP numbers safely.
+- VoIP: Restore audio after hold, preserve media on rejected renegotiation, and reject incompatible codec or port changes.
+- VoIP: Fix duplicate startup, fatal registration state, late INVITE failures, and call cleanup after signaling or callback startup errors.
+- RTP: Preserve incomplete PCM samples, align output buffers, suppress duplicate DTMF, and clear stale packet extensions.
+- RTP: Prevent old workers from restarting and clean up sockets when worker startup fails.
+- Codecs: Fix signed wideband silence, PCM frame alignment, and Opus, SILK, and G.722 packet timing after resampling.
+- Telemetry: Reject unsupported explicit codec mappings instead of falling back to static payload types.
+- Misc: Restore socket timeouts while holding the socket lock to prevent concurrent access races.
+- Tests: Add 80 regression and compatibility cases covering signaling, media, audio formats, and lifecycle failures.
+
 ## 2.10.3+RFC
 
 - RTP: Fix output underruns and receive-buffer resets.

@@ -63,6 +63,9 @@ def _payload_type_from_media_method(
             except ValueError as ex:
                 rtpmap_error = ex
 
+    if rtpmap_error is not None:
+        raise rtpmap_error
+
     try:
         return RTP.PayloadType(int(method))
     except (TypeError, ValueError):
@@ -70,9 +73,6 @@ def _payload_type_from_media_method(
 
     if not isinstance(attributes, dict):
         raise KeyError(method)
-
-    if rtpmap_error is not None:
-        raise rtpmap_error
 
     raise KeyError("rtpmap")
 
@@ -332,6 +332,7 @@ class VoIPCall:
         self.rtpPortHigh = self.phone.rtpPortHigh
         self.rtpPortLow = self.phone.rtpPortLow
         self.sendmode = sendmode
+        self._desired_sendmode = _transmit_type_from_value(sendmode)
 
         self.dtmfLock = Lock()
         self.dtmf = io.StringIO()
@@ -1021,8 +1022,13 @@ class VoIPCall:
             return
 
         rtp_targets: List[Tuple[str, int, Dict[str, Any]]] = []
+        target_media: List[Dict[str, Any]] = []
+        valid_layout = True
 
-        desired_sendmode = _transmit_type_from_value(self.sendmode)
+        desired_sendmode = _transmit_type_from_value(
+            getattr(self, "_desired_sendmode", self.sendmode)
+        )
+        negotiated_sendmode = desired_sendmode
         for i in request.body.get("m", []):
             if i.get("type") != "audio":
                 continue
@@ -1031,32 +1037,70 @@ class VoIPCall:
                 or not _media_port_is_enabled(i)
             ):
                 continue
-            self.sendmode = _negotiate_local_transmit_type(
+            negotiated_sendmode = _negotiate_local_transmit_type(
                 _media_transmit_type(i),
                 desired_sendmode,
             )
-            rtp_targets.extend(_media_rtp_targets(request, i, i["port"]))
+            try:
+                targets = _media_rtp_targets(request, i, i["port"])
+                if int(i.get("port_count", 1)) != len(targets):
+                    valid_layout = False
+                    break
+            except (RTP.RTPParseError, TypeError, ValueError):
+                valid_layout = False
+                break
+            rtp_targets.extend(targets)
+            target_media.extend([i] * len(targets))
 
         rtp_clients = self._rtp_clients_snapshot()
-        if len(rtp_targets) != len(rtp_clients):
+        if not valid_layout or len(rtp_targets) != len(rtp_clients):
             message = self.sip.gen_response(
                 request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
             )
             self.sip.send_response(request, message)
             return
 
-        for x in rtp_clients:
-            x.sendrecv = self.sendmode
+        # These clients retain their codec adapters and payload mappings.
+        # Reject offers that would require replacing them instead of answering
+        # with codecs or parameters that the peer did not offer.
+        for client, media in zip(rtp_clients, target_media):
+            offered = {}
+            for method in media.get("methods", []):
+                try:
+                    offered[int(method)] = _payload_type_from_media_method(
+                        media, method
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if any(
+                offered.get(payload_type) != codec
+                or not RTP.codec_fmtp_supported(
+                    codec, _media_fmtp_settings(media, payload_type)
+                )
+                or not SIP.codec_bandwidth_supported(
+                    codec,
+                    session_bandwidth=request.body.get("b", []),
+                    media_bandwidth=media.get("bandwidth", []),
+                )
+                for payload_type, codec in client.assoc.items()
+            ):
+                message = self.sip.gen_response(
+                    request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
+                )
+                self.sip.send_response(request, message)
+                return
 
         m = self._rtp_media_answer_map()
         message = self.sip.gen_answer(
-            request, self.session_id, m, self.sendmode
+            request, self.session_id, m, negotiated_sendmode
         )
         self.sip.send_response(request, message)
+        self.sendmode = negotiated_sendmode
         for client, (remote_ip, remote_port, _connection) in zip(
             rtp_clients,
             rtp_targets,
         ):
+            client.sendrecv = negotiated_sendmode
             client.outIP = remote_ip
             client.outPort = remote_port
 
@@ -1092,7 +1136,9 @@ class VoIPCall:
         )
 
         self.remote_sip_message = request
-        desired_sendmode = _transmit_type_from_value(self.sendmode)
+        desired_sendmode = _transmit_type_from_value(
+            getattr(self, "_desired_sendmode", self.sendmode)
+        )
         for i in request.body["m"]:
             if i.get("type") != "audio":
                 continue
@@ -1232,11 +1278,13 @@ class VoIPCall:
             f"Call {self.call_id}: denying incoming call",
         )
 
-        message = self.sip.gen_busy(self.request)
-        self.sip.send_response(self.request, message)
-        self._stop_rtp_clients()
-        self._set_state(CallState.ENDED)
-        self._finalize_ended_call()
+        try:
+            message = self.sip.gen_busy(self.request)
+            self.sip.send_response(self.request, message)
+        finally:
+            self._stop_rtp_clients()
+            self._set_state(CallState.ENDED)
+            self._finalize_ended_call()
 
     def cancel(self) -> None:
         if self.state not in (CallState.DIALING, CallState.RINGING):
@@ -1247,9 +1295,11 @@ class VoIPCall:
         )
 
         self._stop_rtp_clients()
-        self.sip.cancel(self.request)
-        self._set_state(CallState.ENDED)
-        self._finalize_ended_call()
+        try:
+            self.sip.cancel(self.request)
+        finally:
+            self._set_state(CallState.ENDED)
+            self._finalize_ended_call()
 
     def hangup(self) -> None:
         if self.state != CallState.ANSWERED:
@@ -1720,6 +1770,13 @@ class VoIPPhone:
 
         # End the call locally.
         if call is not None:
+            state = _call_state_value(call)
+            if state not in (CallState.DIALING, CallState.RINGING):
+                debug(
+                    f"Ignoring late INVITE failure for call {call_id} "
+                    + f"in state {state}"
+                )
+                return
             call._stop_rtp_clients()
             call._set_state(CallState.ENDED)
             call._finalize_ended_call()
@@ -2120,8 +2177,16 @@ class VoIPPhone:
                 self.threads.append(t)
                 self.threadLookup[t] = call_id
             except Exception:
-                message = self.sip.gen_busy(request)
-                self.sip.send_response(request, message)
+                call = self._get_call(call_id)
+                if call is not None:
+                    call._stop_rtp_clients()
+                    call._set_state(CallState.ENDED)
+                    call._finalize_ended_call()
+                try:
+                    message = self.sip.gen_busy(request)
+                    self.sip.send_response(request, message)
+                except Exception as ex:
+                    debug(f"Failed to reject undispatched call {call_id}: {ex}")
                 raise
 
     def _callback_MSG_Bye(self, request: SIP.SIPMessage) -> None:
@@ -2342,10 +2407,12 @@ class VoIPPhone:
         self._set_call(call_id, call)
 
     def start(self) -> None:
+        if self.NSD:
+            raise RuntimeError("Attempted to start already started VoIPPhone")
         self._status = PhoneStatus.REGISTERING
         try:
             self.sip.start()
-            self.NSD = True
+            self.NSD = self.sip.NSD
         except Exception:
             self._status = PhoneStatus.FAILED
             self.sip.stop()

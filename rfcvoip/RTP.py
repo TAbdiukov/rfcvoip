@@ -876,6 +876,8 @@ class RTPMessage:
         self.SSRC = add_bytes(packet[8:12])
 
         self.CSRC = []
+        self.extension_profile = None
+        self.extension_payload = b""
 
         i = 12
         if len(packet) < i + (self.CC * 4):
@@ -1062,7 +1064,12 @@ class RTPAudioOutput:
                     return self.silence_byte * length
             elif self._size < length:
                 self.underruns += 1
-            output = self._take_locked(length)
+            # A writer may split an interleaved PCM sample across writes.
+            # Keep an incomplete sample queued rather than inserting silence
+            # into it and shifting every subsequent sample/channel.
+            count = min(length, self._size)
+            count -= count % self._sample_alignment
+            output = self._take_locked(count)
             self.output_state = "audio" if output else "underrun"
             return output + self.silence_byte * (length - len(output))
 
@@ -1106,6 +1113,7 @@ class RTPClient:
         self.audio_output_mode = audio_output_mode
         self._running = threading.Event()
         self._socket_lock = threading.RLock()
+        self._workers: List[Thread] = []
         self.NSD = False
         # Example: {0: PayloadType.PCMU, 101: PayloadType.EVENT}
         self.assoc = assoc
@@ -1169,10 +1177,7 @@ class RTPClient:
 
         silence_byte = b"\x80" if self.audio_bit_depth == 8 else b"\x00"
         self.pmout = RTPAudioOutput(
-            max(1, round(
-                self.audio_sample_rate * self.audio_sample_width
-                * self.audio_channels * 0.020
-            )),
+            self.public_audio_format().frame_size,
             silence_byte=silence_byte,
             sample_alignment=self.audio_sample_width * self.audio_channels,
         )
@@ -1187,6 +1192,8 @@ class RTPClient:
         self._telephone_event_pt = self._find_telephone_event_payload_type()
         self._pending_dtmf: Deque[str] = deque()
         self._dtmf_lock = threading.Lock()
+        self._received_dtmf = set()
+        self._received_dtmf_order: Deque[Tuple[int, int, int]] = deque()
 
     @staticmethod
     def _preferred_source_sample_rate(codec: PayloadType) -> int:
@@ -1593,44 +1600,57 @@ class RTPClient:
         return True
 
     def start(self) -> None:
-        if self.NSD:
-            raise RuntimeError("Attempted to start already started RTPClient")
-
-        sin = socket.socket(self._socket_family, socket.SOCK_DGRAM)
-        try:
-            sin.bind(self._socket_address(self.inIP, self.inPort))
-            sin.setblocking(False)
-        except Exception:
-            sin.close()
-            raise
-
         with self._socket_lock:
             if self.NSD:
-                sin.close()
                 raise RuntimeError("Attempted to start already started RTPClient")
+            if any(worker.is_alive() for worker in self._workers):
+                raise RuntimeError("Previous RTPClient workers are still stopping")
+
+            sin = socket.socket(self._socket_family, socket.SOCK_DGRAM)
+            try:
+                sin.bind(self._socket_address(self.inIP, self.inPort))
+                sin.setblocking(False)
+            except Exception:
+                sin.close()
+                raise
+
             self.sin = sin
             # Some systems just reply to the port they receive from instead of
             # listening to the SDP.
             self.sout = self.sin
-
-        self.NSD = True
-        r = Thread(target=self.recv, name="RTP Receiver", daemon=True)
-        r.start()
-        t = Thread(target=self.trans, name="RTP Transmitter", daemon=True)
-        t.start()
+            self.NSD = True
+            try:
+                self._workers = [
+                    Thread(target=self.recv, name="RTP Receiver", daemon=True),
+                    Thread(target=self.trans, name="RTP Transmitter", daemon=True),
+                ]
+                for worker in self._workers:
+                    worker.start()
+            except Exception:
+                self.NSD = False
+                self.sin = self.sout = None
+                sin.close()
+                raise
 
     def stop(self) -> None:
-        self.NSD = False
         with self._socket_lock:
+            self.NSD = False
             sin = getattr(self, "sin", None)
             sout = getattr(self, "sout", None)
             self.sin = None
             self.sout = None
+            workers = list(self._workers)
 
         if sin is not None:
             sin.close()
         if sout is not None and sout is not sin:
             sout.close()
+        for worker in workers:
+            # A DTMF callback can stop the client from its receiver thread.
+            # A blocked codec must not make shutdown wait indefinitely; start
+            # refuses to revive the shared running flag until it exits.
+            if worker is not threading.current_thread() and worker.is_alive():
+                worker.join(timeout=1.0)
 
     def read(
         self,
@@ -1974,4 +1994,13 @@ class RTPClient:
 
         if packet.marker:
             if self.dtmf is not None:
+                event_key = (packet.SSRC, packet.timestamp, event_code)
+                if event_key in self._received_dtmf:
+                    return
+                self._received_dtmf.add(event_key)
+                self._received_dtmf_order.append(event_key)
+                if len(self._received_dtmf_order) > 256:
+                    self._received_dtmf.remove(
+                        self._received_dtmf_order.popleft()
+                    )
                 self.dtmf(event)

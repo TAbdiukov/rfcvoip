@@ -198,11 +198,14 @@ class SIPResolver:
             user, host_part = host_part.rsplit("@", 1)
             user = user or None
 
-        # RFC 3261: maddr overrides the host for routing purposes.
-        host_part = params.get("maddr") or host_part
         host, port, explicit_port = split_hostport(host_part)
         if not host:
             raise ValueError(f"SIP URI has no host: {value!r}")
+
+        # maddr changes the destination host, while the URI's port remains
+        # the destination port.
+        if params.get("maddr"):
+            host = params["maddr"].strip("[]")
 
         return SIPURIInfo(
             scheme=scheme,
@@ -504,11 +507,15 @@ class SIPConnection:
     def _open_udp_socket(self) -> socket.socket:
         family = self._family_for_addresses(self.local_host, self.target.host)
         sock = socket.socket(family, socket.SOCK_DGRAM)
-        sock.bind(
-            self._socket_address(
-                self._local_bind_host(family), self.local_port, family
+        try:
+            sock.bind(
+                self._socket_address(
+                    self._local_bind_host(family), self.local_port, family
+                )
             )
-        )
+        except Exception:
+            sock.close()
+            raise
         return sock
 
     def _open_stream_socket(self) -> socket.socket:
