@@ -481,10 +481,6 @@ class VoIPCall:
                             f"RTP Payload type {pt} not found.",
                             stacklevel=20,
                         )
-                        # Resets the warning filter so this warning will
-                        # come up again if it happens.  However, this
-                        # also resets all other warnings.
-                        warnings.simplefilter("default")
                         continue
                     except KeyError:
                         # A dynamic payload without rtpmap cannot be used.
@@ -1278,6 +1274,15 @@ class VoIPCall:
             return
         if self.state not in (CallState.DIALING, CallState.RINGING):
             return
+        to_header = request.headers.get("To")
+        if (
+            not request.headers.get("Contact")
+            or not isinstance(to_header, dict)
+            or not to_header.get("tag")
+        ):
+            raise RTP.RTPParseError(
+                "Final INVITE response must include Contact and a To tag."
+            )
         debug(
             request.summary(),
             "Call answered by remote party "
@@ -1395,10 +1400,6 @@ class VoIPCall:
             + "CallState set to CallState.ENDED.",
             stacklevel=20,
         )
-        # Resets the warning filter so this warning will
-        # come up again if it happens.  However, this
-        # also resets all other warnings.
-        warnings.simplefilter("default")
 
     def unavailable(self, request: SIP.SIPMessage) -> None:
         if self.state not in (CallState.DIALING, CallState.RINGING):
@@ -1417,10 +1418,6 @@ class VoIPCall:
             + "was unavailable.  CallState set to CallState.ENDED.",
             stacklevel=20,
         )
-        # Resets the warning filter so this warning will
-        # come up again if it happens.  However, this
-        # also resets all other warnings.
-        warnings.simplefilter("default")
 
     def deny(self) -> None:
         with self._state_lock_for():
@@ -1859,6 +1856,28 @@ class VoIPPhone:
                 return
 
             code = int(request.status)
+            if code >= 300:
+                call = self._get_call(request.headers.get("Call-ID"))
+                original = getattr(call, "request", None)
+                original_cseq = getattr(original, "headers", {}).get(
+                    "CSeq", {}
+                )
+                if (
+                    isinstance(original_cseq, dict)
+                    and original_cseq.get("method") == "INVITE"
+                ):
+                    try:
+                        stale = int(cseq.get("check")) != int(
+                            original_cseq.get("check")
+                        )
+                    except (TypeError, ValueError):
+                        stale = True
+                    if stale:
+                        try:
+                            self._send_ack(request)
+                        except Exception as ex:
+                            debug(f"Failed to ACK stale INVITE response: {ex}")
+                        return
             if 100 <= code < 200:
                 self._callback_RESP_Provisional(request)
             elif 200 <= code < 300:

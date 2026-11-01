@@ -2104,18 +2104,51 @@ class RTPClient:
         payload = packet.payload
         if len(payload) < 4:
             raise RTPParseError("telephone-event payload too short.")
-        event_code = payload[0]
-        if event_code >= len(_DTMF_EVENT_TO_CHAR):
+        if len(payload) % 4:
             raise RTPParseError(
-                f"Unsupported telephone-event code {event_code}."
+                "telephone-event payload contains a partial report."
             )
+        # RFC 4733 permits consecutive event reports in one RTP payload.
+        # Validate all reports before invoking any application callback.
+        for offset in range(0, len(payload), 4):
+            event_code = payload[offset]
+            if event_code >= len(_DTMF_EVENT_TO_CHAR):
+                raise RTPParseError(
+                    f"Unsupported telephone-event code {event_code}."
+                )
+
+        timestamp = packet.timestamp
+        marker = packet.marker
+        packed = len(payload) > 4
+        for offset in range(0, len(payload), 4):
+            report = payload[offset : offset + 4]
+            self._parse_telephone_event_report(
+                report,
+                packet.SSRC,
+                timestamp,
+                marker=marker,
+                packed=packed,
+            )
+            timestamp = (timestamp + add_bytes(report[2:4])) & 0xFFFFFFFF
+            marker = bool(report[1] & 0x80)
+
+    def _parse_telephone_event_report(
+        self,
+        payload: bytes,
+        ssrc: int,
+        timestamp: int,
+        *,
+        marker: bool,
+        packed: bool,
+    ) -> None:
+        event_code = payload[0]
         event = _DTMF_EVENT_TO_CHAR[event_code]
         if self.dtmf is None:
             return
 
         duration = add_bytes(payload[2:4])
         end = bool(payload[1] & 0x80)
-        event_key = (packet.SSRC, packet.timestamp, event_code)
+        event_key = (ssrc, timestamp, event_code)
         if event_key in self._received_dtmf:
             previous_duration, previous_end = self._received_dtmf_segments[
                 event_key
@@ -2131,12 +2164,16 @@ class RTPClient:
         # unmarked continuation segments; those must not become extra digits.
         preceding_segment = self._received_dtmf_segments.get(
             (
-                packet.SSRC,
-                (packet.timestamp - 65535) & 0xFFFFFFFF,
+                ssrc,
+                (timestamp - 65535) & 0xFFFFFFFF,
                 event_code,
             )
         )
-        continuation = not packet.marker and preceding_segment == (65535, False)
+        # A packed packet's marker can belong to a later event, so it must
+        # not restart a known long-event continuation in an earlier report.
+        continuation = (
+            (not marker or packed) and preceding_segment == (65535, False)
+        )
         self._received_dtmf.add(event_key)
         self._received_dtmf_order.append(event_key)
         self._received_dtmf_segments[event_key] = (duration, end)

@@ -1,1 +1,8 @@
 include CHANGELOG.md
+include NOTICE
+include pytest.ini
+include requirements-dev.txt
+include tox.ini
+recursive-include docs *.py *.rst *.txt
+prune docs/_build
+recursive-include tests *.py

@@ -47,7 +47,7 @@ setup(
     long_description_content_type="text/markdown",
     author="Tim Abdiukov; Tayler Porter and PyVoIP contributors",
     url="https://github.com/TAbdiukov/rfcvoip",
-    license_files=["LICEN[CS]E*"],
+    license_files=["LICEN[CS]E*", "NOTICE"],
     project_urls={
         "Bug Tracker": "https://github.com/TAbdiukov/rfcvoip/issues",
         "Documentation": "https://rfcvoip.readthedocs.io/",

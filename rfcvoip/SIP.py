@@ -815,6 +815,17 @@ class SIPMessage:
                     continue
                 _type = sent_by[0]
                 _ip, _port, _explicit = split_hostport(sent_by[1], 5060)
+                has_port = (
+                    sent_by[1].partition("]")[2].startswith(":")
+                    if sent_by[1].startswith("[")
+                    else sent_by[1].count(":") == 1
+                )
+                if (
+                    _port is None
+                    or not 1 <= _port <= 65535
+                    or (has_port and not _explicit)
+                ):
+                    raise SIPParseError("Via port must be between 1 and 65535.")
                 _via = {
                     "type": _type,
                     "transport": _type.rsplit("/", 1)[-1].upper(),
@@ -843,6 +854,16 @@ class SIPMessage:
                             f"Duplicate Via parameter {key!r}."
                         )
                     seen_parameters.add(key)
+                    if key == "rport" and val is not None:
+                        rport = _safe_int(val)
+                        if (
+                            re.fullmatch(r"[0-9]+", val) is None
+                            or rport is None
+                            or not 1 <= rport <= 65535
+                        ):
+                            raise SIPParseError(
+                                "Via rport must be between 1 and 65535."
+                            )
                     if key in ("type", "transport", "address", "parameters"):
                         _via.setdefault("parameters", {})[key] = val
                     else:
@@ -852,7 +873,7 @@ class SIPMessage:
             self.headers[header] = _parse_from_to_header(header, data)
         elif header == "CSeq":
             parts = data.split()
-            if len(parts) < 2:
+            if len(parts) != 2:
                 raise SIPParseError(f"Malformed CSeq header: {data!r}")
             self.headers[header] = {
                 "check": parts[0],
@@ -1451,9 +1472,10 @@ class SIPMessage:
         headers_raw = headers.split(b"\r\n")
         self.heading = headers_raw.pop(0)
         parts = self.heading.split(b" ")
-        if len(parts) < 3:
+        if len(parts) != 3 or not all(parts):
             raise SIPParseError(
-                "Unable to decipher SIP request: " + str(self.heading, "utf8")
+                "Unable to decipher SIP request: "
+                + str(self.heading, "utf8", errors="replace")
             )
 
         self.uri = str(parts[1], "utf8", errors="replace")
@@ -3367,6 +3389,34 @@ class SIPClient:
         return self.callCallback is not None
 
     def parse_message(self, message: SIPMessage) -> None:
+        if message.type == SIPMessageType.MESSAGE:
+            # Response generation and application callbacks rely on these
+            # fields. Incomplete requests cannot safely be answered.
+            if (
+                not message.headers.get("Via")
+                or not message.headers.get("Call-ID")
+                or any(
+                    not isinstance(message.headers.get(name), dict)
+                    for name in ("From", "To", "CSeq")
+                )
+            ):
+                debug("Ignoring SIP request without mandatory response headers")
+                return
+
+            cseq = message.headers["CSeq"]
+            raw_sequence = str(cseq.get("check", ""))
+            sequence = _safe_int(raw_sequence)
+            if (
+                re.fullmatch(r"[0-9]+", raw_sequence) is None
+                or sequence is None
+                or not 0 <= sequence < 2**31
+                or cseq.get("method") != message.method
+            ):
+                if message.method != "ACK":
+                    response = self.gen_response(message, SIPStatus.BAD_REQUEST)
+                    self._send_request_response(message, response)
+                return
+
         # Responses (SIP/2.0 ...)
         if message.type != SIPMessageType.MESSAGE:
             cseq = message.headers.get("CSeq", {})
@@ -3492,6 +3542,10 @@ class SIPClient:
             self.connection.open()
             self.s = self.connection.socket
             self.out = self.s
+            if self.myPort == 0:
+                getsockname = getattr(self.s, "getsockname", None)
+                if callable(getsockname):
+                    self.myPort = int(getsockname()[1])
             self.register()
             if self.NSD:
                 t = Thread(

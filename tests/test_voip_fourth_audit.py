@@ -157,6 +157,8 @@ def test_failed_reinvite_rejection_advances_remote_sequence(
 
 @pytest.mark.parametrize("bit_depth", [8, "best", 16])
 def test_multiple_codecs_share_one_public_audio_format(phone, bit_depth):
+    if not RTP.is_transmittable_audio_codec(RTP.PayloadType.OPUS):
+        pytest.skip("optional libopus is not installed")
     phone.audio_bit_depth = bit_depth
     phone.audio_sample_width = 2 if bit_depth == 16 else 1
     request = invite(count=2)
