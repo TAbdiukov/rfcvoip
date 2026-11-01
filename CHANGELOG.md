@@ -2,9 +2,13 @@
 
 ## Unreleased
 
-- Codecs: Lower AMR-WB's default priority to 945, between SILK/24000 and SILK/16000; retain AMR at 750.
+## 2.11.0 – 2026-11-02
+
+- Codecs: Set AMR-WB's default priority to 945, between SILK/24000 and SILK/16000, and AMR to 750, ahead of PCMU/PCMA.
 - Codecs: Add optional AMR and AMR-WB sending/receiving through OpenCORE and VisualOn native libraries on Windows, macOS, and Linux, with availability reporting and codec priority tuning.
 - RTP/SDP: Support both RFC 4867 packet formats, aggregated AMR frames, receive comfort noise, mode sets and mode requests, and preserve negotiated settings across offers/answers and retained media.
+- RTP/SDP: Keep AMR packet formats and mode restrictions independent for each payload and media direction, including remapped payload numbers.
+- Codecs/Telemetry: Validate AMR bandwidth limits against the highest negotiated speech mode and report the corresponding bitrate in codec telemetry.
 - Tests: Cover every AMR/AMR-WB mode with native encoders/decoders, framing and malformed packets, audio conversion, negotiation, and cross-platform native codec CI.
 - SIP/VoIP: Isolate signaling lifetimes so stale receivers, timers, transactions, and startup/shutdown completions cannot modify a restarted client or phone.
 - VoIP: ACK and terminate late accepted outbound dialogs after local cancellation, including answers received while CANCEL is being sent.
