@@ -37,7 +37,7 @@ their work while continuing development under the new project name.
 - SIP digest authentication with MD5, MD5-sess, SHA-256, SHA-256-sess,
   SHA-512-256, and SHA-512-256-sess.
 - RTP audio using PCMU, PCMA, PCMU-WB, PCMA-WB, telephone-event DTMF, optional
-  G.722, optional Opus, optional SILK, and optional AMR / AMR-WB.
+  G.722, optional Opus, and optional SILK.
 - Codec priority tuning, FMTP validation, SDP bandwidth checks, dynamic payload
   mapping, RTP extension and padding parsing, and robust RTP buffering.
 - Built-in telemetry for SIP authentication, local and remote codecs, active
@@ -74,36 +74,6 @@ The `compiler` extra is retained for compatibility and currently does not
 install codec dependencies. The `all` extra currently matches `no-compiler`.
 Unavailable optional codecs are reported as unavailable and are not included in
 SIP offers.
-
-AMR and AMR-WB use the established OpenCORE and VisualOn native libraries.
-No Python codec package or compiler is needed when system binaries are
-available. Install the libraries separately (the Python extras do not include
-them):
-
-```bash
-# Debian / Ubuntu
-sudo apt-get install libopencore-amrnb0 libopencore-amrwb0 libvo-amrwbenc0
-# macOS (Homebrew)
-brew install opencore-amr vo-amrwbenc
-# Windows (in an MSYS2 UCRT64 shell)
-pacman -S mingw-w64-ucrt-x86_64-opencore-amr mingw-w64-ucrt-x86_64-vo-amrwbenc
-```
-
-On Windows, point to the directory containing the DLLs before importing rfcvoip:
-
-```powershell
-$env:RFCVOIP_AMR_LIBRARY_DIR = 'C:\msys64\ucrt64\bin'
-```
-
-The libraries must match the Python process architecture. Individual absolute
-paths can also be configured with `RFCVOIP_AMRNB_LIBRARY`,
-`RFCVOIP_AMRWB_LIBRARY`, and `RFCVOIP_AMRWBENC_LIBRARY`. After installing
-libraries in a running process, call `rfcvoip.refresh_supported_codecs()`.
-AMR-WB needs both its encoder and decoder libraries before it is advertised.
-AMR-WB is preferred after Opus and SILK/24000; AMR is preferred before
-PCMU/PCMA. Both support octet-aligned and bandwidth-efficient RTP, all speech
-modes, and negotiated mode sets. See [codec details](docs/Codecs.rst) for
-supported SDP features.
 
 Installing from a source checkout:
 

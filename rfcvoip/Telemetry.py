@@ -353,13 +353,11 @@ def _enforceable_bandwidth_limit_bps(
     return min(limits) if limits else None
 
 
-def _codec_required_bandwidth_bps(
-    codec: Any, fmtp: Optional[List[str]] = None
-) -> Optional[int]:
+def _codec_required_bandwidth_bps(codec: Any) -> Optional[int]:
     try:
         from rfcvoip.codecs import codec_required_bandwidth_bps as required_bps
 
-        return required_bps(codec, fmtp=fmtp)
+        return required_bps(codec)
     except Exception:
         return None
 
@@ -369,9 +367,8 @@ def _codec_bandwidth_supported(
     *,
     session_bandwidth: Any = None,
     media_bandwidth: Any = None,
-    fmtp: Optional[List[str]] = None,
 ) -> bool:
-    required = _codec_required_bandwidth_bps(codec, fmtp)
+    required = _codec_required_bandwidth_bps(codec)
     limit = _enforceable_bandwidth_limit_bps(
         session_bandwidth=session_bandwidth,
         media_bandwidth=media_bandwidth,
@@ -383,7 +380,6 @@ def _bandwidth_context(
     session_bandwidth: Any = None,
     media_bandwidth: Any = None,
     codec: Any = None,
-    fmtp: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     return {
         "session": _bandwidths_to_list(session_bandwidth),
@@ -392,7 +388,7 @@ def _bandwidth_context(
             session_bandwidth=session_bandwidth,
             media_bandwidth=media_bandwidth,
         ),
-        "required_bps": _codec_required_bandwidth_bps(codec, fmtp),
+        "required_bps": _codec_required_bandwidth_bps(codec),
     }
 
 
@@ -876,7 +872,6 @@ def _codec_info_from_media(
         codec,
         session_bandwidth=session_bandwidth,
         media_bandwidth=media_bandwidth,
-        fmtp=fmtp,
     )
     info = codec_info(
         codec,
@@ -901,12 +896,11 @@ def _codec_info_from_media(
     if channels is not None:
         info["channels"] = channels
     info["bandwidth_supported"] = bandwidth_supported
-    info["required_bandwidth_bps"] = _codec_required_bandwidth_bps(codec, fmtp)
+    info["required_bandwidth_bps"] = _codec_required_bandwidth_bps(codec)
     info["bandwidth"] = _bandwidth_context(
         session_bandwidth=session_bandwidth,
         media_bandwidth=media_bandwidth,
         codec=codec,
-        fmtp=fmtp,
     )
     info["protocol"] = _protocol_value(media.get("protocol"))
     return info
