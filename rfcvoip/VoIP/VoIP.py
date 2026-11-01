@@ -1211,6 +1211,11 @@ class VoIPCall:
             request, self.session_id, m, negotiated_sendmode
         )
         self._send_reinvite_response(request, message)
+        # A successful re-INVITE refreshes the remote signaling target as
+        # well as the RTP targets. Preserve the original dialog orientation
+        # in self.request, which is also used to construct a later BYE.
+        if request.headers.get("Contact"):
+            self.request.headers["Contact"] = request.headers["Contact"]
         self.sendmode = negotiated_sendmode
         for client, (remote_ip, remote_port, _connection) in zip(
             rtp_clients,
@@ -2404,9 +2409,9 @@ class VoIPPhone:
                 if proposed not in self.session_ids:
                     self.session_ids.append(proposed)
                     sess_id = proposed
-            message = self.sip.gen_ringing(request)
-            self._send_invite_response(request, message)
             try:
+                message = self.sip.gen_ringing(request)
+                self._send_invite_response(request, message)
                 self._create_Call(request, sess_id)
             except RTP.RTPParseError as ex:
                 if sess_id in self.session_ids:
@@ -2421,6 +2426,10 @@ class VoIPPhone:
                 )
                 self._send_invite_response(request, message)
                 return
+            except Exception:
+                if sess_id in self.session_ids:
+                    self.session_ids.remove(sess_id)
+                raise
 
             try:
                 call = self._get_call(call_id)

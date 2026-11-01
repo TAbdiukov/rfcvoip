@@ -1073,14 +1073,14 @@ class SIPMessage:
                 # SDP 5.10 Repeat Times
                 # r=<repeat interval> <active duration> <offsets from start-time> # noqa: E501
                 d = data.split()
-                if len(d) < 4:
+                if len(d) < 3:
                     raise SIPParseError(f"Malformed SDP repeat line: r={data!r}")
                 self.body[header] = {
                     "repeat": d[0],
                     "duration": d[1],
-                    "offset1": d[2],
-                    "offset2": d[3],
                 }
+                for index, offset in enumerate(d[2:], 1):
+                    self.body[header][f"offset{index}"] = offset
             elif header == "z":
                 # SDP 5.11 Time Zones
                 # z=<adjustment time> <offset> <adjustment time> <offset> ....
@@ -2008,7 +2008,8 @@ class SIPClient:
 
     def _recv_message_before(self, deadline: float) -> Optional[SIPMessage]:
         while time.monotonic() < deadline:
-            if self.connection is None:
+            connection = self.connection
+            if connection is None:
                 sock = getattr(self, "s", None)
                 if sock is None:
                     return None
@@ -2017,15 +2018,22 @@ class SIPClient:
                 ready = select.select([sock], [], [], remaining)
                 if not ready[0]:
                     return None
-                raw = sock.recv(8192)
+                raw = sock.recv(65535)
             else:
                 try:
-                    raw = self.connection.recv_raw_message_before(
+                    raw = connection.recv_raw_message_before(
                         deadline,
                         running=lambda: self.NSD,
                     )
                 except SIPFramingError as ex:
                     debug(f"SIP stream framing error while waiting: {ex}")
+                    self._fail_signaling_connection()
+                    return None
+                except ConnectionError as ex:
+                    if not connection.connection_oriented:
+                        raise
+                    debug(f"SIP stream connection failed while waiting: {ex}")
+                    self._fail_signaling_connection()
                     return None
                 if raw is None:
                     return None
@@ -3267,6 +3275,30 @@ class SIPClient:
             time.sleep(delay)
         self.recv_loop()
 
+    def _fail_signaling_connection(self) -> None:
+        # A stream with lost message boundaries or EOF cannot be read again.
+        # Disable registration before invoking fatal cleanup: receive processing
+        # already owns recvLock, so synchronous deregistration would deadlock.
+        was_running = self.NSD
+        self.NSD = False
+        self._cancel_pending_register_thread()
+        try:
+            self._close_sockets()
+        except Exception as ex:
+            debug(f"Error closing failed SIP connection: {ex}")
+        finally:
+            self.connection = None
+            self.s = None
+            self.out = None
+
+        if was_running:
+            self.phone._status = PhoneStatus.FAILED
+            if self.fatalCallback is not None:
+                try:
+                    self.fatalCallback()
+                except Exception as ex:
+                    debug(f"Exception in fatalCallback: {ex}")
+
     def recv(self) -> None:
         connection = self.connection
         if connection is None:
@@ -3279,6 +3311,13 @@ class SIPClient:
             raise
         except SIPFramingError as ex:
             debug(f"SIP stream framing error: {ex}")
+            self._fail_signaling_connection()
+            return
+        except ConnectionError as ex:
+            if not connection.connection_oriented:
+                raise
+            debug(f"SIP stream connection failed: {ex}")
+            self._fail_signaling_connection()
             return
 
         if self._is_keepalive_packet(raw):
@@ -4755,7 +4794,11 @@ class SIPClient:
     def register(self) -> bool:
         try:
             with self.recvLock:
+                if not self.NSD:
+                    return False
                 registered = self.__register()
+            if not self.NSD:
+                return False
             if not registered:
                 debug("REGISTRATION FAILED")
                 self.registerFailures += 1
@@ -4774,6 +4817,10 @@ class SIPClient:
             return registered
         except Exception as e:
             debug(f"REGISTRATION ERROR: {e}")
+            # A failed stream or a concurrent stop already handled shutdown.
+            # Do not retry it or deliver a second fatal notification.
+            if not self.NSD:
+                return False
             self.registerFailures += 1
             if self.registerFailures >= rfcvoip.REGISTER_FAILURE_THRESHOLD:
                 self.stop()

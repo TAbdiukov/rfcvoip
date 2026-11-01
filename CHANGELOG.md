@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- SIP: Receive large UDP messages intact, discard stale transport buffers on close, and require Content-Length for TCP/TLS framing.
+- SIP: Stop failed stream connections after framing errors or EOF, cancel registration, and clean up the phone instead of retrying indefinitely. Prevent queued registration from restarting stopped signaling or delivering duplicate failure callbacks.
+- SDP: Accept repeat schedules with one or more offsets and preserve every offset.
+- VoIP: Release session IDs when ringing responses fail and refresh the remote signaling target after an accepted re-INVITE.
+- RTP: Split long DTMF events into continuation segments instead of wrapping the 16-bit duration.
+- Tests: Add regression coverage for transport failures, call setup cleanup, target refreshes, SDP repeats, and long DTMF events.
+
 ## 2.10.4+RFC – 2026-11-02
 
 - SIP: Preserve NAT response routing and explicit ports when using `maddr`.

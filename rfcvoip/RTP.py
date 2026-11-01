@@ -1639,44 +1639,54 @@ class RTPClient:
         step = max(1, int((packet_ms * clock) / 1000))
         interval_s = max(0.01, packet_ms / 1000.0)
 
-        first_duration = min(step, total_duration)
-        first_payload = self._build_telephone_event_payload(
-            event_code, first_duration, end=False, volume=volume
-        )
-        self._send_rtp_packet(
-            self._telephone_event_pt,
-            first_payload,
-            marker=True,
-            timestamp=start_timestamp,
-        )
-
-        elapsed = first_duration
-        while elapsed + step < total_duration and self.NSD:
-            time.sleep(interval_s)
-            elapsed += step
-            payload = self._build_telephone_event_payload(
-                event_code, elapsed, end=False, volume=volume
+        completed = 0
+        while completed < total_duration and self.NSD:
+            # RFC 4733 section 2.5.1.3 requires continuation segments,
+            # rather than wrapping the 16-bit duration of a long keypress.
+            segment_duration = min(0xFFFF, total_duration - completed)
+            segment_timestamp = (start_timestamp + completed) & 0xFFFFFFFF
+            first_duration = min(step, segment_duration)
+            first_payload = self._build_telephone_event_payload(
+                event_code, first_duration, end=False, volume=volume
             )
             self._send_rtp_packet(
                 self._telephone_event_pt,
-                payload,
-                marker=False,
-                timestamp=start_timestamp,
+                first_payload,
+                marker=completed == 0,
+                timestamp=segment_timestamp,
             )
 
-        final_payload = self._build_telephone_event_payload(
-            event_code, total_duration, end=True, volume=volume
-        )
-        for repeat in range(3):
-            if not self.NSD:
-                break
-            time.sleep(interval_s)
-            self._send_rtp_packet(
-                self._telephone_event_pt,
-                final_payload,
-                marker=False,
-                timestamp=start_timestamp,
+            elapsed = first_duration
+            while elapsed + step < segment_duration and self.NSD:
+                time.sleep(interval_s)
+                elapsed += step
+                payload = self._build_telephone_event_payload(
+                    event_code, elapsed, end=False, volume=volume
+                )
+                self._send_rtp_packet(
+                    self._telephone_event_pt,
+                    payload,
+                    marker=False,
+                    timestamp=segment_timestamp,
+                )
+
+            final_payload = self._build_telephone_event_payload(
+                event_code,
+                segment_duration,
+                end=completed + segment_duration == total_duration,
+                volume=volume,
             )
+            for repeat in range(3):
+                if not self.NSD:
+                    break
+                time.sleep(interval_s)
+                self._send_rtp_packet(
+                    self._telephone_event_pt,
+                    final_payload,
+                    marker=False,
+                    timestamp=segment_timestamp,
+                )
+            completed += segment_duration
 
         audio_timestamp_advance = max(
             1,

@@ -465,12 +465,13 @@ class SIPConnection:
             self.socket = self._open_stream_socket()
 
     def close(self) -> None:
-        if self.socket is None:
-            return
         try:
-            self.socket.close()
+            if self.socket is not None:
+                self.socket.close()
         finally:
             self.socket = None
+            self._stream_buffer = b""
+            self.last_recv_address = None
 
     @staticmethod
     def _ip_version(address: str) -> Optional[int]:
@@ -601,7 +602,9 @@ class SIPConnection:
         if self.socket is None:
             raise RuntimeError("SIP connection is not open.")
         if self.target.transport == SIPTransport.UDP:
-            data, address = self.socket.recvfrom(8192)
+            # A datagram is consumed in one read. A smaller buffer either
+            # truncates the SIP message or raises WSAEMSGSIZE on Windows.
+            data, address = self.socket.recvfrom(65535)
             self.last_recv_address = (str(address[0]), int(address[1]))
             return data
         return self._recv_stream_message()
@@ -708,13 +711,15 @@ class SIPConnection:
                 )
             content_lengths.append(content_length)
 
-        content_length = 0
-        if content_lengths:
-            if len(set(content_lengths)) != 1:
-                raise SIPFramingError(
-                    "Conflicting SIP Content-Length headers while framing."
-                )
-            content_length = content_lengths[0]
+        if not content_lengths:
+            raise SIPFramingError(
+                "SIP stream frames require a Content-Length header."
+            )
+        if len(set(content_lengths)) != 1:
+            raise SIPFramingError(
+                "Conflicting SIP Content-Length headers while framing."
+            )
+        content_length = content_lengths[0]
 
         return header_end + 4 + content_length
 
@@ -728,7 +733,7 @@ class SIPConnection:
         while True:
             chunk = self.socket.recv(8192)
             if not chunk:
-                raise OSError("SIP stream socket closed")
+                raise ConnectionError("SIP stream socket closed")
             self._stream_buffer += chunk
             self._discard_stream_keepalive_prefix()
             message = self._pop_stream_message()
