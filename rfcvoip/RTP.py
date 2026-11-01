@@ -720,7 +720,10 @@ class RTPPacketManager:
                 for pkt, payload in old_log:
                     adjusted_offset = pkt - self.offset
                     if adjusted_offset < 0:
-                        continue
+                        payload = payload[-adjusted_offset:]
+                        adjusted_offset = 0
+                        if not payload:
+                            continue
                     self.buffer.seek(0, 2)
                     buffer_end = self.buffer.tell()
                     if adjusted_offset > buffer_end:
@@ -758,10 +761,28 @@ class RTPPacketManager:
             if offset < cutoff:
                 return
 
-            self.log[offset] = data
-            for logged_offset in list(self.log):
+            # Keep the visible byte intervals, rather than whole historical
+            # packets. Replaying overlaps by timestamp can otherwise restore
+            # stale bytes or lose the untouched tail of a shorter overwrite.
+            end = offset + len(data)
+            for logged_offset, logged_data in list(self.log.items()):
+                logged_end = logged_offset + len(logged_data)
                 if logged_offset < cutoff:
                     del self.log[logged_offset]
+                    if logged_end <= cutoff:
+                        continue
+                    logged_data = logged_data[cutoff - logged_offset:]
+                    logged_offset = cutoff
+                    self.log[logged_offset] = logged_data
+                if logged_offset < end and logged_end > offset:
+                    del self.log[logged_offset]
+                    if logged_offset < offset:
+                        self.log[logged_offset] = logged_data[
+                            :offset - logged_offset
+                        ]
+                    if logged_end > end:
+                        self.log[end] = logged_data[end - logged_offset:]
+            self.log[offset] = data
             bufferloc = self.buffer.tell()
             if offset < self.offset:
                 """
@@ -1148,7 +1169,7 @@ class RTPClient:
         self._receive_ssrc: Optional[int] = None
         self._receive_timestamp: Optional[int] = None
         self._receive_sequences = set()
-        self._receive_sequence_order: Deque[int] = deque()
+        self._receive_sequence_order: Deque[Tuple[int, int]] = deque()
         self.codec_priority_scores = dict(codec_priority_scores or {})
         self.codec_fmtp = {
             payload_type: list(settings)
@@ -1779,7 +1800,8 @@ class RTPClient:
             except RTPParseError as e:
                 debug(str(e))
             except OSError:
-                pass
+                if self.NSD:
+                    time.sleep(0.01)
 
     def trans(
         self,
@@ -1927,7 +1949,8 @@ class RTPClient:
         ssrc = getattr(packet, "SSRC", 0)
         same_source = self._receive_ssrc == ssrc
         sequence = getattr(packet, "sequence", None)
-        if same_source and sequence is not None and sequence in self._receive_sequences:
+        sequence_key = (ssrc, sequence)
+        if sequence is not None and sequence_key in self._receive_sequences:
             return
 
         if not same_source and self._receive_ssrc is not None:
@@ -1979,16 +2002,17 @@ class RTPClient:
             # Commit the switch only after its first audio decoded correctly.
             self._receive_codec_adapters = {codec: adapter}
             self._receive_ssrc = ssrc
-            self._receive_sequences.clear()
-            self._receive_sequence_order.clear()
             self.pmin.rebuild(True, adapter.output_offset(timestamp), data)
         else:
             self.pmin.write(adapter.output_offset(timestamp), data)
         if previous is None or timestamp > previous:
             self._receive_timestamp = timestamp
         if sequence is not None:
-            self._receive_sequences.add(sequence)
-            self._receive_sequence_order.append(sequence)
+            # Keep recent duplicate history across source switches. A delayed
+            # duplicate of the previous SSRC must not switch playback back and
+            # erase the replacement source's queued PCM.
+            self._receive_sequences.add(sequence_key)
+            self._receive_sequence_order.append(sequence_key)
             if len(self._receive_sequence_order) > 256:
                 self._receive_sequences.remove(self._receive_sequence_order.popleft())
 

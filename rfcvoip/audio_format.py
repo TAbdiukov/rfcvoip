@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Dict, Union
 
 
@@ -182,20 +183,29 @@ class PublicAudioFormat:
     sample_rate: int
     channels: int
     bit_depth: int
-    frame_ms: int = 20
+    frame_ms: Union[int, float] = 20
 
     def __post_init__(self) -> None:
         sample_rate = int(self.sample_rate)
         channels = int(self.channels)
-        frame_ms = int(self.frame_ms)
+        try:
+            frame_ms = float(self.frame_ms)
+        except (TypeError, ValueError, OverflowError) as ex:
+            raise ValueError(
+                "Audio frame duration must be a positive finite number."
+            ) from ex
         bit_depth = _fixed_bit_depth(self.bit_depth)
 
         if sample_rate <= 0:
             raise ValueError("Audio sample rate must be positive.")
         if channels <= 0:
             raise ValueError("Audio channel count must be positive.")
-        if frame_ms <= 0:
-            raise ValueError("Audio frame duration must be positive.")
+        if not math.isfinite(frame_ms) or frame_ms <= 0:
+            raise ValueError(
+                "Audio frame duration must be a positive finite number."
+            )
+        if frame_ms.is_integer():
+            frame_ms = int(frame_ms)
 
         object.__setattr__(self, "sample_rate", sample_rate)
         object.__setattr__(self, "channels", channels)

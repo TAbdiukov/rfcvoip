@@ -1703,6 +1703,7 @@ class SIPClient:
             Callable[[Dict[str, Any]], None]
         ] = None
         self.subscriptions: Dict[str, SIPSubscription] = {}
+        self._notify_response_cache: Dict[Tuple[Any, ...], Tuple[float, str]] = {}
         self.telemetry: Dict[str, Any] = {
             "auth": {"last_digest": None, "history": []},
             "sip": {
@@ -2673,7 +2674,59 @@ class SIPClient:
 
         return info
 
+    @staticmethod
+    def _notify_transaction_key(
+        message: SIPMessage,
+    ) -> Optional[Tuple[Any, ...]]:
+        try:
+            cseq = message.headers["CSeq"]
+            raw_cseq = str(cseq["check"])
+            if (
+                re.fullmatch(r"[0-9]+", raw_cseq) is None
+                or cseq["method"] != "NOTIFY"
+            ):
+                return None
+            sequence = int(raw_cseq)
+            if sequence >= 2**31:
+                return None
+            via = message.headers["Via"][0]
+            return (
+                message.headers["Call-ID"],
+                sequence,
+                via.get("branch"),
+                tuple(via["address"]),
+                message.uri,
+                message.headers["From"].get("tag", ""),
+                message.headers["To"].get("tag", ""),
+            )
+        except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+            return None
+
     def _handle_notify(self, message: SIPMessage) -> None:
+        transaction_key = self._notify_transaction_key(message)
+        if transaction_key is None:
+            if not message.headers.get("Via") or any(
+                name not in message.headers
+                for name in ("From", "To", "Call-ID", "CSeq")
+            ):
+                debug("Ignoring NOTIFY without mandatory response headers")
+                return
+            response = self.gen_response(message, SIPStatus.BAD_REQUEST)
+            self._send_request_response(message, response)
+            return
+
+        with self._subscription_lock:
+            now = time.monotonic()
+            for key, (created, _response) in list(
+                self._notify_response_cache.items()
+            ):
+                if now - created >= 32.0:
+                    self._notify_response_cache.pop(key, None)
+            cached = self._notify_response_cache.get(transaction_key)
+        if cached is not None:
+            self._send_request_response(message, cached[1])
+            return
+
         call_id = str(message.headers.get("Call-ID", "") or "")
         to_header = message.headers.get("To", {})
         local_tag = to_header.get("tag") if isinstance(to_header, dict) else ""
@@ -2710,10 +2763,44 @@ class SIPClient:
             self._send_request_response(message, response)
             return
 
+        parsed_state = self._parse_subscription_state(
+            str(message.headers.get("Subscription-State", "") or "")
+        )
+        invalid_state = parsed_state["state"] not in (
+            "active",
+            "pending",
+            "terminated",
+        )
+        if parsed_state["state"] in ("active", "pending"):
+            params = parsed_state["params"]
+            if (
+                "expires" in params
+                and re.fullmatch(r"[0-9]+", str(params["expires"] or ""))
+                is None
+            ):
+                invalid_state = True
+        else:
+            # A terminal notification's expires parameter has no semantics.
+            parsed_state["expires"] = None
+        if invalid_state:
+            response = self.gen_response(message, SIPStatus.BAD_REQUEST)
+            self._send_request_response(message, response)
+            return
+
         with self._subscription_lock:
             if self.subscriptions.get(call_id) is not subscription:
                 response = self.gen_response(
                     message, SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST
+                )
+                self._send_request_response(message, response)
+                return
+
+            if (
+                subscription._remote_cseq is not None
+                and transaction_key[1] <= subscription._remote_cseq
+            ):
+                response = self.gen_response(
+                    message, SIPStatus.INTERNAL_SERVER_ERROR
                 )
                 self._send_request_response(message, response)
                 return
@@ -2737,9 +2824,6 @@ class SIPClient:
                 "Content-Type": str(message.headers.get("Content-Type", "") or ""),
             }
 
-            parsed_state = self._parse_subscription_state(
-                subscription.last_notify_headers["Subscription-State"]
-            )
             if parsed_state["state"]:
                 subscription.subscription_state = parsed_state["state"]
                 subscription.status = parsed_state["state"]
@@ -2755,6 +2839,16 @@ class SIPClient:
 
         response = self.gen_ok(message)
         self._send_request_response(message, response)
+        with self._subscription_lock:
+            subscription._remote_cseq = transaction_key[1]
+            self._notify_response_cache[transaction_key] = (
+                time.monotonic(),
+                response,
+            )
+            while len(self._notify_response_cache) > 128:
+                self._notify_response_cache.pop(
+                    next(iter(self._notify_response_cache))
+                )
 
         self._emit_subscription_event(
             subscription,

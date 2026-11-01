@@ -173,6 +173,8 @@ Calling:
 
   **callback**\ (request: SIPMessage) -> None
     Internal entry point used by ``SIPClient`` for call-control messages.
+    Recent completed INVITE responses are retained in a bounded cache, so
+    retransmissions after call cleanup do not dispatch another incoming call.
 
 RTP ports:
 

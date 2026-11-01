@@ -1154,11 +1154,18 @@ def rtp_client_codec_info(client: Any) -> Dict[str, Any]:
             bit_depth=getattr(client, "audio_bit_depth", 8),
         ).as_dict()
 
+    negotiated_fmtp = getattr(client, "codec_fmtp", None)
+    selected_fmtp = (
+        negotiated_fmtp.get(client.preference_payload_type, [])
+        if isinstance(negotiated_fmtp, dict)
+        else []
+    )
     selected = codec_info(
         client.preference,
         payload_type=client.preference_payload_type,
         media_type="audio",
         source="active-call",
+        fmtp=selected_fmtp,
         supported=True,
         priority_scores=getattr(client, "codec_priority_scores", None),
         enabled_codecs=getattr(client, "enabled_codecs", None),

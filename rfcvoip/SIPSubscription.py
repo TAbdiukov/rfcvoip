@@ -28,6 +28,7 @@ class SIPSubscription:
     last_notify_headers: Dict[str, str] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    _remote_cseq: Optional[int] = field(default=None, init=False, repr=False)
 
     def snapshot(self) -> Dict[str, Any]:
         return {

@@ -1,4 +1,5 @@
 from enum import Enum
+from collections import OrderedDict
 from rfcvoip import SIP, RTP
 from rfcvoip.audio_format import (
     PublicAudioFormat,
@@ -71,6 +72,12 @@ def _invite_transaction_key(
         )
     except (AttributeError, KeyError, IndexError, TypeError, ValueError):
         return None
+
+
+def _is_invite_rejection(message: str) -> bool:
+    return message.startswith(
+        ("SIP/2.0 3", "SIP/2.0 4", "SIP/2.0 5", "SIP/2.0 6")
+    )
 
 
 def _payload_type_from_media_method(
@@ -649,6 +656,23 @@ class VoIPCall:
         audio_sample_width = getattr(phone, "audio_sample_width", 1)
         audio_bit_depth = getattr(phone, "audio_bit_depth", 8)
         audio_channels = getattr(phone, "audio_channels", None)
+        existing_clients = self._rtp_clients_snapshot()
+        if existing_clients and all(
+            hasattr(existing_clients[0], field)
+            for field in (
+                "audio_sample_rate",
+                "audio_channels",
+                "audio_bit_depth",
+                "audio_sample_width",
+            )
+        ):
+            # Every media section shares the call's public PCM format. Each
+            # codec already converts internally to its native wire format.
+            first_client = existing_clients[0]
+            audio_sample_rate = first_client.audio_sample_rate
+            audio_channels = first_client.audio_channels
+            audio_bit_depth = first_client.audio_bit_depth
+            audio_sample_width = first_client.audio_sample_width
         audio_output_mode = getattr(
             self, "audio_output_mode", getattr(phone, "audio_output_mode", "buffered")
         )
@@ -1070,16 +1094,33 @@ class VoIPCall:
         """
         return self._rtp_media_answer_map(start_clients=True)
 
+    def _send_invite_response(
+        self, request: SIP.SIPMessage, message: str
+    ) -> None:
+        sender = getattr(self.phone, "_send_invite_response", None)
+        if callable(sender):
+            sender(request, message)
+        else:
+            self.sip.send_response(request, message)
+
     def _send_reinvite_response(
         self, request: SIP.SIPMessage, message: str
     ) -> None:
-        self.sip.send_response(request, message)
         key = _invite_transaction_key(request)
-        if key is not None:
-            with self._state_lock_for():
-                self._last_remote_invite_key = key
-                self._last_remote_invite_response = message
-                self._remote_invite_cseq = key[1]
+
+        def remember() -> None:
+            if key is not None:
+                with self._state_lock_for():
+                    self._last_remote_invite_key = key
+                    self._last_remote_invite_response = message
+                    self._remote_invite_cseq = key[1]
+
+        rejected = _is_invite_rejection(message)
+        if rejected:
+            remember()
+        self._send_invite_response(request, message)
+        if not rejected:
+            remember()
 
     def renegotiate(self, request: SIP.SIPMessage) -> None:
         if not self.phone._has_compatible_rtp_address_family(request):
@@ -1204,8 +1245,25 @@ class VoIPCall:
                 # CANCEL can only win while the call is still ringing.
                 self.state = CallState.ANSWERED
                 self._initial_invite_response = message
-            self.sip.send_response(self.request, message)
+            self._send_invite_response(self.request, message)
         except Exception:
+            remember = getattr(self.phone, "_remember_invite_response", None)
+            cached = getattr(self.phone, "_cached_invite_response", None)
+            if (
+                callable(remember)
+                and callable(cached)
+                and cached(self.request) is None
+            ):
+                try:
+                    remember(
+                        self.request,
+                        self.sip.gen_response(
+                            self.request,
+                            SIP.SIPStatus.INTERNAL_SERVER_ERROR,
+                        ),
+                    )
+                except Exception:
+                    pass
             self._stop_rtp_clients()
             self._set_state(CallState.ENDED)
             self._finalize_ended_call()
@@ -1365,8 +1423,10 @@ class VoIPCall:
         warnings.simplefilter("default")
 
     def deny(self) -> None:
-        if self.state != CallState.RINGING:
-            raise InvalidStateError("Call is not ringing")
+        with self._state_lock_for():
+            if self.state != CallState.RINGING:
+                raise InvalidStateError("Call is not ringing")
+            self.state = CallState.ENDED
         debug(
             f"Denying call {self.call_id}",
             f"Call {self.call_id}: denying incoming call",
@@ -1374,7 +1434,7 @@ class VoIPCall:
 
         try:
             message = self.sip.gen_busy(self.request)
-            self.sip.send_response(self.request, message)
+            self._send_invite_response(self.request, message)
         finally:
             self._stop_rtp_clients()
             self._set_state(CallState.ENDED)
@@ -1629,6 +1689,7 @@ class VoIPPhone:
         # the corresponding VoIPCall being inserted into self.calls.  A final
         # INVITE response can arrive in that window via the receive loop.
         self._outbound_call_creation_depth = 0
+        self._invite_response_cache = OrderedDict()
         self.sip = SIP.SIPClient(
             server,
             port,
@@ -2119,6 +2180,52 @@ class VoIPPhone:
                     return False
         return True
 
+    def _remember_invite_response(
+        self, request: SIP.SIPMessage, message: str
+    ) -> None:
+        key = _invite_transaction_key(request)
+        if key is None:
+            return
+        try:
+            status = int(message.split(None, 2)[1])
+        except (IndexError, TypeError, ValueError):
+            return
+        if not 200 <= status < 700:
+            return
+        with self._call_state_lock:
+            cache = self._invite_response_cache
+            now = time.monotonic()
+            while cache and next(iter(cache.values()))[0] <= now:
+                cache.popitem(last=False)
+            cache[key] = (now + 32.0, message)
+            cache.move_to_end(key)
+            while len(cache) > 256:
+                cache.popitem(last=False)
+
+    def _cached_invite_response(self, request: SIP.SIPMessage) -> Optional[str]:
+        key = _invite_transaction_key(request)
+        if key is None:
+            return None
+        with self._call_state_lock:
+            cache = self._invite_response_cache
+            now = time.monotonic()
+            while cache and next(iter(cache.values()))[0] <= now:
+                cache.popitem(last=False)
+            entry = cache.get(key)
+            return entry[1] if entry is not None else None
+
+    def _send_invite_response(
+        self, request: SIP.SIPMessage, message: str
+    ) -> None:
+        # A rejected call ends locally even if signaling fails. Keep its
+        # final decision for a retry; successful answers commit after send.
+        rejected = _is_invite_rejection(message)
+        if rejected:
+            self._remember_invite_response(request, message)
+        self.sip.send_response(request, message)
+        if not rejected:
+            self._remember_invite_response(request, message)
+
     def _callback_MSG_Invite(self, request: SIP.SIPMessage) -> None:
         call_id = str(request.headers.get("Call-ID", "") or "").strip()
         if not call_id:
@@ -2130,7 +2237,7 @@ class VoIPPhone:
                 message = self.sip.gen_response(
                     request, SIP.SIPStatus.BAD_REQUEST
                 )
-                self.sip.send_response(request, message)
+                self._send_invite_response(request, message)
             except Exception as ex:
                 debug(
                     f"Failed to send 400 for INVITE without Call-ID: {ex}",
@@ -2148,6 +2255,10 @@ class VoIPPhone:
         )
 
 
+        cached_response = self._cached_invite_response(request)
+        if cached_response is not None:
+            self.sip.send_response(request, cached_response)
+            return
         call = self._get_call(call_id)
         if call is not None:
             key = _invite_transaction_key(request)
@@ -2163,19 +2274,19 @@ class VoIPPhone:
                 else:
                     message = getattr(call, "_initial_invite_response", None)
                 if message is not None:
-                    self.sip.send_response(request, message)
+                    self._send_invite_response(request, message)
                     return
             if not self.sip._has_matching_call(request):
                 message = self.sip.gen_response(
                     request, SIP.SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST
                 )
-                self.sip.send_response(request, message)
+                self._send_invite_response(request, message)
                 return
             if call._get_state() != CallState.ANSWERED:
                 message = self.sip.gen_response(
                     request, SIP.SIPStatus.REQUEST_PENDING
                 )
-                self.sip.send_response(request, message)
+                self._send_invite_response(request, message)
                 return
             if key is not None and key == getattr(
                 call, "_last_remote_invite_key", None
@@ -2189,7 +2300,7 @@ class VoIPPhone:
                 message = self.sip.gen_response(
                     request, SIP.SIPStatus.INTERNAL_SERVER_ERROR
                 )
-                self.sip.send_response(request, message)
+                self._send_invite_response(request, message)
                 return
             call.renegotiate(request)
             return
@@ -2209,7 +2320,7 @@ class VoIPPhone:
             message = self.sip.gen_response(
                 request, SIP.SIPStatus.CALL_OR_TRANSACTION_DOESNT_EXIST
             )
-            self.sip.send_response(request, message)
+            self._send_invite_response(request, message)
             return
 
         if not self._invite_targets_local_account(request):
@@ -2222,12 +2333,12 @@ class VoIPPhone:
             message = self.sip.gen_response(
                 request, SIP.SIPStatus.NOT_FOUND
             )
-            self.sip.send_response(request, message)
+            self._send_invite_response(request, message)
             return
 
         if self.callCallback is None:
             message = self.sip.gen_busy(request)
-            self.sip.send_response(request, message)
+            self._send_invite_response(request, message)
         else:
             if not self._has_compatible_rtp_address_family(request):
                 debug(
@@ -2238,7 +2349,7 @@ class VoIPPhone:
                 message = self.sip.gen_response(
                     request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
                 )
-                self.sip.send_response(request, message)
+                self._send_invite_response(request, message)
                 return
 
             if not self._has_assignable_audio_ports(request):
@@ -2250,7 +2361,7 @@ class VoIPPhone:
                 message = self.sip.gen_response(
                     request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
                 )
-                self.sip.send_response(request, message)
+                self._send_invite_response(request, message)
                 return
 
 
@@ -2264,7 +2375,7 @@ class VoIPPhone:
                 message = self.sip.gen_response(
                     request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
                 )
-                self.sip.send_response(request, message)
+                self._send_invite_response(request, message)
                 return
 
             debug("New call!")
@@ -2275,7 +2386,7 @@ class VoIPPhone:
                     self.session_ids.append(proposed)
                     sess_id = proposed
             message = self.sip.gen_ringing(request)
-            self.sip.send_response(request, message)
+            self._send_invite_response(request, message)
             try:
                 self._create_Call(request, sess_id)
             except RTP.RTPParseError as ex:
@@ -2289,7 +2400,7 @@ class VoIPPhone:
                 message = self.sip.gen_response(
                     request, SIP.SIPStatus.NOT_ACCEPTABLE_HERE
                 )
-                self.sip.send_response(request, message)
+                self._send_invite_response(request, message)
                 return
 
             try:
@@ -2319,7 +2430,7 @@ class VoIPPhone:
                     call._finalize_ended_call()
                 try:
                     message = self.sip.gen_busy(request)
-                    self.sip.send_response(request, message)
+                    self._send_invite_response(request, message)
                 except Exception as ex:
                     debug(f"Failed to reject undispatched call {call_id}: {ex}")
                 raise
@@ -2358,7 +2469,7 @@ class VoIPPhone:
             response = self.sip.gen_response(
                 call.request, SIP.SIPStatus.REQUEST_TERMINATED
             )
-            self.sip.send_response(call.request, response)
+            self._send_invite_response(call.request, response)
         finally:
             call._set_state(CallState.ENDED)
             call._finalize_ended_call()

@@ -36,6 +36,10 @@ The public sample rate, channel count, and bit depth are selected as follows:
 * Before a codec has been negotiated, ``VoIPPhone.public_audio_frame_size``
   falls back to 8000 Hz mono 8-bit unless fixed values were configured.
 
+When a call has several audio media sections, its first negotiated RTP stream
+selects the shared public PCM format. The other codecs convert to that format
+internally. Fixed phone settings apply to every media section.
+
 In ``"best"`` bit-depth mode, PCMU and PCMA prefer 8-bit public PCM. PCMU-WB,
 PCMA-WB, G.722, Opus, and SILK prefer 16-bit public PCM. ``telephone-event`` is
 not continuous audio and is not used to select public bit depth.
